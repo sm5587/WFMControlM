@@ -1,0 +1,702 @@
+// Prisma Schema for WFM Control-M
+// Job Scheduling, Monitoring & Alerts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// CLIENTS - Multi-tenant client registry (75 clients)
+// ============================================================
+model Client {
+  id              String        @id @default(uuid())
+  clientId        String        @unique // Short code: AAP, AZMX, BAC, etc.
+  name            String                // Display name
+  isActive        Boolean       @default(true)
+
+  // DB2 connection (client-specific database)
+  db2Host         String?
+  db2Port         Int           @default(50000)
+  db2Database     String?
+  db2Schema       String?
+  db2Username     String?       // DB2 login username (e.g. rwsuser)
+  db2Password     String?       // DB2 login password (plaintext; replace with Keeper when ready)
+
+  // Payroll
+  payrollEnabled  Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
+  payrollCycle    String        @default("weekly") // weekly | bi-weekly | semi-monthly | monthly | quarterly
+  payrollSyncedAt DateTime?                        // Last time RTA_INTEGRATION was checked per client DB2
+
+  // Sync tracking
+  lastCronSyncAt    DateTime?                      // Last successful cron sync (24h cooldown)
+  lastCronAttemptAt DateTime?                      // Last time cron sync was attempted (regardless of outcome)
+  lastCronCacheAt   DateTime?                      // Last time cron list was successfully cached from any server
+
+  // Metadata
+  cluster         String        @default("")
+  timezone        String        @default("America/Chicago")
+  whiteGlove      Boolean       @default(false)  // Priority client (CVS, BP, HNM, Walgreens, Autozone)
+  clientType      String        @default("BAU")  // BAU = Business-as-Usual, IMPL = Implementation
+  tags            String        @default("[]")
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  appServers      AppServer[]
+  jobs            Job[]
+  syncHistory     SyncHistory[]
+  cachedCronJobs  CachedCronJob[]
+
+  @@index([clientId])
+  @@index([isActive])
+  @@index([cluster])
+}
+
+// ============================================================
+// APP SERVERS - WAS servers per client per environment
+// ============================================================
+model AppServer {
+  id              String        @id @default(uuid())
+  clientId        String
+  client          Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  environment     String        // PP or Prod
+  serverNum       String        // 01, 02, etc.
+  dns             String        // Full DNS hostname
+  isActive        Boolean       @default(true)
+
+  // Connectivity
+  sshPort         Int           @default(22)
+  timezone        String?       // Detected server timezone (e.g. America/New_York)
+  tzLastAttemptAt DateTime?     // Last time timezone detection was attempted
+  lastPingAt      DateTime?
+  lastPingStatus  String?       // OK, UNREACHABLE, TIMEOUT
+
+  // Cron cache tracking (per-server)
+  lastCronFetchAt     DateTime?           // Last successful cron list fetch from this server
+  lastCronFetchStatus String?             // SUCCESS, FAILED, PARTIAL, EMPTY
+  cronJobCount        Int?                // Number of cron entries fetched last time
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  cachedCronJobs  CachedCronJob[]
+
+  @@unique([clientId, environment, serverNum])
+  @@index([clientId])
+  @@index([environment])
+}
+
+// ============================================================
+// SYNC HISTORY - Tracks job sync from appserver/DB2
+// ============================================================
+model SyncHistory {
+  id              String        @id @default(uuid())
+  clientId        String
+  client          Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  syncType        String        // CRON_SYNC, DB2_SYNC, FULL_SYNC
+  status          String        @default("RUNNING") // RUNNING, SUCCESS, FAILED, PARTIAL
+  source          String?       // Which server/DB was synced from
+
+  jobsDiscovered  Int           @default(0)
+  jobsCreated     Int           @default(0)
+  jobsUpdated     Int           @default(0)
+  jobsRemoved     Int           @default(0)
+  errors          String?       // JSON array of error messages
+
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+  duration        Int?          // seconds
+
+  createdAt       DateTime      @default(now())
+
+  @@index([clientId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ============================================================
+// JOBS - Core job definitions
+// ============================================================
+model Job {
+  id              String        @id @default(uuid())
+  name            String        @unique
+  description     String?
+  jobType         String        // COMMAND, SCRIPT, HTTP, SQL, DATA_PIPELINE, FORECAST, SCHEDULE_GEN, FILE_TRANSFER, CUSTOM
+  category        String        @default("general")
+
+  // Client association
+  clientId        String?
+  client          Client?       @relation(fields: [clientId], references: [id])
+  sourceSystem    String?       // "appserver_cron", "db2", "manual"
+  sourceIdentifier String?     // Original cron entry line or DB2 job key
+  
+  // Scheduling
+  cronExpression  String?       // e.g., "0 */6 * * *"
+  timezone        String        @default("UTC")
+  serverTimezone  String?       // Timezone of the source server (e.g. America/New_York)
+  nextRunTime     DateTime?     // Next scheduled run time (UTC)
+  nextRunLocal    String?       // Next run time in local display format
+  isActive        Boolean       @default(true)
+  
+  // Execution config
+  command         String?       // Shell command to execute
+  scriptPath      String?       // Path to script file
+  logPath         String?       // Remote log path extracted from cron redirect
+  logCheckEnabled Boolean       @default(false) // Whether to monitor log for failures
+  lastRunStatus   String?       // Last run outcome: SUCCESS, FAILED, RUNNING, NOT_RUN, UNKNOWN
+  lastRunAt       DateTime?     // When the job last ran (from log mtime or cron log)
+  lastLogCheckAt  DateTime?     // When logs were last verified
+  deleteStatus    String?       // NULL = active, 'D' = soft-deleted from UI
+  httpConfig      String?       // HTTP job config JSON { url, method, headers, body }
+  retryPolicy     String?       // JSON { maxRetries: 3, retryDelay: 60, backoffMultiplier: 2 }
+  timeout         Int           @default(3600) // seconds
+  priority        Int           @default(5) // 1-10, 10 = highest
+  
+  // Resource constraints
+  maxConcurrency  Int           @default(1)
+  resourcePool    String        @default("default")
+  
+  // Tags & metadata
+  tags            String        @default("[]")
+  parameters      String?       // Runtime parameters JSON
+  environment     String?       // Environment variables JSON
+  
+  // Ownership
+  owner           String?
+  team            String?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  // Relations
+  executions      JobExecution[]
+  alerts          AlertRule[]
+  
+  @@index([jobType])
+  @@index([category])
+  @@index([isActive])
+  @@index([resourcePool])
+  @@index([clientId])
+  @@index([deleteStatus])
+}
+
+// JobType values: COMMAND, SCRIPT, HTTP, SQL, DATA_PIPELINE, FORECAST, SCHEDULE_GEN, FILE_TRANSFER, CUSTOM
+
+// ============================================================
+// JOB EXECUTIONS - Runtime instances of jobs
+// ============================================================
+model JobExecution {
+  id              String          @id @default(uuid())
+  jobId           String
+  job             Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  
+  status          String          @default("PENDING")
+  
+  // Timing
+  scheduledAt     DateTime
+  startedAt       DateTime?
+  completedAt     DateTime?
+  duration        Int?            // seconds
+  
+  // Execution details
+  attempt         Int             @default(1)
+  maxAttempts     Int             @default(1)
+  exitCode        Int?
+  output          String?
+  errorMessage    String?
+  logs            String?
+  
+  // Resource tracking
+  agentId         String?
+  pid             Int?
+  memoryUsageMb   Float?
+  cpuPercent      Float?
+  
+  // Context
+  parameters      String?
+  triggeredBy     String          @default("scheduler") // scheduler | manual | dependency | api
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  // Relations
+  alertEvents     AlertEvent[]
+  
+  @@index([jobId, status])
+  @@index([scheduledAt])
+  @@index([status])
+}
+
+// ExecutionStatus values: PENDING, QUEUED, RUNNING, SUCCESS, FAILED, CANCELLED, TIMEOUT, RETRY_PENDING, SKIPPED
+
+// ============================================================
+// ALERTS
+// ============================================================
+model AlertRule {
+  id              String          @id @default(uuid())
+  name            String
+  isActive        Boolean         @default(true)
+  
+  // Target
+  jobId           String?
+  job             Job?            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  
+  // Trigger conditions
+  triggerType     String          // JOB_FAILED, JOB_TIMEOUT, JOB_LONG_RUNNING, CONSECUTIVE_FAILURES, QUEUE_BUILDUP, CUSTOM
+  condition       String?           // Custom conditions
+  
+  // Notification channels
+  channels        String          @default("[\"EMAIL\"]")
+  recipients      String          @default("[]")
+  slackChannel    String?
+  webhookUrl      String?
+  
+  // Throttling
+  cooldownMinutes Int             @default(30)
+  lastTriggeredAt DateTime?
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  // Relations
+  events          AlertEvent[]
+  
+  @@index([triggerType])
+  @@index([isActive])
+}
+
+// AlertTriggerType values: JOB_FAILED, JOB_TIMEOUT, JOB_LONG_RUNNING, CONSECUTIVE_FAILURES, QUEUE_BUILDUP, CUSTOM
+// AlertChannel values: EMAIL, SLACK, WEBHOOK, SMS, IN_APP
+
+model AlertEvent {
+  id              String        @id @default(uuid())
+  alertRuleId     String
+  alertRule       AlertRule     @relation(fields: [alertRuleId], references: [id], onDelete: Cascade)
+  
+  executionId     String?
+  execution       JobExecution? @relation(fields: [executionId], references: [id])
+  
+  severity        String        // INFO, WARNING, CRITICAL, EMERGENCY
+  title           String
+  message         String
+  metadata        String?
+  
+  acknowledged    Boolean       @default(false)
+  acknowledgedBy  String?
+  acknowledgedAt  DateTime?
+  
+  createdAt       DateTime      @default(now())
+  
+  @@index([alertRuleId])
+  @@index([severity])
+  @@index([acknowledged])
+  @@index([createdAt])
+}
+
+// AlertSeverity values: INFO, WARNING, CRITICAL, EMERGENCY
+
+// ============================================================
+// ESCALATED ALERTS - Pending alerts older than 1 hour (Red Tab)
+// Tracks acknowledgment, suppression, and email notifications
+// ============================================================
+model EscalatedAlert {
+  id              String    @id @default(uuid())
+  clientId        String    // DB connection file clientId (e.g. WAWA)
+  serverCode      String    // Resolved server code (e.g. WAW)
+  stalePendingCount Int
+  totalPending    Int
+
+  // Escalation state
+  status          String    @default("OPEN") // OPEN, ACKNOWLEDGED, SUPPRESSED
+  acknowledgedBy  String?
+  acknowledgedAt  DateTime?
+
+  // Suppression
+  suppressedBy    String?
+  suppressedAt    DateTime?
+  suppressUntil   DateTime? // When suppression expires
+  suppressReason  String?
+
+  // Email notification tracking
+  emailSentAt     DateTime?
+  emailRecipients String?   // JSON array of emails notified
+
+  firstSeenAt     DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  resolvedAt      DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([clientId])
+  @@index([status])
+  @@index([suppressUntil])
+}
+
+// EscalatedAlertStatus values: OPEN, ACKNOWLEDGED, SUPPRESSED
+
+// ============================================================
+// UNPROC PUNCH ALERTS - Tracks acknowledge/suppress state for
+// unprocessed punch alerts (live data from DB2, status persisted)
+// ============================================================
+model UnprocPunchAlert {
+  id              String    @id @default(uuid())
+  clientId        String    @unique // DB connection file clientId (e.g. WAWA)
+
+  // Escalation state
+  status          String    @default("OPEN") // OPEN, ACKNOWLEDGED, SUPPRESSED
+  acknowledgedBy  String?
+  acknowledgedAt  DateTime?
+
+  // Suppression
+  suppressedBy    String?
+  suppressedAt    DateTime?
+  suppressUntil   DateTime? // When suppression expires
+  suppressReason  String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([suppressUntil])
+}
+
+// ============================================================
+// CRITICAL DB JOBS - Jobs from RFX_QUEUE marked as critical
+// Affects ranking in Alerts menu
+// ============================================================
+model CriticalDbJob {
+  id          String   @id @default(uuid())
+  clientId    String   // DB connection file clientId (e.g. WAWA)
+  jobName     String   // JOB_NAME from RFX_QUEUE
+  markedBy    String   @default("system")
+  createdAt   DateTime @default(now())
+
+  @@unique([clientId, jobName])
+  @@index([clientId])
+}
+
+// ============================================================
+// CACHED QUEUE JOBS - Daily cache of RFX_QUEUE data per client
+// Fetched once per day; on-demand refresh per client available
+// ============================================================
+model CachedQueueJob {
+  id          String   @id @default(uuid())
+  clientId    String   // DB connection file clientId
+  jobData     String   // JSON stringified array of queue rows
+  jobCount    Int      @default(0)
+  error       String?  // Error message if fetch failed
+  fetchedAt   DateTime @default(now())
+
+  @@unique([clientId])
+  @@index([fetchedAt])
+}
+
+// ============================================================
+// MAINTENANCE WINDOWS - Planned & unscheduled outages at cluster or client level
+// Times stored in UTC; user enters in IST / EDT / EST / CST / UTC.
+// GET /api/maintenance/:id/affected-jobs computes cron fire times inside the window.
+// ============================================================
+model MaintenanceWindow {
+  id            String   @id @default(uuid())
+
+  // Scope: CLUSTER affects all clients in that cluster; CLIENT affects one client
+  scope         String   // CLUSTER | CLIENT
+  cluster       String?  // e.g. CL12  — set when scope = CLUSTER
+  clientDbId    String?  // Client.id  — set when scope = CLIENT
+  clientCode    String?  // Client.clientId for display (e.g. CVS)
+
+  // Window metadata
+  title         String
+  reason        String?
+  type          String   @default("PLANNED")    // PLANNED | UNSCHEDULED
+  status        String   @default("SCHEDULED")  // SCHEDULED | ACTIVE | COMPLETED | CANCELLED
+
+  // Times stored in UTC
+  startTimeUtc  DateTime
+  endTimeUtc    DateTime
+
+  // Original input for display (user-facing timezone label + formatted string)
+  inputTimezone String   @default("IST")        // IST | EDT | EST | CST | UTC
+  startLocal    String                           // e.g. "20 Apr 2026 09:00 IST"
+  endLocal      String                           // e.g. "20 Apr 2026 12:00 IST"
+
+  // Source
+  source        String   @default("manual")     // manual | excel_import
+  importBatchId String?                          // Groups rows from same Excel upload
+
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([scope, cluster])
+  @@index([clientDbId])
+  @@index([status])
+  @@index([startTimeUtc])
+  @@index([importBatchId])
+}
+
+// ============================================================
+// MAINTENANCE CALENDAR - Yearly maintenance schedule imported from Excel
+// Each import creates one MaintenanceCalendar with many entries (one per date per group).
+// Source: "Maintenance Calendar" sheet (group-level) of the annual xlsx.
+// ============================================================
+model MaintenanceCalendar {
+  id          String   @id @default(uuid())
+  year        Int      // e.g. 2026
+  fileName    String   // Original uploaded file name
+  importedBy  String?
+  importedAt  DateTime @default(now())
+  entryCount  Int      @default(0)
+
+  entries     MaintenanceCalendarEntry[]
+
+  @@unique([year])   // One calendar per year; re-import replaces the existing one
+  @@index([year])
+}
+
+model MaintenanceCalendarEntry {
+  id                String              @id @default(uuid())
+  calendarId        String
+  calendar          MaintenanceCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  // Group info (from Sheet 1 "Maintenance Calendar")
+  maintenanceGroup  String   // e.g. US_Group 2_Wednesday
+  clusters          String   // raw text e.g. "19 & 26" or "15"
+  maintenanceWindow String   // full text description of window
+
+  // Parsed time info (from Sheet 2 "Maintenance by Customer" or parsed from window text)
+  windowStartTime   String?  // e.g. "12:15 AM"
+  windowEndTime     String?  // e.g. "03:15 AM"
+  timezone          String   @default("EST") // EST, UTC, UK Time, etc.
+
+  // The actual maintenance date for this month
+  maintenanceDate   DateTime // scheduled date (midnight UTC of the maintenance day)
+  month             Int      // 1-12
+  year              Int      // e.g. 2026
+  status            String   @default("SCHEDULED") // SCHEDULED | CANCELLED
+
+  @@index([calendarId])
+  @@index([maintenanceDate])
+  @@index([year, month])
+  @@index([clusters])
+}
+
+// ============================================================
+// CACHED CRON JOBS - Cron entries fetched from app servers
+// Per-server cache: wiped and replaced on successful SSH fetch.
+// Stale rows kept when SSH fails → no blank screen.
+// lastCronFetchAt on AppServer / lastCronCacheAt on Client track freshness.
+// ============================================================
+model CachedCronJob {
+  id              String     @id @default(uuid())
+
+  // Owning client
+  clientId        String
+  client          Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  // Source server (nullable so rows survive AppServer deletions)
+  appServerId     String?
+  appServer       AppServer? @relation(fields: [appServerId], references: [id], onDelete: SetNull)
+
+  // Server context
+  environment     String     // PP or Prod
+  serverDns       String     // DNS hostname this entry came from
+
+  // Cron entry
+  cronExpression  String     // Parsed schedule (e.g. "0 6 * * 1-5")
+  command         String     // Full command string
+  owner           String?    // OS user who owns the crontab (e.g. wfmuser)
+  rawLine         String     // Original unmodified crontab line
+  logPath         String?    // Extracted log redirect path (if any)
+
+  // When this specific row was fetched
+  fetchedAt       DateTime   @default(now())
+
+  @@index([clientId])
+  @@index([appServerId])
+  @@index([clientId, environment])
+  @@index([fetchedAt])
+}
+
+// ============================================================
+// USERS, PROFILES & PERMISSIONS (RBAC)
+// ============================================================
+
+model User {
+  id           String        @id @default(uuid())
+  username     String        @unique
+  email        String        @unique
+  displayName  String
+  passwordHash String
+  timezone     String        @default("Asia/Kolkata")
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  profiles     UserProfile[]
+
+  @@index([username])
+  @@index([isActive])
+}
+
+model Profile {
+  id          String        @id @default(uuid())
+  name        String        @unique
+  description String?
+  isSystem    Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  users       UserProfile[]
+  permissions Permission[]
+}
+
+model UserProfile {
+  userId      String
+  profileId   String
+  assignedAt  DateTime @default(now())
+  assignedBy  String?
+  user        User    @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  profile     Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([userId, profileId])
+}
+
+model AppFunction {
+  id          String       @id
+  module      String
+  name        String
+  description String?
+  sortOrder   Int          @default(0)
+  permissions Permission[]
+
+  @@index([module])
+}
+
+model Permission {
+  profileId  String
+  functionId String
+  canRead    Boolean @default(false)
+  canWrite   Boolean @default(false)
+  profile    Profile     @relation(fields: [profileId],  references: [id], onDelete: Cascade)
+  function   AppFunction @relation(fields: [functionId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, functionId])
+}
+
+// ============================================================
+// NOTIFICATION RECIPIENTS - Team members for alert emails
+// ============================================================
+model NotificationRecipient {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================================
+// PURGE CONFIG - Admin-controlled data retention settings
+// One row per purgeable table; nightly job deletes old rows.
+// retainDays = 0 → purge ALL rows; -1 → disabled (keep forever)
+// ============================================================
+model PurgeConfig {
+  id             String    @id   // table key e.g. 'syncHistory'
+  label          String          // Display name e.g. 'Sync History'
+  retainDays     Int             // Number of days to keep
+  enabled        Boolean   @default(true)
+  lastPurgeAt    DateTime?
+  lastPurgeCount Int?            // Rows deleted in last run
+  updatedAt      DateTime  @updatedAt
+}
+
+// ============================================================
+// AUDIT LOG
+// ============================================================
+model AuditLog {
+  id          String    @id @default(uuid())
+  entityType  String    // Job, Workflow, AlertRule, etc.
+  entityId    String
+  action      String    // CREATE, UPDATE, DELETE, EXECUTE, etc.
+  userId      String?
+  userName    String?
+  oldValue    String?
+  newValue    String?
+  ipAddress   String?
+  createdAt   DateTime  @default(now())
+  
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ============================================================
+// APP CONFIG - Runtime configuration stored in DB
+// All tunable values (thresholds, polling, secrets, infra)
+// managed from Admin UI. Secrets encrypted at rest with AES-256-GCM.
+// ============================================================
+model AppConfig {
+  key         String   @id       // e.g. "alert.stalePendingCritical"
+  value       String             // plaintext or AES-256-GCM encrypted
+  category    String             // SECRETS, INFRA, POLLING, THRESHOLDS, DISPLAY, ENGINE
+  label       String             // Human-readable label for Admin UI
+  description String?            // Tooltip / help text
+  isSecret    Boolean  @default(false)
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+}
+
+// ============================================================
+// RESOURCE POOLS - For controlling concurrent execution
+// ============================================================
+model ResourcePool {
+  id              String    @id @default(uuid())
+  name            String    @unique
+  description     String?
+  maxConcurrency  Int       @default(10)
+  currentUsage    Int       @default(0)
+  isActive        Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ============================================================
+// CALENDARS - Business calendars for scheduling
+// ============================================================
+model Calendar {
+  id          String          @id @default(uuid())
+  name        String          @unique
+  description String?
+  timezone    String          @default("UTC")
+  
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  
+  // Relations
+  dates       CalendarDate[]
+}
+
+model CalendarDate {
+  id          String    @id @default(uuid())
+  calendarId  String
+  calendar    Calendar  @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  
+  date        DateTime
+  isHoliday   Boolean   @default(false)
+  isWorkday   Boolean   @default(true)
+  description String?
+  
+  @@unique([calendarId, date])
+  @@index([date])
+}

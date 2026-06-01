@@ -1,0 +1,84 @@
+import { Router, Request, Response } from 'express';
+import { unprocessedPunchService } from '../services/unprocessed-punch-service';
+import { prisma } from '../database/prisma';
+import { logger } from '../utils/logger';
+
+const router = Router();
+const CONCURRENCY = 2;
+
+// Helper to process items with bounded concurrency
+async function processWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  processor: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let idx = 0;
+
+  const processNext = async () => {
+    while (idx < items.length) {
+      const i = idx++;
+      results[i] = await processor(items[i]);
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) });
+  await Promise.all(workers.map(() => processNext()));
+  return results;
+}
+
+// GET /api/unprocessed-punch/all
+router.get('/all', async (_req: Request, res: Response) => {
+  try {
+    const rtaClients = await prisma.client.findMany({
+      where: { payrollEnabled: true },
+      select: { clientId: true, name: true, cluster: true },
+      orderBy: [{ cluster: 'asc' }, { clientId: 'asc' }],
+    });
+
+    if (rtaClients.length === 0) {
+      return res.json({ success: true, data: [], fetchedAt: new Date().toISOString() });
+    }
+
+    const results = await processWithConcurrency(rtaClients, CONCURRENCY, async (c) => {
+      try {
+        const punch = await unprocessedPunchService.getPunchCount(c.clientId);
+        return { clientId: c.clientId, name: c.name, cluster: c.cluster || '', ...punch, error: null };
+      } catch (err: any) {
+        return { clientId: c.clientId, name: c.name, cluster: c.cluster || '', punchCount: null, error: err.message };
+      }
+    });
+
+    res.json({ success: true, data: results, fetchedAt: new Date().toISOString() });
+  } catch (error: any) {
+    logger.error(`Unprocessed punch error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/unprocessed-punch/clients
+router.get('/clients', async (_req: Request, res: Response) => {
+  try {
+    const clients = await prisma.client.findMany({
+      where: { payrollEnabled: true },
+      select: { clientId: true, name: true, cluster: true },
+      orderBy: [{ cluster: 'asc' }, { clientId: 'asc' }],
+    });
+    res.json({ success: true, data: clients.map(c => ({ clientId: c.clientId, name: c.name, cluster: c.cluster || '' })) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/unprocessed-punch/:clientId
+router.get('/:clientId', async (req: Request, res: Response) => {
+  try {
+    const punch = await unprocessedPunchService.getPunchCount(req.params.clientId);
+    res.json({ success: true, data: punch });
+  } catch (error: any) {
+    logger.error(`Punch error for ${req.params.clientId}: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+export default router;

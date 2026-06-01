@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: wfm-controlm-api
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      PORT: 4000
+      NODE_ENV: production
+      LOG_DIR: /app/logs
+      DB2_LIB_DIR: /config/lib
+      # SMTP — set values in .env (loaded via env_file above)
+      SMTP_HOST: ${SMTP_HOST:-mailhost.reflexisinc.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      ALERT_FROM_EMAIL: wfmcontrolM@zebra.com
+    volumes:
+      - backend_logs:/app/logs
+      - ./config/lib:/config/lib:ro
+
+  # Frontend (Nginx serving React build)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: wfm-controlm-ui
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend_logs:
