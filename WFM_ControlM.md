@@ -294,31 +294,20 @@ Real-time job execution monitoring with WebSocket updates.
 
 ## Configuration
 
-### Environment Variables (`.env`)
+### Bootstrap environment (`.env`)
+
+Only variables required before the DB loads. See `.env.example`:
 
 ```env
 DATABASE_URL="file:./dev.db"
-PORT=4000
-NODE_ENV=development
-JWT_SECRET=dev-secret-change-in-production
-
-# SSH (or use .saved_credentials.json)
-SSH_USERNAME=
-SSH_PASSWORD=
-SSH_TOTP_SECRET=
-SSH_PORT=22
-SSH_TIMEOUT=15000
-SSH_CREDENTIALS_FILE=
-
-# DB2
-DB2_USERNAME=
-DB2_PASSWORD=
-
-# DB2 Pool
-DB2_POOL_MAX_CONNECTIONS=10
-DB2_POOL_IDLE_TIMEOUT_MS=300000
-DB2_POOL_ACQUIRE_TIMEOUT_MS=30000
+CONFIG_ENCRYPTION_KEY=<64-char hex>
+# Optional: KEEPER_CONFIG_FILE, KEEPER_ONE_TIME_TOKEN, SSH_CREDENTIALS_FILE
+# Seed only: ADMIN_USERNAME, ADMIN_PASSWORD
 ```
+
+### Runtime settings (AppConfig / Admin → Config)
+
+Port, JWT, SMTP, SSH, DB2 paths, pool sizes, thresholds, and polling intervals live in the `AppConfig` table. Loaded at startup via `configService.load()` + `applyDbConfig()`.
 
 ### SSH Credentials File (`.saved_credentials.json`)
 

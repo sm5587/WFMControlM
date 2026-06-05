@@ -9,7 +9,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { dbMonitorApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
-import { useConfig } from '../contexts/ConfigContext';
+import { useBatchLookbackDays } from './useBatchLookbackDays';
 
 export interface BatchJobGroup {
   jobType: string;

@@ -25,7 +25,7 @@ import { createServiceLogger } from '../utils/logger';
 const logger = createServiceLogger('KeeperService');
 
 function getCacheTtlMs(): number {
-  return configService.getInt('engine.keeperCacheTtlMins', 5) * 60 * 1000;
+  return configService.getInt('engine.keeperCacheTtlMins') * 60 * 1000;
 }
 
 interface FieldCacheEntry {

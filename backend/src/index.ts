@@ -37,19 +37,44 @@ import escalationsRouter from './routes/escalations';
 import dbJobsRouter from './routes/db-jobs';
 import maintenanceRouter from './routes/maintenance';
 import configRouter from './routes/config';
+import emailPreviewRouter from './routes/email-preview';
 
 const logger = createServiceLogger('Server');
+
+function validateCriticalConfig(): void {
+  const missing: string[] = [];
+
+  if (!config.jwtSecret) missing.push('secrets.jwtSecret');
+  if (!config.jwtExpiresIn) missing.push('secrets.jwtExpiresIn');
+  if (!configService.getString('infra.corsOrigins')) missing.push('infra.corsOrigins');
+  if (!configService.getString('infra.bodySizeLimit')) missing.push('infra.bodySizeLimit');
+  if (!configService.getString('engine.purgeSchedule')) missing.push('engine.purgeSchedule');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing critical AppConfig values: ${missing.join(', ')}`);
+  }
+}
 
 async function bootstrap() {
   const app = express();
   const httpServer = createServer(app);
   let dbMonitorBatchSyncInterval: NodeJS.Timeout | null = null;
 
+  // ---- Connect Database ----
+  await connectDatabase();
+
+  // ---- Load AppConfig from DB and apply to config object ----
+  await configService.load();
+  applyDbConfig();
+  alertService.reloadTransporter();
+  validateCriticalConfig();
+  logger.info('AppConfig loaded from database');
+
   // ---- Middleware ----
   app.use(helmet());
   app.use(cors({
     origin: (origin, callback) => {
-      const origins = configService.getString('infra.corsOrigins', 'http://localhost:3000,http://localhost:5173')
+      const origins = configService.getString('infra.corsOrigins')
         .split(',').map(s => s.trim()).filter(Boolean);
       if (!origin || origins.includes(origin)) {
         callback(null, true);
@@ -59,7 +84,7 @@ async function bootstrap() {
     },
     credentials: true,
   }));
-  app.use(express.json({ limit: configService.getString('infra.bodySizeLimit', '10mb') }));
+  app.use(express.json({ limit: configService.getString('infra.bodySizeLimit') }));
   app.use(express.urlencoded({ extended: true }));
   app.use(morgan('short'));
   app.use(requestLogger);
@@ -68,12 +93,15 @@ async function bootstrap() {
   app.get('/health', (req, res) => {
     res.json({
       status: 'ok',
-      service: 'WFM Control-M',
+      service: configService.getAppName(),
       version: '1.0.0',
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     });
   });
+
+  // Dev-only: live notify email previews (no auth)
+  app.use('/dev', emailPreviewRouter);
 
   // ---- API Routes ----
   const apiRouter = express.Router();
@@ -106,14 +134,6 @@ async function bootstrap() {
   // ---- Initialize WebSocket ----
   const io = initializeWebSocket(httpServer);
 
-  // ---- Connect Database ----
-  await connectDatabase();
-
-  // ---- Load AppConfig from DB and apply to config object ----
-  await configService.load();
-  applyDbConfig();
-  logger.info('AppConfig loaded from database');
-
   // ---- Sync AppFunction registry (upserts any new functions added in code) ----
   for (const fn of Object.values(APP_FUNCTIONS)) {
     await prisma.appFunction.upsert({
@@ -139,7 +159,7 @@ async function bootstrap() {
       });
       
       if (execution) {
-        const critThreshold = configService.getInt('threshold.jobPriorityCritical', 8);
+        const critThreshold = configService.getInt('threshold.jobPriorityCritical');
         await alertService.processAlert({
           triggerType: 'JOB_FAILED',
           severity: execution.job.priority >= critThreshold ? 'CRITICAL' : 'WARNING',
@@ -164,7 +184,7 @@ async function bootstrap() {
   await scheduler.start();
 
   // ---- Nightly data purge ----
-  const purgeSchedule = configService.getString('engine.purgeSchedule', '0 2 * * *');
+  const purgeSchedule = configService.getString('engine.purgeSchedule');
   cron.schedule(purgeSchedule, async () => {
     logger.info('Running scheduled nightly purge...');
     try {
@@ -175,8 +195,8 @@ async function bootstrap() {
   });
 
   // ---- Backend warm sync for DB Monitor batch data ----
-  const dbMonitorBatchDays = configService.getInt('engine.dbMonitorBatchDays', 2);
-  const dbMonitorSyncMs = configService.getInt('polling.dbMonitorSyncMins', 30) * 60 * 1000;
+  const dbMonitorBatchDays = configService.getInt('engine.dbMonitorBatchDays');
+  const dbMonitorSyncMs = configService.getInt('polling.dbMonitorSyncMins') * 60 * 1000;
   const runDbMonitorBatchSync = async () => {
     try {
       await db2DirectService.getAllBatchStatusSummary(dbMonitorBatchDays, { forceRefresh: true });
@@ -195,7 +215,7 @@ async function bootstrap() {
     logger.info(`
 ╔══════════════════════════════════════════════════════╗
 ║                                                      ║
-║   🚀 WFM Control-M Server                           ║
+║   🚀 ${configService.getAppName()} Server                           ║
 ║                                                      ║
 ║   HTTP:      http://localhost:${config.port}                ║
 ║   WebSocket: ws://localhost:${config.port}                  ║
@@ -203,7 +223,7 @@ async function bootstrap() {
 ║                                                      ║
 ║   API:       http://localhost:${config.port}/api             ║
 ║   Health:    http://localhost:${config.port}/health           ║
-║                                                      ║
+${config.nodeEnv !== 'production' ? `║   Email preview: http://localhost:${config.port}/dev/email-preview ║\n` : ''}║                                                      ║
 ╚══════════════════════════════════════════════════════╝
     `);
     logger.info(`SMTP: host=${config.smtp.host || 'NOT SET'}, port=${config.smtp.port}, user=${config.smtp.user || 'none (relay mode)'}`);

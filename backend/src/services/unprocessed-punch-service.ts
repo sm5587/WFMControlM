@@ -25,7 +25,7 @@ class UnprocessedPunchService {
    */
   async getPunchCount(clientId: string): Promise<UnprocessedPunchResult> {
     const startMs = Date.now();
-    const lookbackDays = configService.getInt('engine.punchLookbackDays', 2);
+    const lookbackDays = configService.getInt('engine.punchLookbackDays');
 
     // Use integer comparison on PUNCH_DATE (yyyyMMdd format) to avoid to_DATE()
     // conversion errors from corrupt data (e.g. invalid month/day values)

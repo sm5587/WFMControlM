@@ -6,11 +6,13 @@
 import { Router, Request, Response } from 'express';
 import { escalationService } from '../services/escalation-service';
 import { alertService } from '../services/alert-service';
+import { configService } from '../services/config-service';
 import { unprocPunchAlertService } from '../services/unproc-punch-alert-service';
 import { prisma } from '../database/prisma';
 import { createServiceLogger } from '../utils/logger';
 import { requirePermission } from '../middleware';
 import { z } from 'zod';
+import { buildPunchNotifyEmail } from '../email/notify-email-templates';
 
 const router = Router();
 const logger = createServiceLogger('EscalationsAPI');
@@ -56,8 +58,22 @@ router.post('/:id/suppress', requirePermission('ALERTS_SUPPRESS', 'write'), asyn
   }
 });
 
+// POST /api/escalations/test-email - SMTP smoke test (all active recipients)
+router.post('/test-email', requirePermission('ALERTS_NOTIFY', 'write'), async (_req: Request, res: Response) => {
+  try {
+    const result = await escalationService.sendTestEmail();
+    if (result.error && !result.sent) {
+      return res.status(result.recipients.length === 0 && result.error.includes('recipients') ? 400 : 503)
+        .json({ success: false, error: result.error, data: result });
+    }
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // POST /api/escalations/notify - Send email notifications for escalated alerts
-router.post('/notify', async (req: Request, res: Response) => {
+router.post('/notify', requirePermission('ALERTS_NOTIFY', 'write'), async (req: Request, res: Response) => {
   try {
     const alertIds: string[] | undefined = req.body.alertIds;
     logger.info(`Notify Team triggered — alertIds: ${alertIds?.length ? alertIds.join(', ') : 'all open'}`);
@@ -143,6 +159,20 @@ router.post('/notify-punch', async (req: Request, res: Response) => {
       return res.json({ success: true, data: { sent: 0, skipped: 1, details: ['No punch alert rows provided'] } });
     }
 
+    const punchStatuses = await unprocPunchAlertService.getAlertStatuses();
+    const eligibleRows = unprocPunchAlertService.filterNotifyEligible(rows, punchStatuses);
+    if (!eligibleRows.length) {
+      const cooldownMins = configService.getNotifyCooldownMins();
+      return res.json({
+        success: true,
+        data: {
+          sent: 0,
+          skipped: rows.length,
+          details: [`All selected clients were notified within the last ${cooldownMins} minutes`],
+        },
+      });
+    }
+
     if (!alertService.isEmailConfigured()) {
       return res.status(500).json({ success: false, error: 'SMTP not configured' });
     }
@@ -155,7 +185,7 @@ router.post('/notify-punch', async (req: Request, res: Response) => {
     const emails = allRecipients.map(r => r.email);
     const now = new Date();
 
-    const rowLines = rows
+    const rowLines = eligibleRows
       .sort((a, b) => b.punchCount - a.punchCount)
       .map(r => `<tr>
         <td style="padding:6px 12px;font-weight:bold;">${r.name && r.name !== r.clientId ? r.name : r.clientId}</td>
@@ -166,37 +196,27 @@ router.post('/notify-punch', async (req: Request, res: Response) => {
       </tr>`)
       .join('');
 
-    const subject = `[ALERT] WFM Control-M: ${rows.length} Client(s) with Unprocessed Punches > 100`;
-    const html = `
-      <div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;">
-        <div style="background:#b45309;color:white;padding:20px 24px;border-radius:8px 8px 0 0;">
-          <h2 style="margin:0;">⏱ WFM Control-M — Unprocessed Punch Alert</h2>
-          <p style="margin:6px 0 0;opacity:.85;font-size:14px;">${now.toISOString()}</p>
-        </div>
-        <div style="border:1px solid #ddd;border-top:none;padding:20px 24px;border-radius:0 0 8px 8px;">
-          <p style="font-size:15px;color:#333;">
-            <strong>${rows.length} client(s)</strong> have more than 100 unprocessed punches pending.
-          </p>
-          <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;">
-            <thead>
-              <tr style="background:#f5f5f5;border-bottom:2px solid #ddd;">
-                <th style="padding:8px 12px;text-align:left;">Client</th>
-                <th style="padding:8px 12px;text-align:left;">Code</th>
-                <th style="padding:8px 12px;text-align:left;">Cluster</th>
-                <th style="padding:8px 12px;text-align:left;">Pending Punches</th>
-                <th style="padding:8px 12px;text-align:left;">Last Update Time</th>
-              </tr>
-            </thead>
-            <tbody>${rowLines}</tbody>
-          </table>
-          <hr style="border:none;border-top:1px solid #eee;margin:16px 0;">
-          <p style="color:#888;font-size:12px;">Sent by WFM Control-M to: ${emails.join(', ')}</p>
-        </div>
-      </div>`;
+    const appName = configService.getAppName();
+    const { subject, html } = buildPunchNotifyEmail({
+      appName,
+      clientCount: eligibleRows.length,
+      rowLinesHtml: rowLines,
+      recipients: emails,
+      sentAt: now,
+    });
 
     const result = await alertService.sendDirectEmail(emails, subject, html);
+    await unprocPunchAlertService.recordEmailSent(eligibleRows.map(r => r.clientId));
     logger.info(`notify-punch: sent to ${result.accepted.join(', ')}`);
-    res.json({ success: true, data: { sent: rows.length, recipients: result.accepted, details: [`Email sent to ${result.accepted.join(', ')}`] } });
+    res.json({
+      success: true,
+      data: {
+        sent: eligibleRows.length,
+        skipped: rows.length - eligibleRows.length,
+        recipients: result.accepted,
+        details: [`Email sent to ${result.accepted.join(', ')}`],
+      },
+    });
   } catch (error: any) {
     logger.error(`notify-punch error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });

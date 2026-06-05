@@ -102,13 +102,22 @@ class DB2DirectService {
 
   constructor() {
     const root = path.resolve(__dirname, '../../..');
-    this.connectorScript = process.env.DB2_LIB_DIR
-      ? path.join(process.env.DB2_LIB_DIR, 'DB2Connector.js')
-      : path.join(root, 'lib', 'DB2Connector.js');
-    this.db2Jar = process.env.DB2_LIB_DIR
-      ? path.join(process.env.DB2_LIB_DIR, 'db2jcc4.jar')
-      : path.join(root, 'lib', 'db2jcc4.jar');
-    this.jjsPath = process.env.JJS_PATH || 'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\jjs.exe';
+    const libDir = configService.getString('infra.db2LibDir');
+    const jjsPath = configService.getString('infra.db2JjsPath');
+
+    if (!libDir) {
+      logger.warn('[DB2_INIT] infra.db2LibDir is empty; falling back to local ./lib path');
+    }
+    if (!jjsPath) {
+      logger.warn('[DB2_INIT] infra.db2JjsPath is empty; using default jjs path fallback');
+    }
+
+    const effectiveLibDir = libDir || path.join(root, 'lib');
+    const effectiveJjsPath = jjsPath || process.env.JJS_PATH || 'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\jjs.exe';
+
+    this.connectorScript = path.join(effectiveLibDir, 'DB2Connector.js');
+    this.db2Jar = path.join(effectiveLibDir, 'db2jcc4.jar');
+    this.jjsPath = effectiveJjsPath;
   }
 
   /**
@@ -138,7 +147,7 @@ class DB2DirectService {
           clientId: c.clientId,
           serverCode,
           host: c.db2Host!,
-          port: String(c.db2Port ?? configService.getInt('infra.db2DefaultPort', 50000)),
+          port: String(c.db2Port ?? configService.getInt('infra.db2DefaultPort')),
           database: c.db2Database!,
         };
       });
@@ -167,13 +176,13 @@ class DB2DirectService {
    * Get batch status grouped by JOB_TYPE for the last N days.
    * Filters on TIME_SUBMITTED for accurate day-range coverage.
    */
-  async getBatchStatusGrouped(clientId: string, days: number = configService.getInt('engine.batchQueryDays', 7)): Promise<BatchJobGroup[]> {
+  async getBatchStatusGrouped(clientId: string, days: number = configService.getInt('engine.batchQueryDays')): Promise<BatchJobGroup[]> {
     const sql = `SELECT JOB_TYPE, PLAN_TYPE, COUNT(*) AS CNT, ` +
       `SUM(CASE WHEN STATUS='C' THEN 1 ELSE 0 END) AS COMPLETED, ` +
       `SUM(CASE WHEN STATUS IN ('E','F') THEN 1 ELSE 0 END) AS FAILED, ` +
       `SUM(CASE WHEN STATUS='A' THEN 1 ELSE 0 END) AS ACTIVE, ` +
       `SUM(CASE WHEN STATUS='N' THEN 1 ELSE 0 END) AS PENDING, ` +
-      `SUM(CASE WHEN STATUS='N' AND TIME_SUBMITTED IS NOT NULL AND TIME_SUBMITTED < CURRENT TIMESTAMP - ${configService.getInt('threshold.stalePendingDbMins', 30)} MINUTES THEN 1 ELSE 0 END) AS STALE_PENDING, ` +
+      `SUM(CASE WHEN STATUS='N' AND TIME_SUBMITTED IS NOT NULL AND TIME_SUBMITTED < CURRENT TIMESTAMP - ${configService.getInt('threshold.stalePendingDbMins')} MINUTES THEN 1 ELSE 0 END) AS STALE_PENDING, ` +
       `MAX(TIME_SUBMITTED) AS LATEST_RUN, ` +
       `MAX(DESCRIPTION) AS DESCR ` +
       `FROM RWSUSER.BATCH_STATUS ` +
@@ -201,11 +210,24 @@ class DB2DirectService {
   }
 
   /**
-   * Get detailed batch status records for a specific JOB_TYPE.
+   * SQL predicate for BATCH_STATUS.PLAN_TYPE matching the grouped summary row.
+   * Empty plan type rows use NULL/blank in DB2 — `PLAN_TYPE = ''` does not match NULL.
    */
-  async getBatchStatusDetails(clientId: string, jobType: string, planType: string, days: number = configService.getInt('engine.batchQueryDays', 7)): Promise<BatchStatusDetail[]> {
-    const safeJobType = jobType.replace(/[^a-zA-Z0-9_]/g, '');
-    const safePlanType = planType.replace(/[^a-zA-Z0-9_]/g, '');
+  private buildBatchPlanTypeFilter(planType: string): string {
+    const trimmed = planType.trim();
+    if (!trimmed) {
+      return `(bs.PLAN_TYPE IS NULL OR RTRIM(LTRIM(CHAR(bs.PLAN_TYPE))) = '')`;
+    }
+    const escaped = trimmed.replace(/'/g, "''");
+    return `RTRIM(LTRIM(CHAR(bs.PLAN_TYPE))) = '${escaped}'`;
+  }
+
+  /**
+   * Get detailed batch status records for a specific JOB_TYPE (+ optional PLAN_TYPE group).
+   */
+  async getBatchStatusDetails(clientId: string, jobType: string, planType: string, days: number = configService.getInt('engine.batchQueryDays')): Promise<BatchStatusDetail[]> {
+    const safeJobType = jobType.trim().replace(/[^a-zA-Z0-9_]/g, '');
+    const planFilter = this.buildBatchPlanTypeFilter(planType);
 
     const sql = `SELECT bs.BATCH_STATUS_ID, bs.JOB_TYPE, bs.STATUS, bs.START_DATE_SKEY, ` +
       `bs.TIME_SUBMITTED, bs.TIME_COMPLETED, bs.DESCRIPTION, bs.TOTAL_JOBS, bs.PENDING_JOBS, bs.UNIT_SKEY, ` +
@@ -213,9 +235,9 @@ class DB2DirectService {
       `(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS='F') AS FAIL_COUNT, ` +
       `(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS NOT IN ('S','F')) AS OTHER_COUNT ` +
       `FROM RWSUSER.BATCH_STATUS bs ` +
-      `WHERE bs.JOB_TYPE = '${safeJobType}' AND bs.PLAN_TYPE = '${safePlanType}' AND bs.TIME_SUBMITTED >= CURRENT TIMESTAMP - ${days} DAYS ` +
+      `WHERE bs.JOB_TYPE = '${safeJobType}' AND ${planFilter} AND bs.TIME_SUBMITTED >= CURRENT TIMESTAMP - ${days} DAYS ` +
       `ORDER BY bs.TIME_SUBMITTED DESC ` +
-      `FETCH FIRST ${configService.getInt('engine.maxBatchDetailRows', 500)} ROWS ONLY`;
+      `FETCH FIRST ${configService.getInt('engine.maxBatchDetailRows')} ROWS ONLY`;
 
     const result = await this.runConnector('query', clientId, sql, 'BatchStatusDetails');
 
@@ -277,7 +299,7 @@ class DB2DirectService {
     const availableClients = await this.getAvailableClients();
     const results: Record<string, { jobs: any[]; error?: string }> = {};
 
-    const concurrency = configService.getInt('engine.db2QueryConcurrency', 5);
+    const concurrency = configService.getInt('engine.db2QueryConcurrency');
     let idx = 0;
 
     await new Promise<void>((resolve) => {
@@ -318,12 +340,12 @@ class DB2DirectService {
    * Returns grouped batch data per client plus pending alerts summary.
    */
   async getAllBatchStatusSummary(
-    days: number = configService.getInt('engine.dbMonitorBatchDays', 2),
+    days: number = configService.getInt('engine.dbMonitorBatchDays'),
     options: { forceRefresh?: boolean } = {}
   ): Promise<BatchSummary> {
     const cacheKey = Number.isFinite(days) && days > 0 ? days : 2;
     const cached = this.batchSummaryCache.get(cacheKey);
-    const isFresh = !!cached && (Date.now() - cached.updatedAtMs) < configService.getInt('polling.batchCacheTtlMins', 30) * 60 * 1000;
+    const isFresh = !!cached && (Date.now() - cached.updatedAtMs) < configService.getInt('polling.batchCacheTtlMins') * 60 * 1000;
 
     if (!options.forceRefresh && isFresh) {
       return cached!.data;
@@ -333,7 +355,7 @@ class DB2DirectService {
     const results: Record<string, { groups: BatchJobGroup[]; error?: string }> = {};
     const pendingAlerts: { clientId: string; stalePendingCount: number; totalPending: number }[] = [];
 
-    const concurrency = configService.getInt('engine.db2QueryConcurrency', 5);
+    const concurrency = configService.getInt('engine.db2QueryConcurrency');
     let idx = 0;
 
     await new Promise<void>((resolve) => {
@@ -379,6 +401,36 @@ class DB2DirectService {
     return summary;
   }
 
+  /**
+   * Merge a single client's fresh batch groups into the in-memory summary cache
+   * (after a per-client refresh) so batch-status-all does not return stale data.
+   */
+  patchBatchSummaryClient(clientId: string, groups: BatchJobGroup[], days: number): void {
+    const cacheKey = Number.isFinite(days) && days > 0 ? days : configService.getInt('engine.dbMonitorBatchDays');
+    const cached = this.batchSummaryCache.get(cacheKey);
+    if (!cached) return;
+
+    const data = cached.data;
+    data.clients[clientId] = { groups };
+
+    const totalPending = groups.reduce((sum, g) => sum + g.pending, 0);
+    const stalePendingCount = groups.reduce((sum, g) => sum + g.stalePending, 0);
+    data.pendingAlerts = data.pendingAlerts.filter(a => a.clientId !== clientId);
+    if (stalePendingCount > 0) {
+      data.pendingAlerts.push({ clientId, stalePendingCount, totalPending });
+    }
+    data.pendingAlerts.sort((a, b) => b.stalePendingCount - a.stalePendingCount);
+    data.fetchedAt = new Date().toISOString();
+  }
+
+  invalidateBatchSummaryCache(days?: number): void {
+    if (days != null && Number.isFinite(days) && days > 0) {
+      this.batchSummaryCache.delete(days);
+      return;
+    }
+    this.batchSummaryCache.clear();
+  }
+
   // ============================================================
   // Private helpers
   // ============================================================
@@ -404,8 +456,8 @@ class DB2DirectService {
     return new Promise((resolve) => {
       const child = execFile(this.jjsPath, args, {
         cwd: path.resolve(__dirname, '../../..'),
-        timeout: configService.getInt('engine.jjsTimeoutMs', 120000),
-        maxBuffer: configService.getInt('engine.jjsMaxBuffer', 10485760),
+        timeout: configService.getInt('engine.jjsTimeoutMs'),
+        maxBuffer: configService.getInt('engine.jjsMaxBuffer'),
         env: childEnv,
       }, (err, stdout, stderr) => {
         this.activeProcesses.delete(child);
@@ -477,7 +529,7 @@ class DB2DirectService {
       });
 
       if (rec?.db2Host && rec.db2Database) {
-        const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort', 50000)}/${rec.db2Database}`;
+        const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
         env.DB2_URL_OVERRIDE = jdbcUrl;
         if (rec.db2Username) env.DB2_USER_OVERRIDE = rec.db2Username;
         if (rec.db2Password) env.DB2_PASS_OVERRIDE = rec.db2Password;

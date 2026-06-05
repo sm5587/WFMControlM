@@ -5,6 +5,7 @@
 // ============================================================
 
 import { prisma } from '../database/prisma';
+import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME } from '../constants/app-display';
 import { encryptSecret, decryptSecret, isEncryptionConfigured } from '../utils/crypto';
 import { createServiceLogger } from '../utils/logger';
 
@@ -55,8 +56,66 @@ class ConfigService {
       });
     }
 
+    await this.ensureAppNameConfig();
+    await this.ensureNotifyCooldownConfig();
+
     this.loaded = true;
     logger.info(`Loaded ${rows.length} config entries from DB`);
+  }
+
+  /** Insert display.appName when upgrading an older database. */
+  private async ensureAppNameConfig(): Promise<void> {
+    if (this.cache.has(APP_NAME_CONFIG_KEY)) return;
+    await prisma.appConfig.create({
+      data: {
+        key: APP_NAME_CONFIG_KEY,
+        value: DEFAULT_APP_NAME,
+        category: 'DISPLAY',
+        label: 'Application Name',
+        description: 'Product name shown in UI, emails, and API health',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(APP_NAME_CONFIG_KEY, {
+      key: APP_NAME_CONFIG_KEY,
+      value: DEFAULT_APP_NAME,
+      category: 'DISPLAY',
+      label: 'Application Name',
+      description: 'Product name shown in UI, emails, and API health',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${APP_NAME_CONFIG_KEY}"`);
+  }
+
+  /** Insert threshold.notifyCooldownMins when upgrading an older database. */
+  private async ensureNotifyCooldownConfig(): Promise<void> {
+    const key = 'threshold.notifyCooldownMins';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: '60',
+        category: 'THRESHOLDS',
+        label: 'Notify Cooldown (min)',
+        description: 'Minutes before notify icon reappears after email sent',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: '60',
+      category: 'THRESHOLDS',
+      label: 'Notify Cooldown (min)',
+      description: 'Minutes before notify icon reappears after email sent',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
   }
 
   /**
@@ -93,6 +152,18 @@ class ConfigService {
     const v = this.cache.get(key)?.value;
     if (v === undefined || v === '') return defaultVal;
     return v === 'true' || v === '1';
+  }
+
+  /** Product display name from AppConfig (display.appName). */
+  getAppName(): string {
+    const name = this.getString(APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME).trim();
+    return name || DEFAULT_APP_NAME;
+  }
+
+  /** Minutes before notify icon reappears after an email was sent. */
+  getNotifyCooldownMins(): number {
+    const mins = this.getInt('threshold.notifyCooldownMins', 60);
+    return mins > 0 ? mins : 60;
   }
 
   /**

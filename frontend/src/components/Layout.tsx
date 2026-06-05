@@ -10,13 +10,13 @@ import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
 import { useEscalatedAlerts } from './Alerts/AlertCenter';
 import { useAuth, usePermission } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
+import { useAppName } from '../contexts/ConfigContext';
 
 const navItems = [
   { path: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, permission: null },
   { path: '/clients',     label: 'Clients',      icon: Building2,       permission: 'CLIENTS_VIEW' },
   { path: '/jobs',        label: 'Cron Jobs',    icon: Briefcase,       permission: 'JOBS_VIEW' },
   { path: '/db-jobs',     label: 'DB Jobs',      icon: Play,            permission: 'DBJOBS_VIEW' },
-  { path: '/maintenance', label: 'Maintenance',  icon: CalendarClock,   permission: 'MAINTENANCE_VIEW' },
   { path: '/monitor',     label: 'Monitor',      icon: Monitor,         permission: 'MONITOR_VIEW' },
   { path: '/db-monitor',  label: 'DB Jobs Monitor', icon: Database,      permission: 'DBMONITOR_VIEW' },
   { path: '/payroll',     label: 'Payroll Jobs',       icon: DollarSign,      permission: 'PAYROLL_VIEW' },
@@ -32,6 +32,7 @@ const adminNavItems = [
 ];
 
 export default function Layout() {
+  const appName = useAppName();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const { isConnected } = useWebSocket();
@@ -61,7 +62,7 @@ export default function Layout() {
           <Activity className="w-8 h-8 text-zebra-400 flex-shrink-0" />
           {!collapsed && (
             <div>
-              <h1 className="text-lg font-bold tracking-tight">WFM Watch</h1>
+              <h1 className="text-lg font-bold tracking-tight">{appName}</h1>
               <p className="text-xs text-slate-400">Job Monitoring & Alerting</p>
             </div>
           )}

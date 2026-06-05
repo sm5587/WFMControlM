@@ -47,7 +47,7 @@ class PayrollService {
     const startMs = Date.now();
 
     const sql = `SELECT * FROM RWSUSER.TA_UNIT_PAY_STATUS ` +
-      `WHERE to_date(WEEK_END_DATE,'yyyyMMdd') >= CURRENT DATE - ${configService.getInt('engine.payrollLookbackDays', 7)} DAYS ` +
+      `WHERE to_date(WEEK_END_DATE,'yyyyMMdd') >= CURRENT DATE - ${configService.getInt('engine.payrollLookbackDays')} DAYS ` +
       `AND to_date(WEEK_END_DATE,'yyyyMMdd') <= CURRENT DATE ` +
       `ORDER BY WEEK_START_DATE DESC, UNIT_ID`;
 

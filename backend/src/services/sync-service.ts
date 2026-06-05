@@ -236,7 +236,7 @@ function sshConnect(hostname: string, creds: SSHCredentials): Promise<SSH2Client
 /**
  * Execute a command on a remote SSH session and return stdout.
  */
-function sshExec(conn: SSH2Client, command: string, timeoutSec = configService.getInt('infra.sshTimeout', 15000) / 1000): Promise<string> {
+function sshExec(conn: SSH2Client, command: string, timeoutSec = configService.getInt('infra.sshTimeout') / 1000): Promise<string> {
   return new Promise((resolve, reject) => {
     conn.exec(command, (err, stream) => {
       if (err) return reject(err);
@@ -260,8 +260,8 @@ function sshExec(conn: SSH2Client, command: string, timeoutSec = configService.g
 
 // ------------------------------------------------------------------ Cron Parsing
 
-const CRON_ENTRY_PATH = config.ssh.cronEntryPath || '/mount/backup/cronEntry';
-const WFM_PATH_PREFIX = config.ssh.wfmPathPrefix || '/mount/RWS4';
+const CRON_ENTRY_PATH = config.ssh.cronEntryPath;
+const WFM_PATH_PREFIX = config.ssh.wfmPathPrefix;
 
 // Failure patterns to look for in log files
 const FAILURE_PATTERNS = [
@@ -555,7 +555,7 @@ class SyncService extends EventEmitter {
     // 24h cooldown guard — skip unless forced
     if (!force && client.lastCronSyncAt) {
       const hoursSinceSync = (Date.now() - client.lastCronSyncAt.getTime()) / (1000 * 60 * 60);
-      const cooldownHrs = configService.getInt('polling.cronSyncCooldownHrs', 24);
+      const cooldownHrs = configService.getInt('polling.cronSyncCooldownHrs');
       if (hoursSinceSync < cooldownHrs) {
         logger.info(`[CronSync] Skipping ${client.clientId} — synced ${hoursSinceSync.toFixed(1)}h ago (< ${cooldownHrs}h cooldown)`);
         return {

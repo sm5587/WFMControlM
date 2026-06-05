@@ -66,7 +66,7 @@ export default function DBJobs() {
   const { width: leftWidth, dragHandleProps } = useResizablePanel('dbJobs-leftPanel', 360, 200, 600);
 
   // Sortable columns for the jobs table
-  const { sortColumn, sortDirection, handleSort } = useSortState('critical');
+  const { sortColumn, sortDirection, handleSort } = useSortState('pending', 'desc');
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['db-jobs-queue-all'],
@@ -201,10 +201,9 @@ export default function DBJobs() {
         }
       }
     }
-    return results.sort((a, b) => {
-      if (a.job.isCritical !== b.job.isCritical) return a.job.isCritical ? -1 : 1;
-      return a.cluster.localeCompare(b.cluster) || a.clientId.localeCompare(b.clientId);
-    });
+    return results.sort((a, b) =>
+      a.cluster.localeCompare(b.cluster) || a.clientId.localeCompare(b.clientId)
+    );
   }, [jobFilter, clientInfo, clientsData, clusterFilter]);
 
   const nonCriticalFilteredJobs = useMemo(
@@ -612,16 +611,14 @@ export default function DBJobs() {
                       <tbody className="divide-y divide-gray-50">
                         {[...selectedJobs]
                           .sort((a, b) => {
-                            // Critical always first regardless of column sort
-                            if (a.isCritical !== b.isCritical) return a.isCritical ? -1 : 1;
                             const dir = sortDirection === 'asc' ? 1 : -1;
                             switch (sortColumn) {
                               case 'name': return dir * getJobName(a).localeCompare(getJobName(b));
                               case 'param2': return dir * (a.param2 ?? '').localeCompare(b.param2 ?? '');
                               case 'interval': return dir * getJobInterval(a).localeCompare(getJobInterval(b));
                               case 'lastJobTime': return dir * ((getLastJobTime(a) ?? '').localeCompare(getLastJobTime(b) ?? ''));
-                              case 'pending': return dir * (Number(b.jobsPending ?? 0) - Number(a.jobsPending ?? 0));
-                              default: return Number(b.jobsPending ?? 0) - Number(a.jobsPending ?? 0);
+                              case 'pending': return dir * (Number(a.jobsPending ?? 0) - Number(b.jobsPending ?? 0));
+                              default: return dir * (Number(a.jobsPending ?? 0) - Number(b.jobsPending ?? 0));
                             }
                           })
                           .map((job, idx) => {

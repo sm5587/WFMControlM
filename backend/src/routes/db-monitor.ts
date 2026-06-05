@@ -10,6 +10,7 @@ import { db2Pool } from '../services/db2-connection-pool';
 import { db2DirectService } from '../services/db2-direct-service';
 import { prisma } from '../database/prisma';
 import { escalationService } from '../services/escalation-service';
+import { configService } from '../services/config-service';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -119,18 +120,47 @@ router.get('/db-clients/:clientId/test', async (req: Request, res: Response) => 
 
 // GET /api/db-monitor/db-clients/:clientId/batch-status - Grouped batch status
 router.get('/db-clients/:clientId/batch-status', async (req: Request, res: Response) => {
+  const { clientId } = req.params;
   try {
     const days = parseInt(req.query.days as string, 10) || 2;
-    const groups = await db2DirectService.getBatchStatusGrouped(req.params.clientId, days);
+    const groups = await db2DirectService.getBatchStatusGrouped(clientId, days);
+    db2DirectService.patchBatchSummaryClient(clientId, groups, days);
     res.json({ success: true, data: groups });
+
+    // Process escalations for this client in the background, just like batch-status-all does.
+    const criticalJobs = await prisma.criticalDbJob.findMany({
+      where: { clientId },
+      select: { jobName: true },
+    });
+    const criticalNames = new Set(criticalJobs.map(cj => cj.jobName));
+    const criticalGroups = groups.filter(g => criticalNames.has(g.jobType || ''));
+    const criticalStale = criticalGroups.reduce((sum, g) => sum + (g.stalePending || 0), 0);
+    const allStale = groups.reduce((sum, g) => sum + (g.stalePending || 0), 0);
+
+    if (criticalJobs.length > 0 && criticalStale > 0) {
+      const totalPending = criticalGroups.reduce((sum, g) => sum + (g.pending || 0), 0);
+      const availableClients = await db2DirectService.getAvailableClients();
+      const clientServerCodes = new Map(availableClients.map(c => [c.clientId, c.serverCode]));
+      escalationService.processEscalations(
+        [{ clientId, stalePendingCount: criticalStale, totalPending }],
+        clientServerCodes
+      ).catch(err => {
+        logger.error(`Per-client escalation processing error (${clientId}): ${err.message}`);
+      });
+    } else if (allStale <= 0) {
+      // No stale pending left — resolve any open escalation for this client
+      escalationService.resolveClientEscalation(clientId).catch(err => {
+        logger.error(`Per-client escalation resolve error (${clientId}): ${err.message}`);
+      });
+    }
   } catch (error: any) {
     const msg = error.message || 'Failed to fetch batch status';
     const isConnectionError = /ERRORCODE=-4499|SQLSTATE=08001|connection reset|timed out|ECONNREFUSED|ETIMEDOUT/i.test(msg);
-    logger.error(`Batch status error for ${req.params.clientId}: ${msg}`);
+    logger.error(`Batch status error for ${clientId}: ${msg}`);
     res.status(isConnectionError ? 503 : 500).json({
       success: false,
       error: isConnectionError
-        ? `Unable to connect to ${req.params.clientId} database. The server may be unreachable.`
+        ? `Unable to connect to ${clientId} database. The server may be unreachable.`
         : msg,
       connectionError: isConnectionError,
     });
@@ -140,7 +170,7 @@ router.get('/db-clients/:clientId/batch-status', async (req: Request, res: Respo
 // GET /api/db-monitor/db-clients/:clientId/batch-status/:jobType - Batch details for a job type
 router.get('/db-clients/:clientId/batch-status/:jobType', async (req: Request, res: Response) => {
   try {
-    const days = parseInt(req.query.days as string, 10) || 7;
+    const days = parseInt(req.query.days as string, 10) || configService.getInt('engine.dbMonitorBatchDays');
     const planType = (req.query.planType as string) || '';
     const details = await db2DirectService.getBatchStatusDetails(
       req.params.clientId,

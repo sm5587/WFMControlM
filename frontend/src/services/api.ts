@@ -400,6 +400,9 @@ export const escalationsApi = {
   notify: (alertIds?: string[]): Promise<ApiResponse<{ sent: number; skipped: number }>> =>
     api.post('/escalations/notify', { alertIds }),
 
+  testEmail: (): Promise<ApiResponse<{ sent: boolean; recipients: string[]; error?: string; details?: string[] }>> =>
+    api.post('/escalations/test-email'),
+
   notifyPunch: (rows: any[]): Promise<ApiResponse<any>> =>
     api.post('/escalations/notify-punch', { rows }),
 

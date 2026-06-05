@@ -363,6 +363,9 @@ model UnprocPunchAlert {
   suppressUntil   DateTime? // When suppression expires
   suppressReason  String?
 
+  // Email notification tracking
+  emailSentAt     DateTime?
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

@@ -3,26 +3,27 @@ import path from 'path';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
-// Boot-time config — read from env vars first, then overwritten by DB values via applyDbConfig()
+// Boot-time config — env provides bootstrap fallbacks only; AppConfig (DB) wins via applyDbConfig().
+// See .env.example for which vars belong in .env vs Admin → Config.
 export const config = {
   // Server
-  port: parseInt(process.env.PORT || '4000', 10),
+  port: parseInt(process.env.PORT || '0', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
   
   // Database (SQLite)
-  databaseUrl: process.env.DATABASE_URL || 'file:./dev.db',
+  databaseUrl: process.env.DATABASE_URL || '',
   
   // JWT
-  jwtSecret: process.env.JWT_SECRET || 'dev-secret-change-in-production',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '24h',
+  jwtSecret: process.env.JWT_SECRET || '',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '',
 
   // SMTP
   smtp: {
-    host: process.env.SMTP_HOST || 'localhost',
-    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    host: process.env.SMTP_HOST || '',
+    port: parseInt(process.env.SMTP_PORT || '0', 10),
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
-    fromEmail: process.env.ALERT_FROM_EMAIL || 'wfm-controlm@localhost',
+    fromEmail: process.env.ALERT_FROM_EMAIL || '',
   },
   
   // Slack
@@ -36,13 +37,13 @@ export const config = {
 
   // SSH / AppServer connectivity
   ssh: {
-    port: parseInt(process.env.SSH_PORT || '22', 10),
-    timeout: parseInt(process.env.SSH_TIMEOUT || '15000', 10),
+    port: parseInt(process.env.SSH_PORT || '0', 10),
+    timeout: parseInt(process.env.SSH_TIMEOUT || '0', 10),
     username: process.env.SSH_USERNAME || '',
     password: process.env.SSH_PASSWORD || '',
     totpSecret: process.env.SSH_TOTP_SECRET || '',
-    cronEntryPath: process.env.CRON_ENTRY_PATH || '/mount/backup/cronEntry',
-    wfmPathPrefix: process.env.WFM_PATH_PREFIX || '/mount/RWS4',
+    cronEntryPath: process.env.CRON_ENTRY_PATH || '',
+    wfmPathPrefix: process.env.WFM_PATH_PREFIX || '',
     credentialsFile: process.env.SSH_CREDENTIALS_FILE || '',
   },
   
@@ -78,13 +79,13 @@ export const config = {
   },
 
   // Logging
-  logDir: process.env.LOG_DIR || 'logs',
+  logDir: process.env.LOG_DIR || '',
 
   // DB2 Connection Pool — manages SSH+DB2 sessions across 75 clients
   db2Pool: {
-    maxConnections: parseInt(process.env.DB2_POOL_MAX_CONNECTIONS || '10', 10),    // Max simultaneous SSH+DB2 sessions
-    idleTimeoutMs: parseInt(process.env.DB2_POOL_IDLE_TIMEOUT_MS || '300000', 10), // Evict idle connections after 5 min
-    acquireTimeoutMs: parseInt(process.env.DB2_POOL_ACQUIRE_TIMEOUT_MS || '30000', 10), // Max wait for pool slot
+    maxConnections: parseInt(process.env.DB2_POOL_MAX_CONNECTIONS || '0', 10),    // Max simultaneous SSH+DB2 sessions
+    idleTimeoutMs: parseInt(process.env.DB2_POOL_IDLE_TIMEOUT_MS || '0', 10), // Evict idle connections after 5 min
+    acquireTimeoutMs: parseInt(process.env.DB2_POOL_ACQUIRE_TIMEOUT_MS || '0', 10), // Max wait for pool slot
   },
 
   // Engine settings
@@ -106,41 +107,46 @@ export function applyDbConfig(): void {
   const { configService } = require('../services/config-service');
 
   // SECRETS
-  config.jwtSecret        = configService.getString('secrets.jwtSecret', config.jwtSecret);
-  config.jwtExpiresIn     = configService.getString('secrets.jwtExpiresIn', config.jwtExpiresIn);
-  config.smtp.host        = configService.getString('secrets.smtpHost', config.smtp.host);
-  config.smtp.port        = configService.getInt('secrets.smtpPort', config.smtp.port);
-  config.smtp.user        = configService.getString('secrets.smtpUser', config.smtp.user);
-  config.smtp.pass        = configService.getString('secrets.smtpPass', config.smtp.pass);
-  config.smtp.fromEmail   = configService.getString('secrets.smtpFromEmail', config.smtp.fromEmail);
-  config.ssh.username     = configService.getString('secrets.sshUsername', config.ssh.username);
-  config.ssh.password     = configService.getString('secrets.sshPassword', config.ssh.password);
-  config.ssh.totpSecret   = configService.getString('secrets.sshTotpSecret', config.ssh.totpSecret);
-  config.slackWebhookUrl  = configService.getString('secrets.slackWebhookUrl', config.slackWebhookUrl);
-  config.master.username  = configService.getString('secrets.masterUsername', config.master.username);
-  config.master.passwordHash = configService.getString('secrets.masterPasswordHash', config.master.passwordHash);
-  config.keeper.enabled   = configService.getBool('secrets.keeperEnabled', config.keeper.enabled);
-  config.keeper.db2Username = configService.getString('secrets.db2Username', config.keeper.db2Username);
-  config.keeper.db2Password = configService.getString('secrets.db2Password', config.keeper.db2Password);
+  config.jwtSecret        = configService.getString('secrets.jwtSecret');
+  config.jwtExpiresIn     = configService.getString('secrets.jwtExpiresIn');
+  const smtpHost = configService.getString('secrets.smtpHost');
+  config.smtp.host =
+    smtpHost === 'localhost' || smtpHost === '::1' ? '127.0.0.1' : smtpHost;
+  config.smtp.port        = configService.getInt('secrets.smtpPort');
+  if (config.smtp.host === '127.0.0.1' && (!config.smtp.port || config.smtp.port === 587)) {
+    config.smtp.port = 1025;
+  }
+  config.smtp.user        = configService.getString('secrets.smtpUser');
+  config.smtp.pass        = configService.getString('secrets.smtpPass');
+  config.smtp.fromEmail   = configService.getString('secrets.smtpFromEmail');
+  config.ssh.username     = configService.getString('secrets.sshUsername');
+  config.ssh.password     = configService.getString('secrets.sshPassword');
+  config.ssh.totpSecret   = configService.getString('secrets.sshTotpSecret');
+  config.slackWebhookUrl  = configService.getString('secrets.slackWebhookUrl');
+  config.master.username  = configService.getString('secrets.masterUsername');
+  config.master.passwordHash = configService.getString('secrets.masterPasswordHash');
+  config.keeper.enabled   = configService.getBool('secrets.keeperEnabled');
+  config.keeper.db2Username = configService.getString('secrets.db2Username');
+  config.keeper.db2Password = configService.getString('secrets.db2Password');
 
   // INFRA
-  config.port             = configService.getInt('infra.port', config.port);
-  config.nodeEnv          = configService.getString('infra.nodeEnv', config.nodeEnv);
-  config.ssh.port         = configService.getInt('infra.sshPort', config.ssh.port);
-  config.ssh.timeout      = configService.getInt('infra.sshTimeout', config.ssh.timeout);
-  config.ssh.cronEntryPath = configService.getString('infra.sshCronEntryPath', config.ssh.cronEntryPath);
-  config.ssh.wfmPathPrefix = configService.getString('infra.sshWfmPathPrefix', config.ssh.wfmPathPrefix);
-  config.db2Paths.libDir  = configService.getString('infra.db2LibDir', config.db2Paths.libDir);
-  config.db2Paths.jjsPath = configService.getString('infra.db2JjsPath', config.db2Paths.jjsPath);
-  config.db2Pool.maxConnections = configService.getInt('infra.db2PoolMax', config.db2Pool.maxConnections);
-  config.db2Pool.idleTimeoutMs  = configService.getInt('infra.db2PoolIdleMs', config.db2Pool.idleTimeoutMs);
-  config.db2Pool.acquireTimeoutMs = configService.getInt('infra.db2PoolAcquireMs', config.db2Pool.acquireTimeoutMs);
-  config.logDir           = configService.getString('infra.logDir', config.logDir);
+  config.port             = configService.getInt('infra.port');
+  config.nodeEnv          = configService.getString('infra.nodeEnv');
+  config.ssh.port         = configService.getInt('infra.sshPort');
+  config.ssh.timeout      = configService.getInt('infra.sshTimeout');
+  config.ssh.cronEntryPath = configService.getString('infra.sshCronEntryPath');
+  config.ssh.wfmPathPrefix = configService.getString('infra.sshWfmPathPrefix');
+  config.db2Paths.libDir  = configService.getString('infra.db2LibDir');
+  config.db2Paths.jjsPath = configService.getString('infra.db2JjsPath');
+  config.db2Pool.maxConnections = configService.getInt('infra.db2PoolMax');
+  config.db2Pool.idleTimeoutMs  = configService.getInt('infra.db2PoolIdleMs');
+  config.db2Pool.acquireTimeoutMs = configService.getInt('infra.db2PoolAcquireMs');
+  config.logDir           = configService.getString('infra.logDir');
 
   // ENGINE (patch into config.engine)
-  config.engine.pollIntervalMs     = configService.getInt('engine.pollIntervalMs', config.engine.pollIntervalMs);
-  config.engine.maxConcurrentJobs  = configService.getInt('engine.maxConcurrentJobs', config.engine.maxConcurrentJobs);
-  config.engine.heartbeatIntervalMs = configService.getInt('engine.heartbeatIntervalMs', config.engine.heartbeatIntervalMs);
-  config.engine.executionHistoryDays = configService.getInt('engine.executionHistoryDays', config.engine.executionHistoryDays);
-  config.engine.logRetentionDays   = configService.getInt('engine.logRetentionDays', config.engine.logRetentionDays);
+  config.engine.pollIntervalMs     = configService.getInt('engine.pollIntervalMs');
+  config.engine.maxConcurrentJobs  = configService.getInt('engine.maxConcurrentJobs');
+  config.engine.heartbeatIntervalMs = configService.getInt('engine.heartbeatIntervalMs');
+  config.engine.executionHistoryDays = configService.getInt('engine.executionHistoryDays');
+  config.engine.logRetentionDays   = configService.getInt('engine.logRetentionDays');
 }

@@ -7,9 +7,11 @@ import {
 } from 'lucide-react';
 import { dbMonitorApi } from '../../services/api';
 import { useProgressiveBatchData } from '../../hooks/useProgressiveBatchData';
+import { useBatchLookbackDays } from '../../hooks/useBatchLookbackDays';
 import { useDbClientConnections } from '../../hooks/useDbClientConnections';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
+import { useConfig } from '../../contexts/ConfigContext';
 import { useResizablePanel } from '../../hooks/useResizablePanel';
 import { SortableHeader, useSortState } from '../ui/SortableHeader';
 
@@ -21,10 +23,13 @@ const THIRTY_MINUTES = 30 * 60 * 1000;
 
 export default function DBMonitor() {
   const { fmt } = useTimezone();
+  const { getInt } = useConfig();
+  const batchCacheTtlMins = getInt('polling.batchCacheTtlMins', 30);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [expandedJob, setExpandedJob] = useState<{ jobType: string; planType: string } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [days, setDays] = useState(2);
+  const configBatchDays = useBatchLookbackDays();
+  const [days, setDays] = useState(configBatchDays);
   const [clusterFilter, setClusterFilter] = useState('');
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
 
@@ -99,19 +104,26 @@ export default function DBMonitor() {
     try {
       const res = await dbMonitorApi.getBatchStatus(selectedClient.clientId, days);
       const groups = res?.data || [];
-      // Merge into the progressive batch cache
+      // Merge into the shared batch cache (same key as Alerts / Dashboard)
       queryClient.setQueryData(['all-batch-status', days], (old: any) => {
-        if (!old) return old;
+        const base = old ?? { clients: {}, clientNames: {}, pendingAlerts: [], fetchedAt: null };
         const updatedClients = {
-          ...old.clients,
+          ...base.clients,
           [selectedClient.clientId]: { clientId: selectedClient.clientId, groups, loading: false },
         };
+        const clientNames = base.clientNames?.[selectedClient.clientId]
+          ? base.clientNames
+          : { ...base.clientNames, [selectedClient.clientId]: selectedClient.name || selectedClient.clientId };
         return {
-          ...old,
+          ...base,
           clients: updatedClients,
-          pendingAlerts: recomputeAlerts(updatedClients, old.clientNames || {}),
+          clientNames,
+          pendingAlerts: recomputeAlerts(updatedClients, clientNames),
+          fetchedAt: new Date().toISOString(),
         };
       });
+      // Escalation processing runs on the backend after batch-status — invalidate so Escalated tab updates
+      queryClient.invalidateQueries({ queryKey: ['escalated-alerts'] });
     } catch (err: any) {
       queryClient.setQueryData(['all-batch-status', days], (old: any) => {
         if (!old) return old;
@@ -184,7 +196,7 @@ export default function DBMonitor() {
   const batchError = selectedClientGroups?.error;
 
   // Fetch details when a job group is expanded — cached 30 min
-  const { data: detailsData, isLoading: detailsLoading } = useQuery({
+  const { data: detailsData, isLoading: detailsLoading, isError: detailsError, error: detailsErrorObj } = useQuery({
     queryKey: ['batch-details', selectedClient?.clientId, expandedJob?.jobType, expandedJob?.planType, days],
     queryFn: () => dbMonitorApi.getBatchDetails(selectedClient!.clientId, expandedJob!.jobType, expandedJob!.planType, days),
     enabled: !!selectedClient && !!expandedJob,
@@ -231,10 +243,11 @@ export default function DBMonitor() {
           <button
             onClick={() => startBatch()}
             disabled={allBatchFetching}
+            title={`Reloads the cached batch summary (last full DB2 fetch, up to ${batchCacheTtlMins} min old). For live data, refresh one client below.`}
             className="flex items-center gap-2 px-3 py-1.5 text-sm border border-indigo-200 text-indigo-700 rounded-lg hover:bg-indigo-50 disabled:opacity-50"
           >
             <RefreshCw className={`w-4 h-4 ${allBatchFetching ? 'animate-spin' : ''}`} />
-            {allBatchFetching ? 'Refreshing all...' : 'Refresh All Clients'}
+            {allBatchFetching ? 'Reloading cache...' : 'Reload All (cached)'}
           </button>
           <label className="text-sm text-gray-500">Period:</label>
           <select
@@ -257,7 +270,7 @@ export default function DBMonitor() {
           <Loader2 className="w-5 h-5 animate-spin text-indigo-500" />
           <div>
             <p className="text-sm font-medium text-indigo-700">Fetching batch data for all clients...</p>
-            <p className="text-xs text-indigo-500">This may take a few minutes on first load. Data will be cached for 30 minutes.</p>
+            <p className="text-xs text-indigo-500">This may take a few minutes on first load. Data is cached on the server for about {batchCacheTtlMins} minutes.</p>
           </div>
         </div>
       )}
@@ -635,8 +648,12 @@ export default function DBMonitor() {
                                 <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
                                 <span className="ml-2 text-sm text-gray-400">Loading details...</span>
                               </div>
+                            ) : detailsError ? (
+                              <p className="text-sm text-red-600 text-center py-4">
+                                Failed to load details: {(detailsErrorObj as Error)?.message || 'Unknown error'}
+                              </p>
                             ) : jobDetails.length === 0 ? (
-                              <p className="text-sm text-gray-400 text-center py-4">No detail records</p>
+                              <p className="text-sm text-gray-400 text-center py-4">No detail records in the last {days} day{days !== 1 ? 's' : ''}</p>
                             ) : (
                               <>
                               {/* RFX Queue Job Summary */}

@@ -109,7 +109,7 @@ A **Control-M-like** job scheduling and orchestration platform built for **Workf
 # Clone and navigate to project
 cd WFMControlM
 
-# Copy environment config
+# Copy bootstrap env (DATABASE_URL + CONFIG_ENCRYPTION_KEY)
 cp .env.example .env
 
 # Start all services
@@ -125,9 +125,9 @@ open http://localhost:3000
 # 1. Install dependencies
 npm run install:all
 
-# 2. Configure environment
+# 2. Configure bootstrap environment
 cp .env.example .env
-# Edit .env with your PostgreSQL and Redis connection details
+# Set DATABASE_URL and CONFIG_ENCRYPTION_KEY — see .env.example
 
 # 3. Set up database
 cd backend
@@ -303,19 +303,16 @@ WFMControlM/
 
 ## Configuration
 
-All configuration is via environment variables. See `.env.example` for the complete list:
+**Bootstrap (`.env`)** — only what must exist before the database loads. See `.env.example`:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | — | PostgreSQL connection string |
-| `REDIS_URL` | `redis://localhost:6379` | Redis connection for BullMQ |
-| `PORT` | `4000` | Backend server port |
-| `JWT_SECRET` | — | JWT signing secret |
-| `SMTP_HOST` | — | Email server for alerts |
-| `SLACK_WEBHOOK_URL` | — | Slack webhook for alerts |
-| `WFM_API_URL` | — | WFM system API endpoint |
-| `MAX_CONCURRENT_JOBS` | `10` | Max parallel job executions |
-| `POLL_INTERVAL` | `5000` | Pending job poll interval (ms) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | SQLite path (e.g. `file:./dev.db`) |
+| `CONFIG_ENCRYPTION_KEY` | Yes | AES key for encrypting AppConfig secrets |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Seed only | One-time `prisma db seed` bootstrap user |
+| `KEEPER_CONFIG_FILE` | Optional | Keeper `ksm-config.json` path on disk |
+
+**Runtime (AppConfig / Admin → Config)** — SMTP, JWT, port, CORS, SSH, DB2 paths, thresholds, polling, and engine settings. Seeded by `database/dml.sql` or `npm run db:seed`; editable in the UI after login.
 
 ---
 

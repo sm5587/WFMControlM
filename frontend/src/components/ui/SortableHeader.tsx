@@ -49,19 +49,15 @@ export function SortableHeader({
  * Toggle: same column → flip direction. New column → asc.
  */
 export function useSortState(defaultColumn: string, defaultDir: 'asc' | 'desc' = 'asc') {
-  const [sortColumn, setSortColumn] = React.useState(defaultColumn);
-  const [sortDirection, setSortDirection] = React.useState<'asc' | 'desc'>(defaultDir);
+  const [sort, setSort] = React.useState({ column: defaultColumn, direction: defaultDir });
 
   const handleSort = React.useCallback((col: string) => {
-    setSortColumn(prev => {
-      if (prev === col) {
-        setSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
-        return col;
-      }
-      setSortDirection('asc');
-      return col;
-    });
+    setSort((prev) =>
+      prev.column === col
+        ? { column: col, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { column: col, direction: 'asc' as const }
+    );
   }, []);
 
-  return { sortColumn, sortDirection, handleSort };
+  return { sortColumn: sort.column, sortDirection: sort.direction, handleSort };
 }

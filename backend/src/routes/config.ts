@@ -3,7 +3,9 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import { applyDbConfig, config } from '../config';
 import { configService } from '../services/config-service';
+import { alertService } from '../services/alert-service';
 import { requirePermission } from '../middleware';
 import { createServiceLogger } from '../utils/logger';
 import { z } from 'zod';
@@ -52,6 +54,13 @@ router.patch('/', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Re
     const userId = user?.username || user?.userId || 'admin';
 
     const result = await configService.bulkUpdate(updates, userId);
+
+    const smtpTouched = updates.some(u => u.key.startsWith('secrets.smtp'));
+    if (smtpTouched || result.categories.includes('SECRETS')) {
+      applyDbConfig();
+      alertService.reloadTransporter();
+      logger.info(`SMTP settings reloaded after config update (host=${config.smtp.host}:${config.smtp.port})`);
+    }
 
     logger.info(`Config bulk update by ${userId}: ${result.updated} key(s), categories=[${result.categories.join(',')}], restart=${result.requiresRestart}`);
 

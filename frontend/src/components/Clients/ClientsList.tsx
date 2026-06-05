@@ -38,6 +38,7 @@ export default function ClientsList() {
   const [search, setSearch] = useState('');
   const { fmt } = useTimezone();
   const [clusterFilter, setClusterFilter] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
   const [showNewClient, setShowNewClient] = useState(false);
@@ -84,11 +85,18 @@ export default function ClientsList() {
 
   const clients = (data?.data || []) as (Client & { db2Connection?: { host: string; port: string; database: string } | null })[];
 
+  const visibleClients = useMemo(
+    () => (showInactive ? clients : clients.filter(c => c.isActive)),
+    [clients, showInactive]
+  );
+
+  const inactiveCount = useMemo(() => clients.filter(c => !c.isActive).length, [clients]);
+
   // Build cluster groups
   const { clusterGroups, clusterList } = useMemo(() => {
     const filtered = clusterFilter
-      ? clients.filter(c => c.cluster === clusterFilter)
-      : clients;
+      ? visibleClients.filter(c => c.cluster === clusterFilter)
+      : visibleClients;
 
     const groups: Record<string, Client[]> = {};
     for (const c of filtered) {
@@ -107,11 +115,11 @@ export default function ClientsList() {
     });
 
     return { clusterGroups: groups, clusterList: sortedKeys };
-  }, [clients, clusterFilter]);
+  }, [visibleClients, clusterFilter]);
 
   // All unique clusters for filter dropdown
   const allClusters = useMemo(() => {
-    const set = new Set(clients.map(c => c.cluster || 'Unassigned'));
+    const set = new Set(visibleClients.map(c => c.cluster || 'Unassigned'));
     return [...set].sort((a, b) => {
       if (a === 'Unassigned') return 1;
       if (b === 'Unassigned') return -1;
@@ -119,7 +127,7 @@ export default function ClientsList() {
       const numB = parseInt(b.replace(/\D/g, '')) || 0;
       return numA - numB;
     });
-  }, [clients]);
+  }, [visibleClients]);
 
   const toggleCluster = (cl: string) => {
     setCollapsedClusters(prev => {
@@ -138,7 +146,10 @@ export default function ClientsList() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Clients</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {totalFiltered} clients in {clusterList.length} clusters
+            {totalFiltered} client{totalFiltered !== 1 ? 's' : ''} in {clusterList.length} cluster{clusterList.length !== 1 ? 's' : ''}
+            {!showInactive && inactiveCount > 0 && (
+              <span className="text-gray-400"> · {inactiveCount} inactive hidden</span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -211,14 +222,26 @@ export default function ClientsList() {
         >
           <option value="">All Clusters</option>
           {allClusters.map(cl => (
-            <option key={cl} value={cl}>{cl} ({clients.filter(c => (c.cluster || 'Unassigned') === cl).length})</option>
+            <option key={cl} value={cl}>{cl} ({visibleClients.filter(c => (c.cluster || 'Unassigned') === cl).length})</option>
           ))}
         </select>
+        <label className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 cursor-pointer hover:bg-gray-50 select-none">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-300"
+          />
+          Show inactive
+          {inactiveCount > 0 && (
+            <span className="text-xs text-gray-400">({inactiveCount})</span>
+          )}
+        </label>
       </div>
 
       {/* Stats Summary */}
       <div className="grid grid-cols-6 gap-4">
-        <StatCard icon={Building2} label="Total Clients" value={clients.length} color="blue" />
+        <StatCard icon={Building2} label="Shown" value={visibleClients.length} color="blue" />
         <StatCard icon={Layers} label="Clusters" value={allClusters.length} color="indigo" />
         <StatCard
           icon={Activity}
@@ -244,7 +267,14 @@ export default function ClientsList() {
       {isLoading ? (
         <div className="p-12 text-center text-gray-400">Loading clients...</div>
       ) : clusterList.length === 0 ? (
-        <div className="p-12 text-center text-gray-400">No clients found</div>
+        <div className="p-12 text-center text-gray-400">
+          {clients.length === 0 ? 'No clients found' : 'No clients match the current filters'}
+          {!showInactive && inactiveCount > 0 && (
+            <p className="text-xs mt-2 text-gray-400">
+              {inactiveCount} inactive client{inactiveCount !== 1 ? 's are' : ' is'} hidden — turn on Show inactive to view.
+            </p>
+          )}
+        </div>
       ) : (
         <div className="space-y-4">
           {clusterList.map(clusterName => {
@@ -404,7 +434,7 @@ function ClientRow({
 
   return (
     <>
-      <tr className="hover:bg-gray-50 transition-colors">
+      <tr className={`hover:bg-gray-50 transition-colors ${!client.isActive ? 'opacity-60' : ''}`}>
         <td className="px-5 py-3">
           <button onClick={onToggle} className="p-1 text-gray-400 hover:text-gray-600">
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
