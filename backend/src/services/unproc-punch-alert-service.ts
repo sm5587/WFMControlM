@@ -5,6 +5,7 @@
 // ============================================================
 
 import { prisma } from '../database/prisma';
+import { configService } from './config-service';
 import { createServiceLogger } from '../utils/logger';
 
 const logger = createServiceLogger('UnprocPunchAlertService');
@@ -31,7 +32,7 @@ class UnprocPunchAlertService {
         continue; // OPEN is default, no need to include
       }
 
-      if (a.status !== 'OPEN') {
+      if (a.status !== 'OPEN' || a.emailSentAt) {
         result[a.clientId] = {
           id: a.id,
           status: a.status,
@@ -41,6 +42,7 @@ class UnprocPunchAlertService {
           suppressedAt: a.suppressedAt?.toISOString() || null,
           suppressUntil: a.suppressUntil?.toISOString() || null,
           suppressReason: a.suppressReason,
+          emailSentAt: a.emailSentAt?.toISOString() || null,
         };
       }
     }
@@ -104,6 +106,37 @@ class UnprocPunchAlertService {
   /**
    * Reset a punch alert back to OPEN (e.g. when the issue is resolved or manually reopened).
    */
+  /**
+   * Record that a notify email was sent for a client (respects notify cooldown on re-send).
+   */
+  async recordEmailSent(clientIds: string[]): Promise<void> {
+    const now = new Date();
+    for (const clientId of clientIds) {
+      await prisma.unprocPunchAlert.upsert({
+        where: { clientId },
+        create: { clientId, status: 'OPEN', emailSentAt: now },
+        update: { emailSentAt: now },
+      });
+    }
+    logger.info(`Recorded punch notify email for ${clientIds.length} client(s)`);
+  }
+
+  /**
+   * Filter punch rows to those eligible for notify (outside cooldown window).
+   */
+  filterNotifyEligible<T extends { clientId: string }>(
+    rows: T[],
+    statuses: Record<string, { emailSentAt?: string | null }>
+  ): T[] {
+    const cooldownMs = configService.getNotifyCooldownMins() * 60 * 1000;
+    const cutoff = Date.now() - cooldownMs;
+    return rows.filter(r => {
+      const sentAt = statuses[r.clientId]?.emailSentAt;
+      if (!sentAt) return true;
+      return new Date(sentAt).getTime() < cutoff;
+    });
+  }
+
   async resetToOpen(clientId: string): Promise<void> {
     const existing = await prisma.unprocPunchAlert.findUnique({ where: { clientId } });
     if (existing) {

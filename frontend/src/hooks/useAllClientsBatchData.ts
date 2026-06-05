@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { dbMonitorApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
+import { useBatchLookbackDays } from './useBatchLookbackDays';
 
 export interface BatchJobGroup {
   jobType: string;
@@ -24,14 +25,16 @@ export interface AllClientsBatchData {
 
 const THIRTY_MINUTES = 30 * 60 * 1000;
 
-export function useAllClientsBatchData(days: number = 1) {
+export function useAllClientsBatchData(days?: number) {
   const { getInt } = useConfig();
+  const configDays = useBatchLookbackDays();
+  const lookbackDays = days ?? configDays;
   const staleMs = getInt('polling.batchRefreshMins', 30) * 60 * 1000;
 
   return useQuery<AllClientsBatchData>({
-    queryKey: ['all-batch-status', days],
+    queryKey: ['all-batch-status', lookbackDays],
     queryFn: async () => {
-      const res = await dbMonitorApi.getAllBatchStatus(days);
+      const res = await dbMonitorApi.getAllBatchStatus(lookbackDays);
       return res.data;
     },
     staleTime: staleMs,

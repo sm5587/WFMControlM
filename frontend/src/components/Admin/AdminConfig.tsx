@@ -34,7 +34,9 @@ export default function AdminConfig() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [revealed, setRevealed] = useState<Record<string, string>>({});
+  /** Keys whose secret values are currently visible (separate from value — empty secrets are valid). */
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; msg: string } | null>(null);
 
   const { data: rows = [], isLoading } = useQuery<ConfigRow[]>({
@@ -73,10 +75,31 @@ export default function AdminConfig() {
 
   const revealMutation = useMutation({
     mutationFn: (key: string) => configApi.reveal(key),
-    onSuccess: (res: any, key: string) => {
-      setRevealed(prev => ({ ...prev, [key]: res.data.value }));
-    },
   });
+
+  const isRevealed = (key: string) => revealedKeys.has(key);
+
+  const handleRevealToggle = (key: string) => {
+    if (isRevealed(key)) {
+      setRevealedKeys(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+    revealMutation.mutate(key, {
+      onSuccess: (res: any) => {
+        const value = res?.data?.value ?? '';
+        setRevealedValues(prev => ({ ...prev, [key]: value }));
+        setRevealedKeys(prev => new Set(prev).add(key));
+      },
+      onError: (err: Error) => {
+        setToast({ type: 'error', msg: err.message || 'Failed to reveal secret' });
+        setTimeout(() => setToast(null), 5000);
+      },
+    });
+  };
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -135,12 +158,15 @@ export default function AdminConfig() {
 
   const handleDiscard = () => {
     setEdits({});
-    setRevealed({});
+    setRevealedKeys(new Set());
+    setRevealedValues({});
   };
 
   const getDisplayValue = (row: ConfigRow): string => {
     if (edits[row.key] !== undefined) return edits[row.key];
-    if (row.isSecret) return revealed[row.key] ?? row.value;
+    if (row.isSecret && isRevealed(row.key)) {
+      return revealedValues[row.key] ?? '';
+    }
     return row.value;
   };
 
@@ -258,24 +284,20 @@ export default function AdminConfig() {
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
                         <input
-                          type={row.isSecret && !revealed[row.key] && edits[row.key] === undefined ? 'password' : 'text'}
+                          type={row.isSecret && !isRevealed(row.key) && edits[row.key] === undefined ? 'password' : 'text'}
                           value={getDisplayValue(row)}
                           onChange={e => setEdits(prev => ({ ...prev, [row.key]: e.target.value }))}
                           className={`w-full bg-gray-50 border rounded px-2 py-1 text-xs font-mono outline-none focus:ring-1 focus:ring-zebra-400 ${isDirty ? 'border-amber-400 text-amber-800 bg-amber-50' : 'border-gray-200 text-gray-700'}`}
                         />
                         {row.isSecret && (
                           <button
-                            onClick={() => {
-                              if (revealed[row.key]) {
-                                setRevealed(prev => { const n = { ...prev }; delete n[row.key]; return n; });
-                              } else {
-                                revealMutation.mutate(row.key);
-                              }
-                            }}
-                            className="p-1 text-gray-400 hover:text-gray-700 shrink-0"
-                            title={revealed[row.key] ? 'Hide' : 'Reveal'}
+                            type="button"
+                            onClick={() => handleRevealToggle(row.key)}
+                            disabled={revealMutation.isPending && revealMutation.variables === row.key}
+                            className="p-1 text-gray-400 hover:text-gray-700 shrink-0 disabled:opacity-40"
+                            title={isRevealed(row.key) ? 'Hide' : 'Reveal'}
                           >
-                            {revealed[row.key] ? <EyeOff size={14} /> : <Eye size={14} />}
+                            {isRevealed(row.key) ? <EyeOff size={14} /> : <Eye size={14} />}
                           </button>
                         )}
                       </div>

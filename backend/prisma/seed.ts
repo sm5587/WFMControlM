@@ -251,8 +251,11 @@ async function main() {
   console.log('  Created 3 system profiles with permissions');
 
   // 6. Seed bootstrap admin user (credentials from .env, falls back to defaults)
-  const adminUsername = process.env.ADMIN_USERNAME  || 'admin';
-  const adminPassword = process.env.ADMIN_PASSWORD  || 'wfmadmin2026';
+  const adminUsername = process.env.ADMIN_USERNAME;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminUsername || !adminPassword) {
+    throw new Error('ADMIN_USERNAME and ADMIN_PASSWORD must be set for seeding');
+  }
   const adminHash     = await bcrypt.hash(adminPassword, 10);
 
   const adminUser = await prisma.user.create({
@@ -279,39 +282,39 @@ async function main() {
     key: string; value: string; category: string; label: string; description?: string; isSecret?: boolean;
   }> = [
     // ---- SECRETS ----
-    { key: 'secrets.jwtSecret',        value: process.env.JWT_SECRET || 'dev-secret-change-in-production', category: 'SECRETS', label: 'JWT Secret',           description: 'Secret key for signing JWT tokens', isSecret: true },
-    { key: 'secrets.jwtExpiresIn',     value: process.env.JWT_EXPIRES_IN || '24h',                        category: 'SECRETS', label: 'JWT Expiry',            description: 'Token lifetime (e.g. 24h, 7d)', isSecret: false },
-    { key: 'secrets.smtpHost',         value: process.env.SMTP_HOST || 'localhost',                       category: 'SECRETS', label: 'SMTP Host',             description: 'SMTP relay server hostname', isSecret: false },
-    { key: 'secrets.smtpPort',         value: process.env.SMTP_PORT || '587',                             category: 'SECRETS', label: 'SMTP Port',             description: 'SMTP port (587 STARTTLS, 465 implicit TLS, 25 relay)', isSecret: false },
-    { key: 'secrets.smtpUser',         value: process.env.SMTP_USER || '',                                category: 'SECRETS', label: 'SMTP Username',         description: 'SMTP auth username (empty = unauthenticated relay)', isSecret: false },
-    { key: 'secrets.smtpPass',         value: process.env.SMTP_PASS || '',                                category: 'SECRETS', label: 'SMTP Password',         description: 'SMTP auth password', isSecret: true },
-    { key: 'secrets.smtpFromEmail',    value: process.env.ALERT_FROM_EMAIL || 'wfm-controlm@localhost',   category: 'SECRETS', label: 'Email From Address',    description: '"From" address for alert emails', isSecret: false },
-    { key: 'secrets.sshUsername',      value: process.env.SSH_USERNAME || '',                              category: 'SECRETS', label: 'SSH Username',          description: 'SSH service account username', isSecret: false },
-    { key: 'secrets.sshPassword',      value: process.env.SSH_PASSWORD || '',                              category: 'SECRETS', label: 'SSH Password',          description: 'SSH service account password', isSecret: true },
-    { key: 'secrets.sshTotpSecret',    value: process.env.SSH_TOTP_SECRET || '',                           category: 'SECRETS', label: 'SSH TOTP Secret',       description: 'TOTP secret for 2FA SSH auth', isSecret: true },
-    { key: 'secrets.slackWebhookUrl',  value: process.env.SLACK_WEBHOOK_URL || '',                        category: 'SECRETS', label: 'Slack Webhook URL',     description: 'Slack incoming webhook URL for notifications', isSecret: true },
-    { key: 'secrets.masterUsername',    value: process.env.MASTER_USERNAME || '',                           category: 'SECRETS', label: 'Master Username',       description: 'Break-glass admin username', isSecret: false },
-    { key: 'secrets.masterPasswordHash', value: process.env.MASTER_PASSWORD_HASH || '',                    category: 'SECRETS', label: 'Master Password Hash',  description: 'Break-glass admin bcrypt hash', isSecret: true },
-    { key: 'secrets.keeperEnabled',    value: process.env.KEEPER_ENABLED || 'false',                      category: 'SECRETS', label: 'Keeper Enabled',        description: 'Enable Keeper Secrets Manager integration', isSecret: false },
-    { key: 'secrets.db2Username',      value: process.env.DB2_USERNAME || '',                              category: 'SECRETS', label: 'DB2 Username',          description: 'Fallback DB2 username', isSecret: true },
-    { key: 'secrets.db2Password',      value: process.env.DB2_PASSWORD || '',                              category: 'SECRETS', label: 'DB2 Password',          description: 'Fallback DB2 password', isSecret: true },
+    { key: 'secrets.jwtSecret',        value: 'dev-secret-change-in-production', category: 'SECRETS', label: 'JWT Secret',           description: 'Secret key for signing JWT tokens', isSecret: true },
+    { key: 'secrets.jwtExpiresIn',     value: '24h',                        category: 'SECRETS', label: 'JWT Expiry',            description: 'Token lifetime (e.g. 24h, 7d)', isSecret: false },
+    { key: 'secrets.smtpHost',         value: '127.0.0.1',                       category: 'SECRETS', label: 'SMTP Host',             description: 'SMTP relay (127.0.0.1 for Mailpit)', isSecret: false },
+    { key: 'secrets.smtpPort',         value: '1025',                            category: 'SECRETS', label: 'SMTP Port',             description: 'SMTP port (1025 Mailpit local, 587 STARTTLS, 465 TLS)', isSecret: false },
+    { key: 'secrets.smtpUser',         value: '',                                category: 'SECRETS', label: 'SMTP Username',         description: 'SMTP auth username (empty = unauthenticated relay)', isSecret: false },
+    { key: 'secrets.smtpPass',         value: '',                                category: 'SECRETS', label: 'SMTP Password',         description: 'SMTP auth password', isSecret: true },
+    { key: 'secrets.smtpFromEmail',    value: 'wfm-controlm@localhost',   category: 'SECRETS', label: 'Email From Address',    description: '"From" address for alert emails', isSecret: false },
+    { key: 'secrets.sshUsername',      value: '',                              category: 'SECRETS', label: 'SSH Username',          description: 'SSH service account username', isSecret: false },
+    { key: 'secrets.sshPassword',      value: '',                              category: 'SECRETS', label: 'SSH Password',          description: 'SSH service account password', isSecret: true },
+    { key: 'secrets.sshTotpSecret',    value: '',                           category: 'SECRETS', label: 'SSH TOTP Secret',       description: 'TOTP secret for 2FA SSH auth', isSecret: true },
+    { key: 'secrets.slackWebhookUrl',  value: '',                        category: 'SECRETS', label: 'Slack Webhook URL',     description: 'Slack incoming webhook URL for notifications', isSecret: true },
+    { key: 'secrets.masterUsername',    value: '',                           category: 'SECRETS', label: 'Master Username',       description: 'Break-glass admin username', isSecret: false },
+    { key: 'secrets.masterPasswordHash', value: '',                    category: 'SECRETS', label: 'Master Password Hash',  description: 'Break-glass admin bcrypt hash', isSecret: true },
+    { key: 'secrets.keeperEnabled',    value: 'false',                      category: 'SECRETS', label: 'Keeper Enabled',        description: 'Enable Keeper Secrets Manager integration', isSecret: false },
+    { key: 'secrets.db2Username',      value: '',                              category: 'SECRETS', label: 'DB2 Username',          description: 'Fallback DB2 username', isSecret: true },
+    { key: 'secrets.db2Password',      value: '',                              category: 'SECRETS', label: 'DB2 Password',          description: 'Fallback DB2 password', isSecret: true },
 
     // ---- INFRA ----
-    { key: 'infra.port',              value: process.env.PORT || '4000',                                   category: 'INFRA', label: 'HTTP Port',              description: 'HTTP server listen port' },
-    { key: 'infra.nodeEnv',           value: process.env.NODE_ENV || 'development',                        category: 'INFRA', label: 'Node Environment',       description: 'development or production' },
+    { key: 'infra.port',              value: '4000',                                   category: 'INFRA', label: 'HTTP Port',              description: 'HTTP server listen port' },
+    { key: 'infra.nodeEnv',           value: 'development',                        category: 'INFRA', label: 'Node Environment',       description: 'development or production' },
     { key: 'infra.corsOrigins',       value: 'http://localhost:3000,http://localhost:5173',                 category: 'INFRA', label: 'CORS Origins',           description: 'Comma-separated allowed CORS origins' },
     { key: 'infra.bodySizeLimit',     value: '10mb',                                                       category: 'INFRA', label: 'Body Size Limit',        description: 'Express JSON body size limit' },
-    { key: 'infra.sshPort',           value: process.env.SSH_PORT || '22',                                 category: 'INFRA', label: 'SSH Port',               description: 'SSH connection port for app servers' },
-    { key: 'infra.sshTimeout',        value: process.env.SSH_TIMEOUT || '15000',                           category: 'INFRA', label: 'SSH Timeout (ms)',       description: 'SSH connection timeout in milliseconds' },
-    { key: 'infra.sshCronEntryPath',  value: process.env.CRON_ENTRY_PATH || '/mount/backup/cronEntry',    category: 'INFRA', label: 'SSH Cron Entry Path',    description: 'Remote path to read cron entries' },
-    { key: 'infra.sshWfmPathPrefix',  value: process.env.WFM_PATH_PREFIX || '/mount/RWS4',                category: 'INFRA', label: 'WFM Path Prefix',        description: 'Prefix to identify WFM cron jobs' },
-    { key: 'infra.db2ConnDir',        value: process.env.DB2_CONN_DIR || '',                               category: 'INFRA', label: 'DB2 Conn Dir',           description: 'Path to DB2 connection .txt files' },
-    { key: 'infra.db2LibDir',         value: process.env.DB2_LIB_DIR || '',                                category: 'INFRA', label: 'DB2 Lib Dir',            description: 'Path to DB2Connector.js & db2jcc4.jar' },
-    { key: 'infra.db2JjsPath',        value: process.env.JJS_PATH || '',                                   category: 'INFRA', label: 'JJS Path',               description: 'Path to JDK Nashorn jjs binary' },
-    { key: 'infra.db2PoolMax',        value: process.env.DB2_POOL_MAX_CONNECTIONS || '10',                 category: 'INFRA', label: 'DB2 Pool Max',           description: 'Max concurrent DB2 pool connections' },
-    { key: 'infra.db2PoolIdleMs',     value: process.env.DB2_POOL_IDLE_TIMEOUT_MS || '300000',             category: 'INFRA', label: 'DB2 Pool Idle (ms)',     description: 'Evict idle pool connections after this' },
-    { key: 'infra.db2PoolAcquireMs',  value: process.env.DB2_POOL_ACQUIRE_TIMEOUT_MS || '30000',           category: 'INFRA', label: 'DB2 Pool Acquire (ms)',  description: 'Max wait for a DB2 pool slot' },
-    { key: 'infra.logDir',            value: process.env.LOG_DIR || 'logs',                                category: 'INFRA', label: 'Log Directory',          description: 'Log file output directory' },
+    { key: 'infra.sshPort',           value: '22',                                 category: 'INFRA', label: 'SSH Port',               description: 'SSH connection port for app servers' },
+    { key: 'infra.sshTimeout',        value: '15000',                           category: 'INFRA', label: 'SSH Timeout (ms)',       description: 'SSH connection timeout in milliseconds' },
+    { key: 'infra.sshCronEntryPath',  value: '/mount/backup/cronEntry',    category: 'INFRA', label: 'SSH Cron Entry Path',    description: 'Remote path to read cron entries' },
+    { key: 'infra.sshWfmPathPrefix',  value: '/mount/RWS4',                category: 'INFRA', label: 'WFM Path Prefix',        description: 'Prefix to identify WFM cron jobs' },
+    { key: 'infra.db2ConnDir',        value: '',                               category: 'INFRA', label: 'DB2 Conn Dir',           description: 'Path to DB2 connection .txt files' },
+    { key: 'infra.db2LibDir',         value: '',                                category: 'INFRA', label: 'DB2 Lib Dir',            description: 'Path to DB2Connector.js & db2jcc4.jar' },
+    { key: 'infra.db2JjsPath',        value: '',                                   category: 'INFRA', label: 'JJS Path',               description: 'Path to JDK Nashorn jjs binary' },
+    { key: 'infra.db2PoolMax',        value: '10',                 category: 'INFRA', label: 'DB2 Pool Max',           description: 'Max concurrent DB2 pool connections' },
+    { key: 'infra.db2PoolIdleMs',     value: '300000',             category: 'INFRA', label: 'DB2 Pool Idle (ms)',     description: 'Evict idle pool connections after this' },
+    { key: 'infra.db2PoolAcquireMs',  value: '30000',           category: 'INFRA', label: 'DB2 Pool Acquire (ms)',  description: 'Max wait for a DB2 pool slot' },
+    { key: 'infra.logDir',            value: 'logs',                                category: 'INFRA', label: 'Log Directory',          description: 'Log file output directory' },
     { key: 'infra.db2DefaultPort',    value: '50000',                                                      category: 'INFRA', label: 'DB2 Default Port',       description: 'Default DB2 port fallback' },
 
     // ---- POLLING ----
@@ -325,6 +328,7 @@ async function main() {
     { key: 'polling.dbMonitorSyncMins',      value: '30',  category: 'POLLING', label: 'DB Monitor Sync (min)',      description: 'DB Monitor batch sync interval in minutes' },
     { key: 'polling.cronSyncCooldownHrs',    value: '24',  category: 'POLLING', label: 'Cron Sync Cooldown (hrs)',   description: 'Skip cron sync if done less than X hours ago' },
     { key: 'polling.batchCacheTtlMins',      value: '30',  category: 'POLLING', label: 'Batch Cache TTL (min)',      description: 'Backend batch summary cache TTL in minutes' },
+    { key: 'polling.punchCacheTtlMins',      value: '30',  category: 'POLLING', label: 'Punch Cache TTL (min)',      description: 'Unprocessed punch cache TTL in minutes' },
 
     // ---- THRESHOLDS ----
     { key: 'threshold.stalePendingCritical', value: '10',  category: 'THRESHOLDS', label: 'Critical Threshold',       description: 'stalePendingCount >= X → CRITICAL badge' },
@@ -332,6 +336,7 @@ async function main() {
     { key: 'threshold.punchCountMin',        value: '100', category: 'THRESHOLDS', label: 'Min Punch Count',          description: 'Minimum punchCount to flag a client' },
     { key: 'threshold.staleHoursMins',       value: '60',  category: 'THRESHOLDS', label: 'Stale Threshold (min)',     description: 'Minutes before punch/pending is considered stale' },
     { key: 'threshold.escalationMins',       value: '60',  category: 'THRESHOLDS', label: 'Escalation Threshold (min)', description: 'Pending > X mins → escalated to Red tab' },
+    { key: 'threshold.notifyCooldownMins',   value: '60',  category: 'THRESHOLDS', label: 'Notify Cooldown (min)',    description: 'Minutes before notify icon reappears after email sent' },
     { key: 'threshold.jobPriorityCritical',  value: '8',   category: 'THRESHOLDS', label: 'Job Priority Critical',    description: 'Job priority >= X → CRITICAL color' },
     { key: 'threshold.jobPriorityWarning',   value: '5',   category: 'THRESHOLDS', label: 'Job Priority Warning',     description: 'Job priority >= X → WARNING color' },
     { key: 'threshold.purgeRowsRed',         value: '10000', category: 'THRESHOLDS', label: 'Purge Rows Red',         description: 'Admin purge count > X → red highlight' },
@@ -361,6 +366,7 @@ async function main() {
     { key: 'engine.dbMonitorBatchDays',   value: '2',       category: 'ENGINE', label: 'DB Monitor Batch Days',   description: 'Default batch summary window at startup' },
 
     // ---- DISPLAY ----
+    { key: 'display.appName',                value: 'WFM Watch',    category: 'DISPLAY', label: 'Application Name',       description: 'Product name shown in UI, emails, and API health' },
     { key: 'display.defaultTimezone',        value: 'Asia/Kolkata', category: 'DISPLAY', label: 'Default Timezone',      description: 'Default timezone when user has none set' },
     { key: 'display.defaultBatchDays',       value: '2',            category: 'DISPLAY', label: 'Default Batch Days',     description: 'Default batch days shown on pages' },
     { key: 'display.panelMinWidth',          value: '160',          category: 'DISPLAY', label: 'Panel Min Width (px)',   description: 'Resizable panel min width in pixels' },

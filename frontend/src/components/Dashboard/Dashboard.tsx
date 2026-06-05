@@ -9,6 +9,7 @@ import {
 import { jobsApi, unprocessedPunchApi, escalationsApi } from '../../services/api';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
 import { useTimezone } from '../../hooks/useTimezone';
+import { useAppName } from '../../contexts/ConfigContext';
 
 // ---- Widget registry ----
 type WidgetId =
@@ -40,6 +41,7 @@ function loadHidden(): Set<WidgetId> {
 }
 
 export default function Dashboard() {
+  const appName = useAppName();
   const { data: allBatchData, isLoading: batchLoading, dataUpdatedAt: batchUpdatedAt } = useAllClientsBatchData();
 
   const { data: jobsData } = useQuery({
@@ -133,7 +135,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">
-            WFM Watch Overview
+            {appName} Overview
             {batchUpdatedAt > 0 && (
               <span className="ml-2 text-gray-400">. Data as of {fmt(new Date(batchUpdatedAt).toISOString(), 'time')}</span>
             )}

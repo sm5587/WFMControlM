@@ -3,12 +3,14 @@
 // Provides typed getters for frontend components.
 // ============================================================
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { configApi } from '../services/api';
+import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME } from '../constants/app-display';
 
 interface ConfigContextValue {
   config: Record<string, string>;
   loaded: boolean;
+  appName: string;
   getString: (key: string, fallback: string) => string;
   getInt: (key: string, fallback: number) => number;
   getFloat: (key: string, fallback: number) => number;
@@ -19,6 +21,7 @@ interface ConfigContextValue {
 const ConfigContext = createContext<ConfigContextValue>({
   config: {},
   loaded: false,
+  appName: DEFAULT_APP_NAME,
   getString: (_, fb) => fb,
   getInt: (_, fb) => fb,
   getFloat: (_, fb) => fb,
@@ -56,6 +59,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, []);
 
   const getString = (key: string, fallback: string) => config[key] ?? fallback;
+  const appName = useMemo(() => {
+    const name = getString(APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME).trim();
+    return name || DEFAULT_APP_NAME;
+  }, [config]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    document.title = `${appName} | Job Monitoring & Alerting`;
+  }, [loaded, appName]);
   const getInt = (key: string, fallback: number) => {
     const v = config[key];
     if (v === undefined) return fallback;
@@ -75,7 +87,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <ConfigContext.Provider value={{ config, loaded, getString, getInt, getFloat, getBool, reload: load }}>
+    <ConfigContext.Provider value={{ config, loaded, appName, getString, getInt, getFloat, getBool, reload: load }}>
       {children}
     </ConfigContext.Provider>
   );
@@ -83,4 +95,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
 export function useConfig() {
   return useContext(ConfigContext);
+}
+
+export function useAppName(): string {
+  return useContext(ConfigContext).appName;
 }

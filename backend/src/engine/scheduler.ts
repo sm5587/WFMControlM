@@ -49,7 +49,7 @@ export class Scheduler extends EventEmitter {
       return;
     }
 
-    logger.info('Starting WFM Control-M Scheduler...');
+    logger.info(`Starting ${configService.getAppName()} Scheduler...`);
     this.isRunning = true;
 
     // Load and schedule all active cron jobs
@@ -63,7 +63,7 @@ export class Scheduler extends EventEmitter {
 
     // Start upcoming job scanner
     await this.scanUpcomingJobs();
-    const upcomingScanMs = configService.getInt('engine.upcomingScanIntervalMins', 60) * 60 * 1000;
+    const upcomingScanMs = configService.getInt('engine.upcomingScanIntervalMins') * 60 * 1000;
     this.upcomingScanInterval = setInterval(
       () => this.scanUpcomingJobs(),
       upcomingScanMs
@@ -270,9 +270,9 @@ export class Scheduler extends EventEmitter {
       });
 
       const now = Date.now();
-      const upcomingScanMins = configService.getInt('engine.upcomingScanIntervalMins', 60);
+      const upcomingScanMins = configService.getInt('engine.upcomingScanIntervalMins');
       const windowEnd = now + upcomingScanMins * 60 * 1000;
-      const checkDelayMs = configService.getInt('engine.postRunCheckDelayMins', 30) * 60 * 1000;
+      const checkDelayMs = configService.getInt('engine.postRunCheckDelayMins') * 60 * 1000;
       let scheduled = 0;
 
       for (const job of jobs) {

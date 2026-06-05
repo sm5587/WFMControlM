@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { Activity, Lock, User, Eye, EyeOff, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useAppName } from '../../contexts/ConfigContext';
 
 export default function LoginPage() {
+  const appName = useAppName();
   const { login, sessionExpired } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -31,7 +33,7 @@ export default function LoginPage() {
           <div className="flex items-center gap-3 mb-2">
             <Activity className="w-10 h-10 text-zebra-400" />
             <div>
-              <h1 className="text-2xl font-bold text-white tracking-tight">WFM Watch</h1>
+              <h1 className="text-2xl font-bold text-white tracking-tight">{appName}</h1>
               <p className="text-xs text-slate-400">Job Monitoring & Alerting Platform</p>
             </div>
           </div>

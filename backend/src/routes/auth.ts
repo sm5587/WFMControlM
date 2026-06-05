@@ -84,15 +84,22 @@ router.post('/register', async (req: Request, res: Response) => {
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body || {};
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+
+    logger.info(`[LOGIN] Attempt user=${username || 'missing'} ip=${ip}`);
 
     if (!username || !password) {
+      logger.warn(`[LOGIN] Missing credentials user=${username || 'missing'} ip=${ip}`);
       return res.status(400).json({ success: false, error: 'Username and password required' });
+    }
+
+    if (!config.jwtSecret || !config.jwtExpiresIn) {
+      logger.error(`[LOGIN] JWT config missing. jwtSecretLen=${config.jwtSecret?.length || 0} jwtExpiresIn=${config.jwtExpiresIn || '(empty)'} ip=${ip}`);
+      return res.status(500).json({ success: false, error: 'Authentication service is not configured' });
     }
 
     // ── Break-glass master account (bypasses DB, granted all permissions) ───
     if (config.master.username && username === config.master.username) {
-      const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-
       if (!config.master.passwordHash) {
         logger.warn(`[SECURITY] Master login attempted but MASTER_PASSWORD_HASH not set — denied (IP: ${ip})`);
         return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -133,15 +140,18 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({ where: { username } });
     if (!user || !user.isActive) {
+      logger.warn(`[LOGIN] Invalid user or inactive user=${username} ip=${ip}`);
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) {
+      logger.warn(`[LOGIN] Invalid password user=${username} ip=${ip}`);
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     const token = await signToken(user.id, user.username, user.displayName, user.timezone);
+    logger.info(`[LOGIN] Success user=${username} ip=${ip}`);
 
     res.json({
       success: true,
@@ -151,6 +161,11 @@ router.post('/login', async (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
+    logger.error(`[LOGIN] Unexpected error: ${err.message}`, {
+      stack: err.stack,
+      username: req.body?.username || 'missing',
+      ip: req.ip || req.socket?.remoteAddress || 'unknown',
+    });
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -9,6 +9,7 @@ import utcPlugin from 'dayjs/plugin/utc';
 import tzPlugin from 'dayjs/plugin/timezone';
 import { prisma } from '../database/prisma';
 import { config } from '../config';
+import { configService } from './config-service';
 import { createServiceLogger } from '../utils/logger';
 import { AlertSeverity, AlertChannel, AlertTriggerType } from '../models/types';
 import { EventEmitter } from 'events';
@@ -36,26 +37,63 @@ export class AlertService extends EventEmitter {
   }
 
   /**
+   * Normalize SMTP host/port for nodemailer.
+   * On Windows, "localhost" often resolves to IPv6 (::1) while Mailpit binds IPv4 only.
+   * Port 0 or legacy 587 with a local host → use Mailpit default 1025.
+   */
+  private resolveSmtpEndpoint(): { host: string; port: number } | null {
+    const rawHost = (config.smtp.host || '').trim();
+    if (!rawHost) return null;
+
+    const host =
+      rawHost === 'localhost' || rawHost === '::1' || rawHost === '[::1]'
+        ? '127.0.0.1'
+        : rawHost;
+
+    let port = config.smtp.port;
+    if (!Number.isFinite(port) || port <= 0) {
+      port = host === '127.0.0.1' ? 1025 : 587;
+    } else if (host === '127.0.0.1' && port === 587) {
+      // AppConfig still on corporate default — prefer Mailpit when targeting loopback
+      port = 1025;
+      logger.warn('SMTP port 587 with localhost — using 1025 (Mailpit). Update secrets.smtpPort in Admin > Config.');
+    }
+
+    return { host, port };
+  }
+
+  /**
    * Initialize email transporter
    */
   private initializeEmailTransporter(): void {
-    if (config.smtp.host) {
-      const hasAuth = !!(config.smtp.user);
-      const transportOptions: nodemailer.TransportOptions = {
-        host: config.smtp.host,
-        port: config.smtp.port,
-        secure: config.smtp.port === 465,
-        // For internal/unauthenticated relays, disable STARTTLS requirement
-        ...(hasAuth
-          ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
-          : { ignoreTLS: true }),
-        tls: { rejectUnauthorized: false },
-      } as nodemailer.TransportOptions;
-      this.emailTransporter = nodemailer.createTransport(transportOptions);
-      logger.info(`Email transporter initialized (host=${config.smtp.host}:${config.smtp.port}, auth=${hasAuth ? 'yes' : 'none'})`);
-    } else {
-      logger.warn('Email transporter not configured - SMTP_HOST not set, email alerts disabled');
+    this.emailTransporter = null;
+    const endpoint = this.resolveSmtpEndpoint();
+    if (!endpoint) {
+      logger.warn('Email transporter not configured - SMTP host not set, email alerts disabled');
+      return;
     }
+
+    const { host, port } = endpoint;
+    const hasAuth = !!(config.smtp.user);
+    const transportOptions: nodemailer.TransportOptions = {
+      host,
+      port,
+      secure: port === 465,
+      family: 4, // prefer IPv4 (avoids ECONNREFUSED on ::1)
+      ...(hasAuth
+        ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
+        : { ignoreTLS: true }),
+      tls: { rejectUnauthorized: false },
+    } as nodemailer.TransportOptions;
+    this.emailTransporter = nodemailer.createTransport(transportOptions);
+    logger.info(`Email transporter initialized (host=${host}:${port}, auth=${hasAuth ? 'yes' : 'none'})`);
+  }
+
+  /**
+   * Rebuild transporter from current in-memory config values.
+   */
+  reloadTransporter(): void {
+    this.initializeEmailTransporter();
   }
 
   /**
@@ -77,8 +115,8 @@ export class AlertService extends EventEmitter {
   ): Promise<{ accepted: string[]; rejected: string[] }> {
     if (!this.emailTransporter) {
       throw new Error(
-        `SMTP not configured — set SMTP_HOST and SMTP_USER environment variables ` +
-        `(current: host="${config.smtp.host || 'not set'}", user="${config.smtp.user || 'not set'}")`
+        `SMTP not configured — set secrets.smtpHost in Admin > Config ` +
+        `(current: host="${config.smtp.host || 'not set'}", port=${config.smtp.port || 0})`
       );
     }
     if (recipients.length === 0) {
@@ -201,6 +239,7 @@ export class AlertService extends EventEmitter {
 
     const color = severityColors[payload.severity] || '#6b7280';
     const icon = severityIcons[payload.severity] || '⚠️';
+    const appName = configService.getAppName();
     const now = dayjs().tz('Asia/Kolkata');
     const timestamp = now.format('DD MMM YYYY HH:mm') + ' IST';
 
@@ -225,7 +264,7 @@ export class AlertService extends EventEmitter {
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
         <!-- Header -->
         <div style="background:${color};padding:20px 24px;">
-          <h2 style="margin:0;color:#ffffff;font-size:18px;font-weight:600;">${icon} WFM Control-M Alert</h2>
+          <h2 style="margin:0;color:#ffffff;font-size:18px;font-weight:600;">${icon} ${appName} Alert</h2>
           <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:13px;">${payload.severity} · ${payload.triggerType.replace(/_/g, ' ')}</p>
         </div>
 
@@ -247,7 +286,7 @@ export class AlertService extends EventEmitter {
         <!-- Footer -->
         <div style="background:#f9fafb;padding:12px 24px;border-top:1px solid #f3f4f6;">
           <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;">
-            WFM Control-M · Job Orchestration Platform · Zebra Technologies
+            ${appName} · Job Orchestration Platform · Zebra Technologies
           </p>
         </div>
       </div>
@@ -256,7 +295,7 @@ export class AlertService extends EventEmitter {
     await this.emailTransporter.sendMail({
       from: config.smtp.fromEmail,
       to: recipients.join(', '),
-      subject: `[${payload.severity}] WFM Control-M: ${payload.title}`,
+      subject: `[${payload.severity}] ${appName}: ${payload.title}`,
       html,
     });
 
@@ -277,9 +316,10 @@ export class AlertService extends EventEmitter {
       EMERGENCY: '🚨',
     };
 
+    const appName = configService.getAppName();
     const slackPayload = {
       channel: channel || undefined,
-      username: 'WFM Control-M',
+      username: appName,
       icon_emoji: ':robot_face:',
       attachments: [{
         color: payload.severity === 'CRITICAL' || payload.severity === 'EMERGENCY' ? 'danger' :

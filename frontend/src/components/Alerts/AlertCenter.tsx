@@ -10,6 +10,7 @@ import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useConfig } from '../../contexts/ConfigContext';
+import { isNotifyEligible, minutesUntilNotifyEligible } from '../../utils/notify';
 
 // ---- Types ----
 interface EscalatedAlert {
@@ -62,9 +63,18 @@ export default function AlertCenter() {
   const { getInt } = useConfig();
   const canAck         = usePermission('ALERTS_ACK',          'write');
   const canSuppress    = usePermission('ALERTS_SUPPRESS',     'write');
+  const canNotify      = usePermission('ALERTS_NOTIFY',       'write');
   const canManageRecip = usePermission('RECIPIENTS_MANAGE',   'write');
   const showUnprocPunchTab = getInt('ui.showUnprocPunchTab', 0) === 1;
+  const notifyCooldownMins = getInt('threshold.notifyCooldownMins', 60);
   const [activeTab, setActiveTab] = useState<'pending' | 'escalated' | 'unproc-punch'>('pending');
+  const [notifyTick, setNotifyTick] = useState(0);
+
+  // Re-check notify eligibility when cooldown expires (without waiting for refetch)
+  useEffect(() => {
+    const id = setInterval(() => setNotifyTick(t => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   // ---- Unproc punch stale data (from cache) ----
   const { data: punchRes } = useQuery({
@@ -220,8 +230,22 @@ export default function AlertCenter() {
   const ackedAlerts = filteredEscalated.filter(a => a.status === 'ACKNOWLEDGED');
   const suppressedAlerts = filteredEscalated.filter(a => a.status === 'SUPPRESSED');
 
+  const notifiableOpenAlerts = useMemo(
+    () => openAlerts.filter(a => isNotifyEligible(a.emailSentAt, notifyCooldownMins)),
+    [openAlerts, notifyCooldownMins, notifyTick]
+  );
+
+  const notifiablePunchRows = useMemo(
+    () => stalePunchRows.filter(r => {
+      const sentAt = punchAlertStatuses[r.clientId]?.emailSentAt;
+      return isNotifyEligible(sentAt, notifyCooldownMins);
+    }),
+    [stalePunchRows, punchAlertStatuses, notifyCooldownMins, notifyTick]
+  );
+
   // ---- Mutations ----
   const invalidateEsc = () => queryClient.invalidateQueries({ queryKey: ['escalated-alerts'] });
+  const invalidatePunchStatuses = () => queryClient.invalidateQueries({ queryKey: ['punch-alert-statuses'] });
 
   const ackMut = useMutation({
     mutationFn: (id: string) => escalationsApi.acknowledge(id),
@@ -237,6 +261,7 @@ export default function AlertCenter() {
   const notifyPunchMut = useMutation({
     mutationFn: (rows: any[]) => escalationsApi.notifyPunch(rows),
     onSuccess: (res: any) => {
+      invalidatePunchStatuses();
       const d = res?.data;
       if (!d) return;
       if (d.error) {
@@ -258,8 +283,6 @@ export default function AlertCenter() {
       setNotifyResult({ type: 'error', message: err?.response?.data?.error ?? err.message ?? 'Failed to send notification' });
     },
   });
-
-  const invalidatePunchStatuses = () => queryClient.invalidateQueries({ queryKey: ['punch-alert-statuses'] });
 
   const punchAckMut = useMutation({
     mutationFn: (clientId: string) => escalationsApi.acknowledgePunch(clientId),
@@ -317,6 +340,28 @@ export default function AlertCenter() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['escalation-recipients'] }),
   });
 
+  const testEmailMut = useMutation({
+    mutationFn: () => escalationsApi.testEmail(),
+    onSuccess: (res: any) => {
+      const d = res?.data;
+      if (d?.error && !d?.sent) {
+        setNotifyResult({ type: 'error', message: d.error, details: d.details });
+      } else if (d?.sent) {
+        setNotifyResult({
+          type: 'success',
+          message: `Test email sent to ${d.recipients?.length ?? 0} recipient(s). Check Mailpit at http://localhost:8025`,
+          details: d.details,
+        });
+      }
+    },
+    onError: (err: any) => {
+      setNotifyResult({
+        type: 'error',
+        message: err?.response?.data?.error ?? err.message ?? 'Test email failed',
+      });
+    },
+  });
+
   // ============================================================
   return (
     <div className="p-6 space-y-6">
@@ -327,12 +372,12 @@ export default function AlertCenter() {
           <h1 className="text-2xl font-bold text-gray-900">Alert Center</h1>
           <p className="text-sm text-gray-500 mt-1">Monitor pending jobs and escalated alerts</p>
         </div>
-        {canManageRecip && (
+        {(canManageRecip || canNotify) && (
           <button
             onClick={() => setShowRecipients(true)}
             className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
           >
-            <Mail className="w-4 h-4" /> Manage Recipients
+            <Mail className="w-4 h-4" /> {canManageRecip ? 'Manage Recipients' : 'Recipients'}
           </button>
         )}
       </div>
@@ -362,9 +407,9 @@ export default function AlertCenter() {
         >
           <AlertTriangle className="w-4 h-4" />
           Escalated (&gt;{getInt('threshold.escalationMins', 60)} min)
-          {openAlerts.length > 0 && (
+          {(openAlerts.length + punchStatusCounts.open + punchStatusCounts.acked) > 0 && (
             <span className="px-1.5 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-600">
-              {openAlerts.length}
+              {openAlerts.length + punchStatusCounts.open + punchStatusCounts.acked}
             </span>
           )}
         </button>
@@ -513,9 +558,9 @@ export default function AlertCenter() {
                 <p className="text-xs text-gray-500 mt-0.5">Acknowledge, suppress, or notify your team via email.</p>
               </div>
             </div>
-            {openAlerts.length > 0 && (
+            {canNotify && notifiableOpenAlerts.length > 0 && (
               <button
-                onClick={() => { setNotifyResult(null); notifyMut.mutate(openAlerts.map(a => a.id)); }}
+                onClick={() => { setNotifyResult(null); notifyMut.mutate(notifiableOpenAlerts.map(a => a.id)); }}
                 disabled={notifyMut.isPending}
                 className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-100 rounded-lg hover:bg-amber-200 disabled:opacity-50 flex-shrink-0"
               >
@@ -662,7 +707,20 @@ export default function AlertCenter() {
                         <td className="px-4 py-3 text-xs text-gray-500">{fmt(a.firstSeenAt)}</td>
                         <td className="px-4 py-3 text-center text-xs">
                           {a.emailSentAt
-                            ? <span className="inline-flex items-center gap-1 text-green-500" title={`Sent ${fmt(a.emailSentAt)}`}><CheckCircle className="w-3 h-3" />Sent</span>
+                            ? (() => {
+                                const minsLeft = minutesUntilNotifyEligible(a.emailSentAt, notifyCooldownMins);
+                                const inCooldown = minsLeft > 0;
+                                return (
+                                  <span
+                                    className={`inline-flex items-center gap-1 ${inCooldown ? 'text-green-500' : 'text-gray-400'}`}
+                                    title={inCooldown
+                                      ? `Sent ${fmt(a.emailSentAt)} — notify again in ${minsLeft} min`
+                                      : `Sent ${fmt(a.emailSentAt)} — notify available`}
+                                  >
+                                    <CheckCircle className="w-3 h-3" />Sent
+                                  </span>
+                                );
+                              })()
                             : <span className="text-gray-300">–</span>}
                         </td>
                         <td className="px-4 py-3">
@@ -679,7 +737,7 @@ export default function AlertCenter() {
                                     <BellOff className="w-4 h-4" />
                                   </button>
                                 )}
-                                {a.status === 'OPEN' && (
+                                {canNotify && a.status === 'OPEN' && isNotifyEligible(a.emailSentAt, notifyCooldownMins) && (
                                   <button onClick={() => { setNotifyResult(null); notifyMut.mutate([a.id]); }} className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg" title="Send email">
                                     <Send className="w-4 h-4" />
                                   </button>
@@ -715,9 +773,9 @@ export default function AlertCenter() {
                       <p className="text-xs text-amber-600 mt-0.5">Acknowledge, suppress, or notify your team.</p>
                     </div>
                   </div>
-                  {stalePunchRows.length > 0 && (
+                  {canNotify && notifiablePunchRows.length > 0 && (
                     <button
-                      onClick={() => { setNotifyResult(null); notifyPunchMut.mutate(stalePunchRows); }}
+                      onClick={() => { setNotifyResult(null); notifyPunchMut.mutate(notifiablePunchRows); }}
                       disabled={notifyPunchMut.isPending}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white transition-colors flex-shrink-0"
                     >
@@ -844,9 +902,9 @@ export default function AlertCenter() {
               <p className="text-sm font-medium text-amber-800">Clients with &gt;{getInt('threshold.punchCountMin', 100)} unprocessed punches stale for more than {getInt('threshold.staleHoursMins', 60)} minutes</p>
               <p className="text-xs text-amber-600 mt-0.5">Acknowledge, suppress, or notify your team via email.</p>
             </div>
-            {stalePunchRows.length > 0 && (
+            {canNotify && notifiablePunchRows.length > 0 && (
               <button
-                onClick={() => notifyPunchMut.mutate(stalePunchRows)}
+                onClick={() => notifyPunchMut.mutate(notifiablePunchRows)}
                 disabled={notifyPunchMut.isPending}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white transition-colors"
               >
@@ -986,7 +1044,7 @@ export default function AlertCenter() {
                                     <BellOff className="w-4 h-4" />
                                   </button>
                                 )}
-                                {status === 'OPEN' && (
+                                {canNotify && status === 'OPEN' && isNotifyEligible(st?.emailSentAt, notifyCooldownMins) && (
                                   <button onClick={() => { setNotifyResult(null); notifyPunchMut.mutate([r]); }} className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg" title="Send email for this client">
                                     <Send className="w-4 h-4" />
                                   </button>
@@ -1119,6 +1177,18 @@ export default function AlertCenter() {
               <button onClick={() => setShowRecipients(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-sm text-gray-500">Team members who receive email when alerts are escalated.</p>
+
+            {canNotify && (
+              <button
+                type="button"
+                onClick={() => { setNotifyResult(null); testEmailMut.mutate(); }}
+                disabled={testEmailMut.isPending}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 disabled:opacity-50"
+              >
+                <Send className="w-4 h-4" />
+                {testEmailMut.isPending ? 'Sending test…' : 'Send test email (Mailpit)'}
+              </button>
+            )}
 
             {canManageRecip && (
               <div className="flex gap-2">

@@ -7,14 +7,28 @@
 import { prisma } from '../database/prisma';
 import { alertService } from './alert-service';
 import { configService } from './config-service';
+import { db2DirectService, BatchJobGroup } from './db2-direct-service';
 import { createServiceLogger } from '../utils/logger';
+import { buildQueueBuildupNotifyEmail, escHtml } from '../email/notify-email-templates';
 
 function getEscalationThresholdDate(): Date {
-  const mins = configService.getInt('threshold.escalationMins', 60);
+  const mins = configService.getInt('threshold.escalationMins');
+  return new Date(Date.now() - mins * 60 * 1000);
+}
+
+function getNotifyCooldownDate(): Date {
+  const mins = configService.getNotifyCooldownMins();
   return new Date(Date.now() - mins * 60 * 1000);
 }
 
 const logger = createServiceLogger('EscalationService');
+
+export interface ImpactedJobRow {
+  jobType: string;
+  planType: string;
+  stalePending: number;
+  pending: number;
+}
 
 export interface EscalatedAlertSummary {
   id: string;
@@ -38,6 +52,67 @@ export interface EscalatedAlertSummary {
 }
 
 class EscalationService {
+  /**
+   * Critical job types with stale pending for a client (from batch groups + CriticalDbJob).
+   */
+  private filterImpactedJobs(
+    clientId: string,
+    groups: BatchJobGroup[],
+    criticalSet: Set<string>
+  ): ImpactedJobRow[] {
+    return groups
+      .filter(g => criticalSet.has(`${clientId}::${g.jobType || ''}`) && (g.stalePending || 0) > 0)
+      .map(g => ({
+        jobType: (g.jobType || '').trim(),
+        planType: (g.planType || '').trim(),
+        stalePending: g.stalePending || 0,
+        pending: g.pending || 0,
+      }))
+      .sort((a, b) => b.stalePending - a.stalePending);
+  }
+
+  /**
+   * Resolve impacted job types per client for notification emails.
+   */
+  private async getImpactedJobsByClient(clientIds: string[]): Promise<Map<string, ImpactedJobRow[]>> {
+    const uniqueIds = [...new Set(clientIds)];
+    const result = new Map<string, ImpactedJobRow[]>();
+
+    if (uniqueIds.length === 0) return result;
+
+    const criticalJobs = await prisma.criticalDbJob.findMany({
+      where: { clientId: { in: uniqueIds } },
+      select: { clientId: true, jobName: true },
+    });
+    const criticalSet = new Set(criticalJobs.map(cj => `${cj.clientId}::${cj.jobName}`));
+    const days = configService.getInt('engine.dbMonitorBatchDays');
+
+    let batchSummary: Awaited<ReturnType<typeof db2DirectService.getAllBatchStatusSummary>> | null = null;
+    try {
+      batchSummary = await db2DirectService.getAllBatchStatusSummary(days);
+    } catch (err: any) {
+      logger.warn(`[Notify] Batch summary unavailable for job types: ${err.message}`);
+    }
+
+    for (const clientId of uniqueIds) {
+      const cachedGroups = batchSummary?.clients[clientId]?.groups;
+      if (cachedGroups?.length) {
+        result.set(clientId, this.filterImpactedJobs(clientId, cachedGroups, criticalSet));
+        continue;
+      }
+
+      try {
+        const groups = await db2DirectService.getBatchStatusGrouped(clientId, days);
+        result.set(clientId, this.filterImpactedJobs(clientId, groups, criticalSet));
+      } catch (err: any) {
+        logger.warn(`[Notify] Could not load batch groups for ${clientId}: ${err.message}`);
+        result.set(clientId, []);
+      }
+    }
+
+    return result;
+  }
+
   /**
    * Check current pending alerts and escalate any that have been pending > 1 hour.
    * Called after batch-status-all data is fetched.
@@ -111,6 +186,23 @@ class EscalationService {
         });
         logger.info(`Escalated alert resolved for ${oa.clientId} — no longer pending`);
       }
+    }
+  }
+
+  /**
+   * Resolve any open escalated alerts for a single client (used by per-client refresh).
+   */
+  async resolveClientEscalation(clientId: string): Promise<void> {
+    const now = new Date();
+    const open = await prisma.escalatedAlert.findMany({
+      where: { clientId, resolvedAt: null },
+    });
+    for (const oa of open) {
+      await prisma.escalatedAlert.update({
+        where: { id: oa.id },
+        data: { resolvedAt: now, status: 'OPEN' },
+      });
+      logger.info(`Escalated alert resolved for ${clientId} — no longer pending (per-client refresh)`);
     }
   }
 
@@ -207,14 +299,15 @@ class EscalationService {
     details: string[];
   }> {
     const now = new Date();
-    const oneHourAgo = getEscalationThresholdDate();
+    const notifyCooldownSince = getNotifyCooldownDate();
     const details: string[] = [];
 
     logger.info(`[Notify] ===== Notify Team triggered${alertIds?.length ? ` for ${alertIds.length} alert(s)` : ' (all open alerts)'} =====`);
 
     // ── 1. Check SMTP config ───────────────────────────────────────────────
     if (!alertService.isEmailConfigured()) {
-      const err = 'SMTP not configured — set SMTP_HOST and SMTP_USER in environment variables';
+      const err =
+        'SMTP not configured — set secrets.smtpHost in Admin > Config (e.g. localhost:1025 for Mailpit) and restart the backend';
       logger.error(`[Notify] ${err}`);
       return { sent: 0, skipped: 0, failed: 0, recipients: [], rejectedRecipients: [], error: err, details: [err] };
     }
@@ -240,85 +333,87 @@ class EscalationService {
     const emails = recipients.map(r => r.email);
 
     // ── 3. Load alerts to notify ───────────────────────────────────────────
-    const where: any = {
-      resolvedAt: null,
-      firstSeenAt: { lte: oneHourAgo },
-    };
-    // If specific IDs were given, use them regardless of status/email-sent filter
+    const where: any = { resolvedAt: null };
+
+    where.OR = [
+      { emailSentAt: null },
+      { emailSentAt: { lt: notifyCooldownSince } },
+    ];
+
     if (alertIds?.length) {
       where.id = { in: alertIds };
-      logger.info(`[Notify] Filtering to specific IDs: ${alertIds.join(', ')}`);
+      logger.info(`[Notify] Manual notify for alert IDs: ${alertIds.join(', ')}`);
     } else {
-      // Default: only OPEN, not already emailed in last hour
+      // Bulk notify: only escalated long enough and OPEN
+      where.firstSeenAt = { lte: getEscalationThresholdDate() };
       where.status = 'OPEN';
-      where.OR = [
-        { emailSentAt: null },
-        { emailSentAt: { lt: oneHourAgo } },
-      ];
     }
 
     const alerts = await prisma.escalatedAlert.findMany({ where, orderBy: { stalePendingCount: 'desc' } });
     logger.info(`[Notify] Alerts to send: ${alerts.length}`);
 
     if (alerts.length === 0) {
-      const msg = 'No eligible open alerts to notify (all already emailed within the last hour, or none qualify)';
+      const cooldownMins = configService.getNotifyCooldownMins();
+      const msg = `No eligible open alerts to notify (all already emailed within the last ${cooldownMins} minutes, or none qualify)`;
       logger.info(`[Notify] ${msg}`);
       return { sent: 0, skipped: 1, failed: 0, recipients: emails, rejectedRecipients: [], details: [msg] };
     }
 
-    alerts.forEach(a => {
-      logger.info(`[Notify]   Alert: ${a.clientId} / ${a.serverCode} — ${a.stalePendingCount} stale pending, lastEmail=${a.emailSentAt?.toISOString() ?? 'never'}`);
-    });
-
-    // ── 4. Enrich with client names ────────────────────────────────────────
+    // ── 4. Enrich with client names + impacted job types ───────────────────
     const dbClients = await prisma.client.findMany({ select: { clientId: true, name: true } });
     const nameMap = new Map(dbClients.map(c => [c.clientId.toUpperCase(), c.name]));
+    const impactedByClient = await this.getImpactedJobsByClient(alerts.map(a => a.clientId));
 
-    const alertLines = alerts.map(a => {
+    alerts.forEach(a => {
+      const jobs = impactedByClient.get(a.clientId) ?? [];
+      const jobTypes = jobs.map(j => j.jobType).join(', ') || '(none)';
+      logger.info(
+        `[Notify]   Alert: ${a.clientId} / ${a.serverCode} — ${a.stalePendingCount} stale, jobs=[${jobTypes}], lastEmail=${a.emailSentAt?.toISOString() ?? 'never'}`
+      );
+    });
+
+    const alertLines: string[] = [];
+    for (const a of alerts) {
       const name = nameMap.get(a.serverCode.toUpperCase()) ?? nameMap.get(a.clientId.toUpperCase()) ?? a.clientId;
-      const since = a.firstSeenAt.toLocaleString();
-      return `<tr>
-        <td style="padding: 6px 12px; font-weight: bold;">${name}</td>
-        <td style="padding: 6px 12px; font-family: monospace;">${a.serverCode}</td>
+      const since = escHtml(a.firstSeenAt.toLocaleString());
+      const jobs = impactedByClient.get(a.clientId) ?? [];
+
+      if (jobs.length === 0) {
+        alertLines.push(`<tr>
+        <td style="padding: 6px 12px; font-weight: bold;">${escHtml(name)}</td>
+        <td style="padding: 6px 12px; font-family: monospace;">${escHtml(a.serverCode)}</td>
+        <td style="padding: 6px 12px; color: #888; font-style: italic;">(no critical job detail)</td>
+        <td style="padding: 6px 12px;">—</td>
         <td style="padding: 6px 12px; color: #c62828; font-weight: bold;">${a.stalePendingCount}</td>
         <td style="padding: 6px 12px;">${a.totalPending}</td>
         <td style="padding: 6px 12px; color: #666; font-size: 12px;">${since}</td>
-      </tr>`;
-    });
+      </tr>`);
+        continue;
+      }
+
+      jobs.forEach((job, idx) => {
+        const plan = job.planType ? escHtml(job.planType) : '—';
+        alertLines.push(`<tr>
+        <td style="padding: 6px 12px; font-weight: bold;">${idx === 0 ? escHtml(name) : ''}</td>
+        <td style="padding: 6px 12px; font-family: monospace;">${idx === 0 ? escHtml(a.serverCode) : ''}</td>
+        <td style="padding: 6px 12px; font-family: monospace; font-weight: 600;">${escHtml(job.jobType)}</td>
+        <td style="padding: 6px 12px;">${plan}</td>
+        <td style="padding: 6px 12px; color: #c62828; font-weight: bold;">${job.stalePending}</td>
+        <td style="padding: 6px 12px;">${job.pending}</td>
+        <td style="padding: 6px 12px; color: #666; font-size: 12px;">${idx === 0 ? since : ''}</td>
+      </tr>`);
+      });
+    }
 
     // ── 5. Build email ─────────────────────────────────────────────────────
-    const subject = `[CRITICAL] WFM Control-M: ${alerts.length} Client(s) with Stale Pending Jobs > 1 Hour`;
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 680px; margin: 0 auto;">
-        <div style="background: #c62828; color: white; padding: 20px 24px; border-radius: 8px 8px 0 0;">
-          <h2 style="margin: 0;">⚠️ WFM Control-M — Escalation Alert</h2>
-          <p style="margin: 6px 0 0; opacity: 0.85; font-size: 14px;">CRITICAL · QUEUE_BUILDUP · ${now.toISOString()}</p>
-        </div>
-        <div style="border: 1px solid #ddd; border-top: none; padding: 20px 24px; border-radius: 0 0 8px 8px;">
-          <p style="font-size: 15px; color: #333;">
-            <strong>${alerts.length} client(s)</strong> have jobs pending for more than 1 hour and require immediate attention.
-          </p>
-          <table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px;">
-            <thead>
-              <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
-                <th style="padding: 8px 12px; text-align: left;">Client</th>
-                <th style="padding: 8px 12px; text-align: left;">Server Code</th>
-                <th style="padding: 8px 12px; text-align: left;">Stale Pending</th>
-                <th style="padding: 8px 12px; text-align: left;">Total Pending</th>
-                <th style="padding: 8px 12px; text-align: left;">Since</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${alertLines.join('')}
-            </tbody>
-          </table>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 16px 0;">
-          <p style="color: #888; font-size: 12px;">
-            Sent by WFM Control-M at ${now.toISOString()} to: ${emails.join(', ')}
-          </p>
-        </div>
-      </div>
-    `;
+    const appName = configService.getAppName();
+    const { subject, html } = buildQueueBuildupNotifyEmail({
+      appName,
+      clientCount: alerts.length,
+      alertLinesHtml: alertLines.join(''),
+      recipients: emails,
+      sentAt: now,
+    });
 
     // ── 6. Send ────────────────────────────────────────────────────────────
     logger.info(`[Notify] Sending email — subject: "${subject}"`);
@@ -368,6 +463,57 @@ class EscalationService {
         rejectedRecipients: [],
         error: errMsg,
         details,
+      };
+    }
+  }
+
+  /**
+   * Send a simple test email to all active notification recipients (Mailpit / SMTP smoke test).
+   */
+  async sendTestEmail(): Promise<{
+    sent: boolean;
+    recipients: string[];
+    error?: string;
+    details: string[];
+  }> {
+    const details: string[] = [];
+
+    if (!alertService.isEmailConfigured()) {
+      const err =
+        'SMTP not configured — set secrets.smtpHost / secrets.smtpPort in Admin > Config (Mailpit: localhost, 1025)';
+      return { sent: false, recipients: [], error: err, details: [err] };
+    }
+
+    const recipients = (await prisma.notificationRecipient.findMany({ where: { isActive: true } }))
+      .map(r => r.email);
+    if (recipients.length === 0) {
+      const err = 'No active notification recipients — add one under Alerts > Recipients';
+      return { sent: false, recipients: [], error: err, details: [err] };
+    }
+
+    const now = new Date().toISOString();
+    const appName = configService.getAppName();
+    const subject = `[TEST] ${appName} — notification email`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 520px;">
+        <h2 style="color: #4338ca;">${appName} — test email</h2>
+        <p>If you see this in Mailpit, SMTP is working.</p>
+        <p style="color: #666; font-size: 12px;">Sent at ${now}</p>
+      </div>`;
+
+    try {
+      const result = await alertService.sendDirectEmail(recipients, subject, html);
+      details.push(`Accepted: ${result.accepted.join(', ')}`);
+      if (result.rejected.length) {
+        details.push(`Rejected: ${result.rejected.join(', ')}`);
+      }
+      return { sent: result.accepted.length > 0, recipients: result.accepted, details };
+    } catch (err: any) {
+      return {
+        sent: false,
+        recipients: [],
+        error: err.message || 'SMTP send failed',
+        details: [err.message || 'SMTP send failed'],
       };
     }
   }

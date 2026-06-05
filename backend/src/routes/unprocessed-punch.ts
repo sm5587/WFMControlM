@@ -54,7 +54,7 @@ async function processWithConcurrency<T, R>(
 router.get('/all', async (req: Request, res: Response) => {
   try {
     const forceRefresh = req.query.force === 'true';
-    const cacheTtlMs = configService.getInt('polling.punchCacheTtlMins', 30) * 60 * 1000;
+    const cacheTtlMs = configService.getInt('polling.punchCacheTtlMins') * 60 * 1000;
     const isFresh = !forceRefresh && punchAllCache && (Date.now() - punchAllCache.updatedAtMs) < cacheTtlMs;
 
     if (isFresh) {

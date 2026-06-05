@@ -17,7 +17,29 @@ import AdminUsers from './components/Admin/AdminUsers';
 import AdminProfiles from './components/Admin/AdminProfiles';
 import AdminPurge from './components/Admin/AdminPurge';
 import AdminConfig from './components/Admin/AdminConfig';
-import MaintenanceWindows from './components/Maintenance/MaintenanceWindows';
+// MaintenanceWindows disabled
+// const MaintenanceWindows = React.lazy(() => import('./components/Maintenance/MaintenanceWindows'));
+
+class RouteErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+          <div className="text-slate-400 text-sm">Failed to load page. Please refresh.</div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import UnprocessedPunch from './components/UnprocessedPunch/UnprocessedPunch';
 import { ConfigProvider } from './contexts/ConfigContext';
 
@@ -29,7 +51,6 @@ const ALLOWED_ROUTES = [
   '/monitor',
   '/db-monitor',
   '/db-jobs',
-  '/maintenance',
   '/payroll',
   '/unprocessed-punch',
   '/alerts',
@@ -77,7 +98,7 @@ function AppRoutes() {
           <Route path="monitor" element={<PermissionRoute permission="MONITOR_VIEW"><JobMonitor /></PermissionRoute>} />
           <Route path="db-monitor" element={<PermissionRoute permission="DBMONITOR_VIEW"><DBMonitor /></PermissionRoute>} />
           <Route path="db-jobs" element={<PermissionRoute permission="DBJOBS_VIEW"><DBJobs /></PermissionRoute>} />
-          <Route path="maintenance" element={<PermissionRoute permission="MAINTENANCE_VIEW"><MaintenanceWindows /></PermissionRoute>} />
+          {/* <Route path="maintenance" element={...} /> disabled */}
           <Route path="payroll" element={<PermissionRoute permission="PAYROLL_VIEW"><PayrollJobs /></PermissionRoute>} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />
           <Route path="alerts" element={<PermissionRoute permission="ALERTS_VIEW"><AlertCenter /></PermissionRoute>} />

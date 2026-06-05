@@ -22,7 +22,7 @@ scp -r ./WFMControlM user@unix-box:/opt/wfm-controlm
 ssh user@unix-box
 cd /opt/wfm-controlm
 cp .env.example .env
-vi .env   # Set JWT_SECRET, SMTP, DB2 paths, etc.
+vi .env   # Set DATABASE_URL and CONFIG_ENCRYPTION_KEY (see .env.example)
 
 # 3. Launch all services
 docker compose up -d --build
@@ -83,14 +83,14 @@ source ~/.bashrc
 ```bash
 cd /opt/wfm-controlm
 
-# 1. Configure environment
+# 1. Configure bootstrap environment
 cp .env.example .env
 vi .env
-# Required settings:
+# Required:
 #   DATABASE_URL=file:./dev.db
-#   NODE_ENV=production
-#   JWT_SECRET=<secure-random-string>
-#   SMTP_HOST, SMTP_USER, SMTP_PASS (for email alerts)
+#   CONFIG_ENCRYPTION_KEY=<64-char hex>
+# Application settings (SMTP, JWT, port, DB2 paths, etc.) → AppConfig in DB.
+# After migrate + bootstrap, use Admin → Config or edit AppConfig rows.
 
 # 2. Install & build
 npm run install:all          # installs root + backend + frontend deps
@@ -119,32 +119,23 @@ pm2 startup    # generates systemd service for auto-restart
 
 ---
 
-## Key Environment Variables (from backend/src/config/index.ts)
+## Bootstrap environment (`.env`)
 
-| Variable                    | Required | Default              | Description                        |
-| --------------------------- | -------- | -------------------- | ---------------------------------- |
-| `DATABASE_URL`              | No       | `file:./dev.db`      | SQLite database file path          |
-| `PORT`                      | No       | `4000`               | Backend listening port             |
-| `NODE_ENV`                  | Yes      | `development`        | Set to `production`                |
-| `JWT_SECRET`                | Yes      | dev fallback         | Auth token signing key             |
-| `JWT_EXPIRES_IN`            | No       | `24h`                | Token expiry                       |
-| `SMTP_HOST`                 | No       | `localhost`          | Email alert SMTP server            |
-| `SMTP_PORT`                 | No       | `587`                | SMTP port                          |
-| `SMTP_USER`                 | No       | (empty)              | SMTP username                      |
-| `SMTP_PASS`                 | No       | (empty)              | SMTP password                      |
-| `ALERT_FROM_EMAIL`          | No       | `wfm-controlm@localhost` | Alert sender address           |
-| `SLACK_WEBHOOK_URL`         | No       | (empty)              | Slack alerts webhook               |
-| `WFM_API_BASE_URL`          | No       | (empty)              | WFM REST API base URL              |
-| `WFM_API_KEY`               | No       | (empty)              | WFM API authentication key         |
-| `SSH_USERNAME`              | No       | (empty)              | SSH to app servers                 |
-| `SSH_PASSWORD`              | No       | (empty)              | SSH password                       |
-| `SSH_TOTP_SECRET`           | No       | (empty)              | TOTP for 2FA SSH                   |
-| `SSH_CREDENTIALS_FILE`      | No       | (empty)              | Credentials file path              |
-| `DB2_USERNAME`              | No       | (empty)              | Fallback DB2 username              |
-| `DB2_PASSWORD`              | No       | (empty)              | Fallback DB2 password              |
-| `KEEPER_SERVER_URL`         | No       | (empty)              | Keeper Secrets Manager URL         |
-| `KEEPER_APP_ID`             | No       | (empty)              | Keeper app ID                      |
-| `KEEPER_CLIENT_KEY`         | No       | (empty)              | Keeper client key                  |
+Only variables that must exist **before** or **outside** the database. See `.env.example`.
+
+| Variable                 | Required | Description                                      |
+| ------------------------ | -------- | ------------------------------------------------ |
+| `DATABASE_URL`           | Yes      | SQLite file path (Prisma datasource)             |
+| `CONFIG_ENCRYPTION_KEY`  | Yes      | AES key for AppConfig secrets at rest            |
+| `ADMIN_USERNAME`         | Seed only| Bootstrap admin user (`prisma db seed`)          |
+| `ADMIN_PASSWORD`         | Seed only| Bootstrap admin password (seed only)             |
+| `KEEPER_CONFIG_FILE`     | Optional | Path to `ksm-config.json` on disk                |
+| `KEEPER_ONE_TIME_TOKEN`  | Optional | One-time Keeper bind; remove after first start    |
+| `SSH_CREDENTIALS_FILE`   | Optional | Local SSH credential cache path                  |
+
+## Application configuration (AppConfig / Admin → Config)
+
+SMTP, JWT, port, CORS, SSH credentials, DB2 paths, thresholds, polling, and engine tuning are stored in the `AppConfig` table. Defaults are seeded by `database/dml.sql` or `npm run db:seed`. The backend loads them at startup via `configService.load()` — **not** from `.env`.
 
 ---
 

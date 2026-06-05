@@ -12,17 +12,8 @@ services:
       - "4000:4000"
     env_file:
       - .env
-    environment:
-      PORT: 4000
-      NODE_ENV: production
-      LOG_DIR: /app/logs
-      DB2_LIB_DIR: /config/lib
-      # SMTP — set values in .env (loaded via env_file above)
-      SMTP_HOST: ${SMTP_HOST:-mailhost.reflexisinc.com}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER}
-      SMTP_PASS: ${SMTP_PASS}
-      ALERT_FROM_EMAIL: wfmcontrolM@zebra.com
+    # Bootstrap vars only in .env (DATABASE_URL, CONFIG_ENCRYPTION_KEY, Keeper paths).
+    # SMTP, port, DB2 paths, etc. → AppConfig in the DB (Admin → Config).
     volumes:
       - backend_logs:/app/logs
       - ./config/lib:/config/lib:ro
@@ -38,6 +29,15 @@ services:
       - "3000:80"
     depends_on:
       - backend
+
+  # Local SMTP catcher for testing email notifications
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: wfm-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
 
 volumes:
   backend_logs:
