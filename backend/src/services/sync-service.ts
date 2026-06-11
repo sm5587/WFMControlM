@@ -113,13 +113,12 @@ function findCredentialsFile(startDir: string): string | null {
 
 /**
  * Load SSH credentials. Priority:
- * 1. Environment variables (SSH_USERNAME, SSH_PASSWORD, SSH_TOTP_SECRET)
- * 2. .saved_credentials.json file — searched upward from __dirname and cwd
+ * 1. AppConfig / config.ssh (via applyDbConfig at startup)
+ * 2. .saved_credentials.json — legacy fallback
  */
 function loadCredentials(): SSHCredentials {
-  // Try env vars first
   if (config.ssh.username && config.ssh.password) {
-    logger.info('[Creds] Using SSH credentials from environment variables');
+    logger.info(`[Creds] Using SSH credentials from AppConfig (user: ${config.ssh.username})`);
     return {
       username: config.ssh.username,
       password: config.ssh.password,
@@ -166,7 +165,7 @@ function loadCredentials(): SSHCredentials {
     }
   }
 
-  throw new Error('No SSH credentials configured. Set SSH_USERNAME/SSH_PASSWORD/SSH_TOTP_SECRET env vars or provide .saved_credentials.json');
+  throw new Error('No SSH credentials configured. Set secrets.sshUsername/secrets.sshPassword in Admin → Config');
 }
 
 // ------------------------------------------------------------------ SSH Helper
@@ -236,7 +235,8 @@ function sshConnect(hostname: string, creds: SSHCredentials): Promise<SSH2Client
 /**
  * Execute a command on a remote SSH session and return stdout.
  */
-function sshExec(conn: SSH2Client, command: string, timeoutSec = configService.getInt('infra.sshTimeout') / 1000): Promise<string> {
+/** Remote command timeout — separate from SSH connect timeout (infra.sshTimeout). */
+function sshExec(conn: SSH2Client, command: string, timeoutSec = 60): Promise<string> {
   return new Promise((resolve, reject) => {
     conn.exec(command, (err, stream) => {
       if (err) return reject(err);
@@ -260,8 +260,14 @@ function sshExec(conn: SSH2Client, command: string, timeoutSec = configService.g
 
 // ------------------------------------------------------------------ Cron Parsing
 
-const CRON_ENTRY_PATH = config.ssh.cronEntryPath;
-const WFM_PATH_PREFIX = config.ssh.wfmPathPrefix;
+/** Read at runtime — AppConfig is applied after module load. */
+function cronEntryPath(): string {
+  return config.ssh.cronEntryPath || configService.getString('infra.sshCronEntryPath', '/mount/backup/cronEntry');
+}
+
+function wfmPathPrefix(): string {
+  return config.ssh.wfmPathPrefix || configService.getString('infra.sshWfmPathPrefix', '/mount/RWS4');
+}
 
 // Failure patterns to look for in log files
 const FAILURE_PATTERNS = [
@@ -317,7 +323,7 @@ function computeLastRunTime(cronExpr: string, serverTz: string): Date | null {
  * Filters for lines containing /mount/RWS4
  * Extracts log path from output redirection (>> or > or 2>&1)
  */
-function parseCronEntries(raw: string): CronEntry[] {
+function parseCronEntries(raw: string, pathPrefix = wfmPathPrefix()): CronEntry[] {
   const entries: CronEntry[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
@@ -332,7 +338,7 @@ function parseCronEntries(raw: string): CronEntry[] {
       if (!altMatch) continue;
       const schedule = altMatch[1];
       const command = altMatch[2];
-      if (!command.includes(WFM_PATH_PREFIX)) continue;
+      if (!command.includes(pathPrefix)) continue;
       if (/\bfind\b/.test(command)) continue;
       const logPath = extractLogPath(command);
       entries.push({ schedule, command, logPath, rawLine: trimmed });
@@ -344,7 +350,7 @@ function parseCronEntries(raw: string): CronEntry[] {
     const command = match[2];
 
     // Only keep WFM jobs (path contains /mount/RWS4)
-    if (!command.includes(WFM_PATH_PREFIX)) continue;
+    if (!command.includes(pathPrefix)) continue;
     // Skip cron entries that use the find command
     if (/\bfind\b/.test(command)) continue;
 
@@ -524,13 +530,10 @@ function computeNextRun(cronExpr: string, serverTz: string, clientTz: string): {
 
 class SyncService extends EventEmitter {
   private isSyncing = false;
-  private credentials: SSHCredentials | null = null;
 
+  /** Always read fresh — AppConfig can change without restart. */
   private getCredentials(): SSHCredentials {
-    if (!this.credentials) {
-      this.credentials = loadCredentials();
-    }
-    return this.credentials;
+    return loadCredentials();
   }
 
   /**
@@ -579,6 +582,16 @@ class SyncService extends EventEmitter {
       data: { lastCronAttemptAt: new Date() },
     });
 
+    // Close any orphaned RUNNING rows (e.g. backend restarted mid-sync)
+    await prisma.syncHistory.updateMany({
+      where: { clientId: clientDbId, syncType: 'CRON_SYNC', status: 'RUNNING' },
+      data: {
+        status: 'FAILED',
+        errors: JSON.stringify(['Sync interrupted — superseded by new attempt']),
+        completedAt: new Date(),
+      },
+    });
+
     const syncRecord = await prisma.syncHistory.create({
       data: {
         id: uuidv4(),
@@ -622,7 +635,10 @@ class SyncService extends EventEmitter {
       }
 
       // Read cron entries file
-      const cronRaw = await sshExec(conn, `cat ${CRON_ENTRY_PATH}`);
+      const cronPath = cronEntryPath();
+      if (!cronPath) throw new Error('Cron entry path not configured (infra.sshCronEntryPath)');
+      logger.info(`Reading cron entries from ${cronPath} on ${server.dns}`);
+      const cronRaw = await sshExec(conn, `cat '${cronPath.replace(/'/g, "'\\''")}'`);
       const cronEntries = parseCronEntries(cronRaw);
       discovered = cronEntries.length;
 
@@ -1261,7 +1277,7 @@ class SyncService extends EventEmitter {
         } catch (err: any) {
           logger.error(`Cron sync failed for ${client.clientId}: ${err.message}`);
           allResults.push({
-            clientId: client.id, syncType: 'CRON_SYNC', status: 'FAILED',
+            clientId: client.clientId, syncType: 'CRON_SYNC', status: 'FAILED',
             jobsDiscovered: 0, jobsCreated: 0, jobsUpdated: 0, jobsRemoved: 0,
             errors: [err.message], duration: 0,
           });
@@ -1432,6 +1448,80 @@ class SyncService extends EventEmitter {
       take: limit,
       include: { client: { select: { clientId: true, name: true } } },
     });
+  }
+
+  /**
+   * Summarize the most recent bulk CRON_SYNC run from SyncHistory.
+   * Groups consecutive entries (≤15 min apart) starting from the newest.
+   */
+  async getRecentCronSyncBatch() {
+    const recent = await prisma.syncHistory.findMany({
+      where: { syncType: 'CRON_SYNC' },
+      orderBy: { createdAt: 'desc' },
+      take: 150,
+      include: { client: { select: { clientId: true } } },
+    });
+
+    if (recent.length === 0) return null;
+
+    // Treat long-stale RUNNING rows as failed (interrupted bulk sync)
+    const staleMs = 10 * 60 * 1000;
+    const now = Date.now();
+    for (const row of recent) {
+      if (row.status === 'RUNNING' && now - row.createdAt.getTime() > staleMs) {
+        await prisma.syncHistory.update({
+          where: { id: row.id },
+          data: {
+            status: 'FAILED',
+            errors: JSON.stringify(['Sync interrupted — no completion recorded']),
+            completedAt: new Date(),
+          },
+        });
+        row.status = 'FAILED';
+        row.errors = JSON.stringify(['Sync interrupted — no completion recorded']);
+      }
+    }
+
+    const batch = [recent[0]];
+    for (let i = 1; i < recent.length; i++) {
+      const gapMs = batch[batch.length - 1].createdAt.getTime() - recent[i].createdAt.getTime();
+      if (gapMs > 15 * 60 * 1000) break;
+      batch.push(recent[i]);
+    }
+
+    const succeeded = batch.filter(r => r.status === 'SUCCESS').length;
+    const partial = batch.filter(r => r.status === 'PARTIAL').length;
+    const failed = batch.filter(r => r.status === 'FAILED').length;
+    const running = batch.filter(r => r.status === 'RUNNING').length;
+
+    const sampleErrors: { clientId: string; error: string }[] = [];
+    for (const row of batch) {
+      if (row.status !== 'FAILED' || !row.errors) continue;
+      try {
+        const parsed = JSON.parse(row.errors);
+        const msg = Array.isArray(parsed) ? parsed[0] : String(parsed);
+        if (msg) sampleErrors.push({ clientId: row.client?.clientId || '?', error: msg });
+      } catch {
+        sampleErrors.push({ clientId: row.client?.clientId || '?', error: row.errors });
+      }
+      if (sampleErrors.length >= 8) break;
+    }
+
+    const finishedAt = batch.reduce<Date | null>((latest, row) => {
+      const t = row.completedAt || row.createdAt;
+      return !latest || t > latest ? t : latest;
+    }, null);
+
+    return {
+      startedAt: batch[batch.length - 1].createdAt,
+      finishedAt,
+      total: batch.length,
+      succeeded,
+      partial,
+      failed,
+      running,
+      sampleErrors,
+    };
   }
 
   /**

@@ -16,6 +16,7 @@
     "db:bootstrap:ddl": "cd backend && node scripts\\apply-sql.js ..\\database\\ddl.sql",
     "db:bootstrap:dml": "cd backend && node scripts\\apply-sql.js ..\\database\\dml.sql",
     "db:bootstrap": "npm run db:bootstrap:ddl && npm run db:bootstrap:dml",
+    "db:extract": "cd backend && node scripts/extract-sql.js",
     "db:seed": "cd backend && npx prisma db seed",
     "startup:prepare": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 prepare",
     "startup:up": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 up",

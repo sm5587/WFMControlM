@@ -1,0 +1,69 @@
+{
+  "description": "Tables exported into database/dml.sql. Add a section here when seeding a new reference table.",
+  "dml": {
+    "sections": [
+      {
+        "title": "APP FUNCTIONS (RBAC function registry)",
+        "table": "AppFunction",
+        "insertMode": "ignore",
+        "orderBy": ["sortOrder", "id"]
+      },
+      {
+        "title": "SYSTEM PROFILES",
+        "table": "Profile",
+        "insertMode": "ignore",
+        "orderBy": ["name"]
+      },
+      {
+        "title": "BOOTSTRAP ADMIN USER (MANDATORY: change password after first login)",
+        "table": "User",
+        "insertMode": "ignore",
+        "where": "username = 'admin'",
+        "orderBy": ["username"],
+        "notes": [
+          "username: admin",
+          "temporary password: ChangeMe123!"
+        ]
+      },
+      {
+        "title": "BOOTSTRAP ADMIN PROFILE ASSIGNMENT",
+        "table": "UserProfile",
+        "insertMode": "ignore",
+        "where": "userId IN (SELECT id FROM \"User\" WHERE username = 'admin')",
+        "orderBy": ["userId", "profileId"]
+      },
+      {
+        "title": "PROFILE PERMISSIONS",
+        "table": "Permission",
+        "insertMode": "ignore",
+        "where": "profileId IN (SELECT id FROM \"Profile\" WHERE isSystem = 1)",
+        "orderBy": ["profileId", "functionId"]
+      },
+      {
+        "title": "RESOURCE POOLS",
+        "table": "ResourcePool",
+        "insertMode": "replace",
+        "orderBy": ["name"]
+      },
+      {
+        "title": "PURGE CONFIG",
+        "table": "PurgeConfig",
+        "insertMode": "replace",
+        "orderBy": ["id"]
+      },
+      {
+        "title": "NOTIFICATION RECIPIENTS (local / Mailpit testing)",
+        "table": "NotificationRecipient",
+        "insertMode": "ignore",
+        "orderBy": ["email"]
+      },
+      {
+        "title": "APP CONFIG (runtime configuration defaults)",
+        "table": "AppConfig",
+        "insertMode": "replace",
+        "orderBy": ["category", "key"],
+        "maskSecretValues": true
+      }
+    ]
+  }
+}

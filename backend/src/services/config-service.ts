@@ -58,6 +58,7 @@ class ConfigService {
 
     await this.ensureAppNameConfig();
     await this.ensureNotifyCooldownConfig();
+    await this.ensureMasterAccountConfig();
 
     this.loaded = true;
     logger.info(`Loaded ${rows.length} config entries from DB`);
@@ -116,6 +117,47 @@ class ConfigService {
       updatedAt: new Date(),
     });
     logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Bootstrap break-glass master when upgrading a DB with empty master username. */
+  private async ensureMasterAccountConfig(): Promise<void> {
+    const usernameKey = 'secrets.masterUsername';
+    const hashKey = 'secrets.masterPasswordHash';
+    const current = this.cache.get(usernameKey)?.value?.trim();
+    if (current) return;
+
+    const username = 'WFMADMIN';
+    const passwordHash = '$2b$10$yPnFQ7.oImZUCmBOLMnRIuW2o5IPI2vxoRFsdomOzvBNNlbAPnQOC';
+
+    for (const [key, value, isSecret, label, description] of [
+      [usernameKey, username, false, 'Master Username', 'Break-glass admin username'] as const,
+      [hashKey, passwordHash, true, 'Master Password Hash', 'Break-glass admin bcrypt hash (default password: WFMADMIN)'] as const,
+    ]) {
+      await prisma.appConfig.upsert({
+        where: { key },
+        create: {
+          key,
+          value,
+          category: 'SECRETS',
+          label,
+          description,
+          isSecret,
+          updatedBy: 'system',
+        },
+        update: { value, updatedBy: 'system' },
+      });
+      this.cache.set(key, {
+        key,
+        value,
+        category: 'SECRETS',
+        label,
+        description,
+        isSecret,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+    }
+    logger.info(`Configured default master account "${username}" (change password in Admin → Config before production)`);
   }
 
   /**

@@ -1,9 +1,10 @@
 # ============================================================
 # WFM Control-M - Scriptable Startup
 # Usage:
-#   .\start.ps1 all                 # start backend + frontend
-#   .\start.ps1 prepare             # install, migrate, apply DDL/DML, optional build
-#   .\start.ps1 up                  # prepare + start all
+#   .\start.ps1                     # daily dev: start backend + frontend only (DB unchanged)
+#   .\start.ps1 all|start           # same as default — start services only
+#   .\start.ps1 prepare             # first-time / prod: install, migrate, DDL/DML bootstrap
+#   .\start.ps1 up                  # prepare + start (fresh machine or after schema change)
 #   .\start.ps1 backend|frontend    # start one service
 #   .\start.ps1 stop                # kill all node processes
 #
@@ -143,7 +144,7 @@ try {
     switch ($Mode.ToLower()) {
         "prepare"  { Initialize-Environment }
         "up"       { Initialize-Environment; Start-All }
-        "start"    { Initialize-Environment; Start-All }
+        "start"    { Start-All }   # alias for daily start — use "up" for DDL/DML bootstrap
         "backend"  { Start-Backend }
         "frontend" { Start-Frontend }
         "stop"     { Stop-All }

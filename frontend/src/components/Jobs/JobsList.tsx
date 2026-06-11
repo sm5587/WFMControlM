@@ -7,7 +7,7 @@ import {
   Building2, Layers, CalendarDays, Activity, Briefcase
 } from 'lucide-react';
 import { jobsApi, clientsApi } from '../../services/api';
-import { Job, JobType, JobExecution, Client, LastRunStatus } from '../../types';
+import { Job, JobType, JobExecution, Client, LastRunStatus, CronSyncBatchStatus } from '../../types';
 import { useDbClientConnections } from '../../hooks/useDbClientConnections';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
@@ -67,13 +67,11 @@ export default function JobsList() {
   const [logViewerJob, setLogViewerJob] = useState<Job | null>(null);
   const [clientSearch, setClientSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
-
-  // Date / time-range filter
+  const [syncingMessage, setSyncingMessage] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterTimeFrom, setFilterTimeFrom] = useState('');
   const [filterTimeTo, setFilterTimeTo] = useState('');
   const [showTimeFilter, setShowTimeFilter] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'loading'; message: string } | null>(null);
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
 
   const { connStatus, connTesting } = useDbClientConnections();
@@ -93,6 +91,16 @@ export default function JobsList() {
     gcTime: 60 * 60 * 1000,
     refetchOnMount: true,
     refetchOnWindowFocus: false,
+  });
+
+  const { data: cronSyncBatch } = useQuery({
+    queryKey: ['cron-sync-status'],
+    queryFn: async () => {
+      const res = await clientsApi.getCronSyncStatus();
+      return (res.data ?? null) as CronSyncBatchStatus | null;
+    },
+    staleTime: 15_000,
+    refetchOnMount: true,
   });
 
   const triggerMutation = useMutation({
@@ -287,13 +295,16 @@ export default function JobsList() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Last refresh time for bulk actions */}
-      {jobsUpdatedAt && (
-        <div className="flex items-center gap-2 mb-2">
-          <Clock className="w-4 h-4 text-gray-400" />
-          <span className="text-xs text-gray-500">Last refreshed {fmt(new Date(jobsUpdatedAt).toISOString(), 'time')}</span>
-        </div>
-      )}
+      {/* Last refresh + cron sync status */}
+      <div className="space-y-2">
+        {jobsUpdatedAt && (
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-gray-400" />
+            <span className="text-xs text-gray-500">Last refreshed {fmt(new Date(jobsUpdatedAt).toISOString(), 'time')}</span>
+          </div>
+        )}
+        <CronSyncStatusBanner batch={cronSyncBatch ?? null} syncing={syncing} syncingMessage={syncingMessage} fmt={fmt} />
+      </div>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -468,26 +479,28 @@ export default function JobsList() {
           onClick={async () => {
             if (syncing) return;
             setSyncing(true);
-            setSyncStatus(null);
+            setSyncingMessage('');
             try {
               if (clientFilter && clientFilter !== 'none') {
                 const c = clients.find(cl => cl.id === clientFilter);
-                setSyncStatus({ type: 'loading', message: `Syncing crons for ${c?.clientId || 'client'}...` });
+                setSyncingMessage(`Syncing crons for ${c?.clientId || 'client'}...`);
                 await clientsApi.sync(clientFilter, 'CRON_SYNC');
-                setSyncStatus({ type: 'success', message: `Sync complete for ${c?.clientId || 'client'}` });
               } else {
-                setSyncStatus({ type: 'loading', message: 'Syncing crons for all clients (30s cooldown per client)...' });
+                setSyncingMessage('Syncing crons for all active clients — this may take several minutes...');
                 await clientsApi.syncAllCrons();
-                setSyncStatus({ type: 'success', message: 'Cron sync complete for all clients' });
               }
+              await queryClient.refetchQueries({ queryKey: ['cron-sync-status'] });
               queryClient.invalidateQueries({ queryKey: ['jobs-all'] });
+              queryClient.invalidateQueries({ queryKey: ['clients'] });
+              queryClient.invalidateQueries({ queryKey: ['clients-list-active'] });
+              queryClient.invalidateQueries({ queryKey: ['client-sync-history'] });
               refetch();
-              setTimeout(() => setSyncStatus(null), 5000);
             } catch (err: any) {
-              setSyncStatus({ type: 'error', message: `Sync failed: ${err.message}` });
-              setTimeout(() => setSyncStatus(null), 8000);
+              await queryClient.refetchQueries({ queryKey: ['cron-sync-status'] });
+              console.error('Cron sync failed:', err?.response?.data?.error || err.message);
             } finally {
               setSyncing(false);
+              setSyncingMessage('');
             }
           }}
           className={`p-2 text-gray-500 hover:text-gray-700 ${syncing ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -496,15 +509,6 @@ export default function JobsList() {
         >
           <RefreshCw className={`w-4 h-4 ${syncing || isLoading ? 'animate-spin' : ''}`} />
         </button>
-        {syncStatus && (
-          <span className={`text-xs ${
-            syncStatus.type === 'loading' ? 'text-amber-600 animate-pulse' :
-            syncStatus.type === 'success' ? 'text-green-600' :
-            'text-red-600'
-          }`}>
-            {syncStatus.message}
-          </span>
-        )}
 
         {/* Time-range filter toggle */}
         <button
@@ -914,6 +918,95 @@ function LogViewerModal({ job, onClose }: { job: Job; onClose: () => void }) {
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+type CronSyncStatusBannerProps = {
+  batch: CronSyncBatchStatus | null;
+  syncing: boolean;
+  syncingMessage: string;
+  fmt: (iso: string, mode?: 'time' | 'date' | 'datetime') => string;
+};
+
+function CronSyncStatusBanner({ batch, syncing, syncingMessage, fmt }: CronSyncStatusBannerProps) {
+  const [expanded, setExpanded] = useState(false);
+  const statusKey = batch?.finishedAt ?? batch?.startedAt ?? '';
+  useEffect(() => setExpanded(false), [statusKey]);
+
+  if (syncing) {
+    return (
+      <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+        <RefreshCw className="w-4 h-4 text-amber-600 animate-spin shrink-0 mt-0.5" />
+        <p className="text-xs text-amber-800">{syncingMessage || 'Syncing crons...'}</p>
+      </div>
+    );
+  }
+
+  if (!batch) return null;
+
+  const type = batch.failed > 0
+    ? batch.succeeded + batch.partial > 0 ? 'warning' : 'error'
+    : batch.running > 0 ? 'loading' : 'success';
+
+  const styles = {
+    success: 'bg-green-50 border-green-200 text-green-800',
+    warning: 'bg-amber-50 border-amber-200 text-amber-900',
+    error: 'bg-red-50 border-red-200 text-red-800',
+    loading: 'bg-blue-50 border-blue-200 text-blue-800',
+  } as const;
+
+  const icons = {
+    success: CheckCircle,
+    warning: AlertTriangle,
+    error: XCircle,
+    loading: RefreshCw,
+  } as const;
+
+  const ok = batch.succeeded + batch.partial;
+  const when = batch.finishedAt ? fmt(batch.finishedAt, 'datetime') : '';
+  const message = `Last cron sync: ${ok} synced, ${batch.failed} failed (${batch.total} clients)${when ? ` at ${when}` : ''}`;
+  const details = batch.sampleErrors.map(e => `${e.clientId}: ${e.error}`);
+
+  const Icon = icons[type];
+  const hasDetails = details.length > 0;
+  const Chevron = expanded ? ChevronUp : ChevronDown;
+
+  return (
+    <div className={`rounded-lg border ${styles[type]}`}>
+      {hasDetails ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          className="w-full flex items-start gap-2 px-3 py-2 text-left hover:opacity-90 transition-opacity"
+          aria-expanded={expanded}
+        >
+          <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${type === 'loading' ? 'animate-spin' : ''}`} />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium">{message}</p>
+            {!expanded && (
+              <p className="text-[11px] opacity-75 mt-0.5">
+                {details.length} error{details.length !== 1 ? 's' : ''} — click to expand
+              </p>
+            )}
+          </div>
+          <Chevron className="w-4 h-4 shrink-0 mt-0.5 opacity-60" />
+        </button>
+      ) : (
+        <div className="flex items-start gap-2 px-3 py-2">
+          <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${type === 'loading' ? 'animate-spin' : ''}`} />
+          <p className="text-xs font-medium">{message}</p>
+        </div>
+      )}
+      {hasDetails && expanded && (
+        <ul className="px-3 pb-2 pt-0 space-y-0.5 border-t border-current/10 mx-3 mb-2">
+          {details.map((line, i) => (
+            <li key={i} className="text-[11px] font-mono opacity-90 break-all" title={line}>
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

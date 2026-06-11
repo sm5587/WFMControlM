@@ -118,7 +118,7 @@ router.post('/login', async (req: Request, res: Response) => {
       });
 
       const token = jwt.sign(
-        { userId: 'master', username, displayName: 'Master Admin', timezone: 'Asia/Kolkata', permissions: allPerms, isMaster: true },
+        { userId: 'master', username, displayName: 'WFM Admin', timezone: 'Asia/Kolkata', permissions: allPerms, isMaster: true },
         config.jwtSecret,
         { expiresIn: config.jwtExpiresIn } as any,
       );
@@ -132,7 +132,7 @@ router.post('/login', async (req: Request, res: Response) => {
         success: true,
         data: {
           token,
-          user: { id: 'master', username, displayName: 'Master Admin', email: null },
+          user: { id: 'master', username, displayName: 'WFM Admin', email: null, isMaster: true },
         },
       });
     }
@@ -183,7 +183,27 @@ router.get('/me', authMiddleware, (req: Request, res: Response) => {
 // Reissue token with latest permissions (call after admin changes profile assignment)
 router.post('/refresh-permissions', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const { userId, username, displayName, timezone } = (req as any).user;
+    const user = (req as any).user;
+    if (user.isMaster || user.userId === 'master') {
+      const allPerms: Record<string, { r: boolean; w: boolean }> = {};
+      Object.values(APP_FUNCTIONS).forEach(fn => {
+        allPerms[fn.id] = { r: true, w: true };
+      });
+      const token = jwt.sign(
+        {
+          userId: 'master',
+          username: user.username,
+          displayName: user.displayName || 'WFM Admin',
+          timezone: user.timezone || 'Asia/Kolkata',
+          permissions: allPerms,
+          isMaster: true,
+        },
+        config.jwtSecret,
+        { expiresIn: config.jwtExpiresIn } as any,
+      );
+      return res.json({ success: true, data: { token } });
+    }
+    const { userId, username, displayName, timezone } = user;
     const token = await signToken(userId, username, displayName, timezone || 'Asia/Kolkata');
     res.json({ success: true, data: { token } });
   } catch (err: any) {

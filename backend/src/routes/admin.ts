@@ -9,6 +9,7 @@ import { requirePermission } from '../middleware';
 import { APP_FUNCTIONS } from '../constants/functions';
 import { signToken } from './auth';
 import { purgeService } from '../services/purge-service';
+import { exportSql, writeSqlFiles, SqlExportType } from '../services/sql-export-service';
 
 const router = Router();
 
@@ -271,6 +272,49 @@ router.post('/purge/run/:id', requirePermission('DATA_PURGE_RUN', 'write'), asyn
       data: { lastPurgeAt: new Date(), lastPurgeCount: result.deleted },
     });
     res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// SQL EXPORT — regenerate database/ddl.sql and database/dml.sql
+// ────────────────────────────────────────────────────────────
+
+// GET /api/admin/sql-export?type=ddl|dml|all
+router.get('/sql-export', requirePermission('PERMISSIONS_EDIT', 'read'), async (req: Request, res: Response) => {
+  try {
+    const rawType = String(req.query.type || 'all').toLowerCase();
+    const type: SqlExportType = rawType === 'ddl' || rawType === 'dml' ? rawType : 'all';
+    const data = await exportSql(type);
+    res.json({
+      success: true,
+      data: {
+        type,
+        ...data,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/sql-export/write?type=ddl|dml|all
+router.post('/sql-export/write', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Request, res: Response) => {
+  try {
+    const rawType = String(req.query.type || 'all').toLowerCase();
+    const type: SqlExportType = rawType === 'ddl' || rawType === 'dml' ? rawType : 'all';
+    const payload = await exportSql(type);
+    const paths = writeSqlFiles(payload);
+    res.json({
+      success: true,
+      data: {
+        type,
+        paths,
+        generatedAt: new Date().toISOString(),
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

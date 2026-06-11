@@ -2,16 +2,41 @@ const fs = require('fs');
 const path = require('path');
 const { PrismaClient } = require('@prisma/client');
 
+/** Split SQL on semicolons outside of single-quoted strings ('' = escaped quote). */
 function splitSqlStatements(sqlText) {
   const withoutLineComments = sqlText
     .split(/\r?\n/)
     .filter((line) => !line.trim().startsWith('--'))
     .join('\n');
 
-  return withoutLineComments
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const statements = [];
+  let current = '';
+  let inString = false;
+
+  for (let i = 0; i < withoutLineComments.length; i++) {
+    const ch = withoutLineComments[i];
+    if (ch === "'") {
+      current += ch;
+      if (inString && withoutLineComments[i + 1] === "'") {
+        current += "'";
+        i += 1;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    if (ch === ';' && !inString) {
+      const trimmed = current.trim();
+      if (trimmed) statements.push(trimmed);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+
+  const trimmed = current.trim();
+  if (trimmed) statements.push(trimmed);
+  return statements;
 }
 
 async function main() {

@@ -112,6 +112,18 @@ export interface SyncHistory {
   duration?: number;
 }
 
+/** Latest bulk CRON_SYNC run summary from SyncHistory. */
+export interface CronSyncBatchStatus {
+  startedAt: string;
+  finishedAt: string | null;
+  total: number;
+  succeeded: number;
+  partial: number;
+  failed: number;
+  running: number;
+  sampleErrors: Array<{ clientId: string; error: string }>;
+}
+
 export type LastRunStatus = 'SUCCESS' | 'FAILED' | 'NOT_RUN' | 'STALE' | 'UNKNOWN';
 
 export interface LogCheckResult {

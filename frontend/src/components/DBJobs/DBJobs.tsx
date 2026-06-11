@@ -38,10 +38,11 @@ interface ClientInfo {
   name: string;
   cluster: string;
   whiteGlove: boolean;
+  timezone: string;
 }
 
 export default function DBJobs() {
-  const { fmt } = useTimezone();
+  const { fmt, fmtDb2 } = useTimezone();
   const [search, setSearch] = useState('');
   const [clusterFilter, setClusterFilter] = useState('');
   const [selectedClient, setSelectedClient] = useState<string | null>(null);
@@ -113,6 +114,11 @@ export default function DBJobs() {
 
   const clientsData = data?.data?.clients || {};
   const clientInfo: ClientInfo[] = data?.data?.clientInfo || [];
+  const clientTzById = useMemo(
+    () => new Map(clientInfo.map(ci => [ci.clientId, ci.timezone || 'America/Chicago'])),
+    [clientInfo],
+  );
+  const getClientTz = (clientId: string) => clientTzById.get(clientId) || 'America/Chicago';
   const isCached = data?.data?.cached || false;
   const isStale = data?.data?.stale || false;
   const isEmpty = data?.data?.empty || false;
@@ -185,14 +191,24 @@ export default function DBJobs() {
     }
   };
 
-  // Cross-client job filter: flat list of all jobs matching jobFilter across all clients
+  const clientMatchesFilters = (ci: ClientInfo) => {
+    const searchLower = search.toLowerCase();
+    const matchesSearch = !search ||
+      ci.clientId.toLowerCase().includes(searchLower) ||
+      ci.name.toLowerCase().includes(searchLower) ||
+      ci.serverCode.toLowerCase().includes(searchLower);
+    const matchesCluster = !clusterFilter || ci.cluster === clusterFilter;
+    const matchesSelected = !selectedClient || ci.clientId === selectedClient;
+    return matchesSearch && matchesCluster && matchesSelected;
+  };
+
+  // Cross-client job filter: flat list of all jobs matching jobFilter (respects client/cluster/search filters)
   const crossClientJobs = useMemo(() => {
     if (!jobFilter.trim()) return [];
     const q = jobFilter.toLowerCase();
     const results: { clientId: string; cluster: string; name: string; whiteGlove: boolean; job: QueueJob }[] = [];
     for (const ci of clientInfo) {
-      const matchesCluster = !clusterFilter || ci.cluster === clusterFilter;
-      if (!matchesCluster) continue;
+      if (!clientMatchesFilters(ci)) continue;
       const jobs: QueueJob[] = clientsData[ci.clientId]?.jobs || [];
       for (const job of jobs) {
         const jobName = (job.jobType || job.param2 || '').toLowerCase();
@@ -204,7 +220,7 @@ export default function DBJobs() {
     return results.sort((a, b) =>
       a.cluster.localeCompare(b.cluster) || a.clientId.localeCompare(b.clientId)
     );
-  }, [jobFilter, clientInfo, clientsData, clusterFilter]);
+  }, [jobFilter, clientInfo, clientsData, search, clusterFilter, selectedClient]);
 
   const nonCriticalFilteredJobs = useMemo(
     () => crossClientJobs.filter(r => !r.job.isCritical),
@@ -219,13 +235,23 @@ export default function DBJobs() {
   // Get jobs for selected client (with optional search)
   const selectedJobsRaw: QueueJob[] = selectedClient ? (clientsData[selectedClient]?.jobs || []) : [];
   const selectedJobs = useMemo(() => {
-    if (!jobSearch) return selectedJobsRaw;
-    const q = jobSearch.toLowerCase();
-    return selectedJobsRaw.filter(j => {
-      const name = (j.jobType || j.param2 || '').toLowerCase();
-      return name.includes(q);
-    });
-  }, [selectedJobsRaw, jobSearch]);
+    let jobs = selectedJobsRaw;
+    const jobQ = jobFilter.trim().toLowerCase();
+    if (jobQ) {
+      jobs = jobs.filter(j => {
+        const name = (j.jobType || j.param2 || '').toLowerCase();
+        return name.includes(jobQ);
+      });
+    }
+    if (jobSearch) {
+      const q = jobSearch.toLowerCase();
+      jobs = jobs.filter(j => {
+        const name = (j.jobType || j.param2 || '').toLowerCase();
+        return name.includes(q);
+      });
+    }
+    return jobs;
+  }, [selectedJobsRaw, jobSearch, jobFilter]);
   const selectedError = selectedClient ? clientsData[selectedClient]?.error : null;
   const selectedInfo = clientInfo.find(ci => ci.clientId === selectedClient);
 
@@ -347,8 +373,8 @@ export default function DBJobs() {
             </div>
           )}
 
-          {/* ── Cross-client job filter view ── */}
-          {jobFilter.trim() && (
+          {/* ── Cross-client job filter view (when no specific client is selected) ── */}
+          {jobFilter.trim() && !selectedClient && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="px-5 py-3 bg-gradient-to-r from-zebra-50 to-white border-b border-gray-100 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -428,7 +454,7 @@ export default function DBJobs() {
                               <span className="text-xs text-gray-500">{getJobInterval(job)}</span>
                             </td>
                             <td className="px-3 py-2.5">
-                              <span className="text-xs text-gray-500">{lastTime ? fmt(lastTime) : '—'}</span>
+                              <span className="text-xs text-gray-500">{lastTime ? fmtDb2(lastTime, getClientTz(clientId)) : '—'}</span>
                             </td>
                             <td className="px-3 py-2.5 text-right">
                               <span className={`text-xs font-semibold ${
@@ -445,8 +471,8 @@ export default function DBJobs() {
             </div>
           )}
 
-          {/* ── Per-client split-panel view (when no job filter) ── */}
-          {!jobFilter.trim() && (
+          {/* ── Per-client split-panel view (always when a client is selected; otherwise when no job filter) ── */}
+          {(!jobFilter.trim() || selectedClient) && (
           <div className="flex gap-0">
           {/* Left: Client list grouped by cluster */}
           <div style={{ width: leftWidth, minWidth: 200, maxWidth: 600 }} className="flex-shrink-0 space-y-3 max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
@@ -567,7 +593,7 @@ export default function DBJobs() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500">
                       {selectedJobs.length} job{selectedJobs.length !== 1 ? 's' : ''}
-                      {jobSearch && ` of ${selectedJobsRaw.length}`}
+                      {(jobSearch || jobFilter) && ` of ${selectedJobsRaw.length}`}
                     </span>
                     <div className="relative">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
@@ -651,7 +677,7 @@ export default function DBJobs() {
                                   <span className="text-xs text-gray-500">{getJobInterval(job)}</span>
                                 </td>
                                 <td className="px-4 py-2.5">
-                                  <span className="text-xs text-gray-500">{lastTime ? fmt(lastTime) : '—'}</span>
+                                  <span className="text-xs text-gray-500">{lastTime ? fmtDb2(lastTime, getClientTz(selectedClient!)) : '—'}</span>
                                 </td>
                                 <td className="px-4 py-2.5 text-right">
                                   <span className={`text-xs font-semibold ${

@@ -26,13 +26,18 @@ function isToday(date: Date): boolean {
   );
 }
 
-/** Build enriched client info list (name, cluster, whiteGlove). */
+/** Build enriched client info list (name, cluster, whiteGlove, timezone). */
 async function getClientInfoList() {
   const dbClients = await prisma.client.findMany({
-    select: { clientId: true, name: true, cluster: true, whiteGlove: true },
+    select: { clientId: true, name: true, cluster: true, whiteGlove: true, timezone: true },
   });
   const nameMap = new Map(
-    dbClients.map(c => [c.clientId.toUpperCase(), { name: c.name, cluster: c.cluster, whiteGlove: c.whiteGlove }])
+    dbClients.map(c => [c.clientId.toUpperCase(), {
+      name: c.name,
+      cluster: c.cluster,
+      whiteGlove: c.whiteGlove,
+      timezone: c.timezone,
+    }])
   );
 
   const availableClients = await db2DirectService.getAvailableClients();
@@ -47,6 +52,7 @@ async function getClientInfoList() {
       name: match?.name || c.clientId,
       cluster: match?.cluster || '',
       whiteGlove: match?.whiteGlove || false,
+      timezone: match?.timezone || 'America/Chicago',
     };
   });
 }

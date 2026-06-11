@@ -156,6 +156,17 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/clients/cron-sync-status - Latest bulk cron sync summary
+router.get('/cron-sync-status', async (_req: Request, res: Response) => {
+  try {
+    const summary = await syncService.getRecentCronSyncBatch();
+    res.json({ success: true, data: summary });
+  } catch (error: any) {
+    logger.error(`Error fetching cron sync status: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/clients/:id - Get client detail with servers
 router.get('/:id', async (req: Request, res: Response) => {
   try {

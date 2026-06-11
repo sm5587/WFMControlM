@@ -10,7 +10,8 @@
     "test": "jest --coverage",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "sql:extract": "node scripts/extract-sql.js"
   },
   "prisma": {
     "seed": "node_modules\\.bin\\ts-node prisma/seed.ts"
