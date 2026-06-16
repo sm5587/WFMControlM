@@ -18,6 +18,8 @@
     "db:bootstrap": "npm run db:bootstrap:ddl && npm run db:bootstrap:dml",
     "db:extract": "cd backend && node scripts/extract-sql.js",
     "db:seed": "cd backend && npx prisma db seed",
+    "db:create:unix": "bash ./scripts/create-db.sh",
+    "db:setup:unix": "bash ./scripts/setup-db.sh",
     "startup:prepare": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 prepare",
     "startup:up": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 up",
     "test": "cd backend && npm test",
