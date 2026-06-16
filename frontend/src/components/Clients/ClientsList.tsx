@@ -512,26 +512,40 @@ function ClientRow({
         </td>
         <td className="px-5 py-3">
           <div className="flex flex-col gap-0.5">
-            <span
-              className={`inline-flex items-center gap-1 text-xs font-medium ${
-                isSyncDue(client.lastCronSyncAt) ? 'text-amber-600' : 'text-green-600'
-              }`}
-              title={`Last successful sync: ${client.lastCronSyncAt ? fmt(client.lastCronSyncAt) : 'Never'}${
-                client.lastCronAttemptAt ? ` | Last attempt: ${fmt(client.lastCronAttemptAt)}` : ''
-              }`}
-            >
-              <Clock className="w-3 h-3" />
-              {formatAgo(client.lastCronSyncAt)}
-            </span>
-            {client.lastCronAttemptAt && client.lastCronAttemptAt !== client.lastCronSyncAt && (
-              <span
-                className="inline-flex items-center gap-1 text-xs text-gray-400"
-                title={`Last attempt: ${fmt(client.lastCronAttemptAt)}`}
-              >
-                <RefreshCw className="w-3 h-3" />
-                {formatAgo(client.lastCronAttemptAt)}
-              </span>
-            )}
+            {(() => {
+              const attemptFailed = client.lastCronAttemptAt && (
+                !client.lastCronSyncAt ||
+                new Date(client.lastCronAttemptAt).getTime() > new Date(client.lastCronSyncAt).getTime()
+              );
+              return (
+                <>
+                  <span
+                    className={`inline-flex items-center gap-1 text-xs font-medium ${
+                      attemptFailed ? 'text-red-600' :
+                      isSyncDue(client.lastCronSyncAt) ? 'text-amber-600' : 'text-green-600'
+                    }`}
+                    title={`Last successful sync: ${client.lastCronSyncAt ? fmt(client.lastCronSyncAt) : 'Never'}${
+                      client.lastCronAttemptAt ? ` | Last attempt: ${fmt(client.lastCronAttemptAt)}` : ''
+                    }${attemptFailed ? ' | Last attempt failed — expand row for details' : ''}`}
+                  >
+                    <Clock className="w-3 h-3" />
+                    {formatAgo(client.lastCronSyncAt)}
+                    {attemptFailed && <AlertTriangle className="w-3 h-3" />}
+                  </span>
+                  {client.lastCronAttemptAt && client.lastCronAttemptAt !== client.lastCronSyncAt && (
+                    <span
+                      className={`inline-flex items-center gap-1 text-xs ${
+                        attemptFailed ? 'text-red-500' : 'text-gray-400'
+                      }`}
+                      title={`Last attempt: ${fmt(client.lastCronAttemptAt)}${attemptFailed ? ' (failed)' : ''}`}
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      {attemptFailed ? 'Attempt failed ' : ''}{formatAgo(client.lastCronAttemptAt)}
+                    </span>
+                  )}
+                </>
+              );
+            })()}
             {client.lastTzAttemptAt && (
               <span
                 className="inline-flex items-center gap-1 text-xs text-gray-400"
@@ -654,19 +668,35 @@ function ClientDetail({ clientId, db2Connection, colSpan = 10 }: { clientId: str
               <p className="text-xs text-gray-400">No sync history yet</p>
             ) : (
               <div className="space-y-1.5">
-                {history.map(h => (
-                  <div key={h.id} className="flex items-center justify-between text-xs bg-white rounded px-3 py-2 border border-gray-100">
-                    <div className="flex items-center gap-2">
-                      <SyncStatusBadge status={h.status} />
-                      <span className="text-gray-600">{h.syncType}</span>
+                {history.map(h => {
+                  let errorMsg = '';
+                  if (h.errors) {
+                    try {
+                      const parsed = JSON.parse(h.errors);
+                      errorMsg = Array.isArray(parsed) ? parsed[0] : String(parsed);
+                    } catch {
+                      errorMsg = h.errors;
+                    }
+                  }
+                  return (
+                    <div key={h.id} className="text-xs bg-white rounded px-3 py-2 border border-gray-100">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <SyncStatusBadge status={h.status} />
+                          <span className="text-gray-600">{h.syncType}</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-gray-400">
+                          <span>+{h.jobsCreated} / ~{h.jobsUpdated}</span>
+                          {h.duration != null && <span>{h.duration}s</span>}
+                          <span>{fmt(h.startedAt)}</span>
+                        </div>
+                      </div>
+                      {errorMsg && (
+                        <p className="mt-1 text-red-600 font-mono truncate" title={errorMsg}>{errorMsg}</p>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3 text-gray-400">
-                      <span>+{h.jobsCreated} / ~{h.jobsUpdated}</span>
-                      {h.duration != null && <span>{h.duration}s</span>}
-                      <span>{fmt(h.startedAt)}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -3,7 +3,7 @@
 // ============================================================
 
 import axios from 'axios';
-import { ApiResponse, Job, JobExecution, DashboardStats, AlertEvent, Client, AppServer, SyncHistory } from '../types';
+import { ApiResponse, Job, JobExecution, DashboardStats, AlertEvent, Client, AppServer, SyncHistory, CronSyncBatchStatus } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -282,8 +282,11 @@ export const clientsApi = {
   syncAll: (): Promise<ApiResponse<any>> =>
     api.post('/clients/sync-all'),
 
-  syncAllCrons: (): Promise<ApiResponse<any>> =>
-    api.post('/clients/sync-all-crons', {}, { timeout: 0 }),
+  syncAllCrons: (opts?: { force?: boolean }): Promise<ApiResponse<any>> =>
+    api.post('/clients/sync-all-crons', opts ?? {}, { timeout: 0 }),
+
+  getCronSyncStatus: (): Promise<ApiResponse<CronSyncBatchStatus | null>> =>
+    api.get('/clients/cron-sync-status'),
 
   detectTimezones: (filter?: { cluster?: string; clientIds?: string[] }): Promise<ApiResponse<any>> =>
     api.post('/clients/detect-timezones', filter),

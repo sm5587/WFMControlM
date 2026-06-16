@@ -3,7 +3,11 @@ dist/
 build/
 .env
 *.log
+hs_err_pid*.log
 .DS_Store
 coverage/
 .nyc_output/
 prisma/migrations/
+deprecated/
+.saved_credentials.json
+.sfdx/
