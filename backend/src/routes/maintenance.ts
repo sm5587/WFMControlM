@@ -482,7 +482,6 @@ router.get('/:id/affected-jobs', async (req: Request, res: Response) => {
       if (seenKeys.has(key)) continue; // Already covered by Job table
       seenKeys.add(key);
 
-      const serverTz = cc.appServer ? undefined : undefined; // AppServer.timezone not included; fallback to client tz
       const tz = cc.client?.timezone ?? 'America/Chicago';
       const fireTimes = getFireTimesInWindow(cc.cronExpression, tz, win.startTimeUtc, win.endTimeUtc);
       if (fireTimes.length === 0) continue;

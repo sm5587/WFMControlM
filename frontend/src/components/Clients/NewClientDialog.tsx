@@ -111,13 +111,10 @@ export default function NewClientDialog({ onClose }: { onClose: () => void }) {
       clientsApi.create({
         clientId: form.clientId.trim().toUpperCase(),
         name: form.name.trim(),
-        description: form.description.trim() || undefined,
         cluster: form.cluster.trim(),
         timezone: form.timezone,
         isActive: form.isActive,
         whiteGlove: form.whiteGlove,
-        owner: form.owner.trim() || undefined,
-        team: form.team.trim() || undefined,
         db2Host: form.db2Host.trim() || undefined,
         db2Port: form.db2Host.trim() ? form.db2Port : undefined,
         db2Database: form.db2Database.trim() || undefined,

@@ -1,0 +1,43 @@
+FROM node:18-alpine AS base
+
+WORKDIR /app
+
+# Runtime packages:
+# - tini: proper PID 1 / signal handling
+# - libc6-compat: compatibility layer for some native modules
+RUN apk add --no-cache tini libc6-compat
+
+FROM base AS deps
+COPY package*.json ./
+RUN npm ci
+
+FROM deps AS build
+COPY tsconfig.json ./
+COPY prisma ./prisma/
+COPY src ./src/
+RUN npx prisma generate && npm run build
+
+FROM base AS runtime
+ENV NODE_ENV=production
+ENV PORT=4000
+
+WORKDIR /app
+
+COPY --from=deps /app/package*.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+
+RUN mkdir -p /app/logs /app/prisma \
+  && chown -R node:node /app
+
+USER node
+EXPOSE 4000
+
+# Healthcheck against backend health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1
+
+# Keep migration-on-start behavior (can be disabled per env)
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS:-true}\" = \"true\" ]; then npx prisma migrate deploy; fi && node dist/index.js"]

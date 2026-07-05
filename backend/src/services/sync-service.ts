@@ -159,6 +159,12 @@ function loadCredentials(): SSHCredentials {
         };
       }
       logger.info(`[Creds] ✓ Loaded from ${credPath} (mode: ${mode}, user: ${creds.username})`);
+      if (!creds.username || !creds.password) {
+        throw new Error(
+          `Credentials file ${credPath} is missing username or password (mode=${mode}). ` +
+          'Set secrets.sshUsername and secrets.sshPassword in Admin → Config, or fix the credentials file.',
+        );
+      }
       return creds;
     } catch (err: any) {
       logger.warn(`[Creds] Failed to load from ${credPath}: ${err.message}`);

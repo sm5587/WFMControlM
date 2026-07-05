@@ -213,12 +213,19 @@ export default function AlertCenter() {
   }, [selectedClientId, globalClients]);
 
   // ---- Derived ----
+  const clusterClientCodes = useMemo(() => {
+    if (!selectedCluster) return null;
+    return new Set(
+      globalClients.filter(c => c.cluster === selectedCluster).map(c => c.clientId),
+    );
+  }, [selectedCluster, globalClients]);
+
   const pendingAlerts = useMemo(() => {
     const all = allBatchData?.pendingAlerts ?? [];
     if (selectedClientCode) return all.filter(a => a.clientId === selectedClientCode);
-    if (selectedCluster) return all.filter(a => a.cluster === selectedCluster);
+    if (clusterClientCodes) return all.filter(a => clusterClientCodes.has(a.clientId));
     return all;
-  }, [allBatchData, selectedCluster, selectedClientCode]);
+  }, [allBatchData, clusterClientCodes, selectedClientCode]);
 
   const filteredEscalated = useMemo(() => {
     if (selectedClientCode) return escalated.filter(a => a.clientId === selectedClientCode);

@@ -167,6 +167,67 @@ router.get('/cron-sync-status', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /api/clients/reset-crons - Purge cron data only (manual re-sync via refresh)
+router.post('/reset-crons', requirePermission('CLIENTS_SYNC', 'write'), async (req: Request, res: Response) => {
+  try {
+    const { clientId } = req.body || {};
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, error: 'clientId is required. Bulk delete is disabled for safety.' });
+    }
+
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+      select: { id: true, clientId: true, name: true },
+    });
+    if (!client) {
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
+
+    logger.warn(`[CronReset] Purging cron data for client ${client.clientId} (${client.id})`);
+    await prisma.$transaction(async (tx) => {
+      await tx.syncHistory.deleteMany({ where: { clientId: client.id, syncType: 'CRON_SYNC' } });
+      await tx.cachedCronJob.deleteMany({ where: { clientId: client.id } });
+      await tx.job.deleteMany({
+        where: {
+          clientId: client.id,
+          sourceSystem: 'appserver_cron',
+        },
+      });
+      await tx.client.update({
+        where: { id: client.id },
+        data: {
+          lastCronSyncAt: null,
+          lastCronAttemptAt: null,
+          lastCronCacheAt: null,
+        },
+      });
+      await tx.appServer.updateMany({
+        where: { clientId: client.id },
+        data: {
+          lastCronFetchAt: null,
+          lastCronFetchStatus: null,
+          cronJobCount: null,
+        },
+      });
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        scope: 'client',
+        clientId: client.id,
+        clientCode: client.clientId,
+        purged: true,
+        message: 'Cron data deleted from SQLite. Use refresh to sync from appserver.',
+      },
+    });
+  } catch (error: any) {
+    logger.error(`Reset-crons failed: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/clients/:id - Get client detail with servers
 router.get('/:id', async (req: Request, res: Response) => {
   try {

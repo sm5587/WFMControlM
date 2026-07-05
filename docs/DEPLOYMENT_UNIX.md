@@ -21,10 +21,10 @@ See also:
 
 ```bash
 # On the Unix host
-sudo mkdir -p /opt/wfm-controlm
-sudo chown $USER:$USER /opt/wfm-controlm
-git clone <your-repo-url> /opt/wfm-controlm
-cd /opt/wfm-controlm
+sudo mkdir -p /application/wfmwatch
+sudo chown $USER:$USER /application/wfmwatch
+git clone <your-repo-url> /application/wfmwatch
+cd /application/wfmwatch
 ```
 
 If git is unavailable, transfer **source only** (exclude `node_modules/`, `dist/`, `*.log`, `backend/prisma/dev.db`):
@@ -32,7 +32,7 @@ If git is unavailable, transfer **source only** (exclude `node_modules/`, `dist/
 ```bash
 rsync -av --exclude node_modules --exclude dist --exclude '*.log' \
   --exclude backend/prisma/dev.db \
-  ./WFMControlM/ user@unix-box:/opt/wfm-controlm/
+  ./WFMControlM/ user@unix-box:/application/wfmwatch/
 ```
 
 ---
@@ -88,9 +88,9 @@ Then set in **Admin → Config** (or `AppConfig` rows after bootstrap):
 
 | Key | Example (Unix) |
 | --- | -------------- |
-| `infra.db2LibDir` | `/opt/wfm-controlm/lib` |
+| `infra.db2LibDir` | `/application/wfmwatch/lib` |
 | `infra.db2JjsPath` | `/usr/lib/jvm/java-1.8.0-openjdk/bin/jjs` |
-| `infra.db2ConnDir` | `/opt/wfm-controlm/dbconnections/Production` |
+| `infra.db2ConnDir` | `/application/wfmwatch/dbconnections/Production` |
 
 ---
 
@@ -110,7 +110,7 @@ sudo systemctl enable --now docker
 ### Deploy
 
 ```bash
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 
 # 1. Bootstrap environment
 cp .env.example .env
@@ -190,7 +190,7 @@ sudo yum install -y java-1.8.0-openjdk
 ### Build and deploy
 
 ```bash
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 
 # 1. Bootstrap environment
 cp .env.example .env
@@ -288,7 +288,7 @@ Client/AppServer inventory is **environment-specific** — load via Admin or imp
 
 ```bash
 # --- From git (first time) ---
-git clone <repo-url> /opt/wfm-controlm && cd /opt/wfm-controlm
+git clone <repo-url> /application/wfmwatch && cd /application/wfmwatch
 cp .env.example .env && vi .env
 npm run install:all && npm run build
 npm run db:deploy && npm run db:bootstrap
@@ -307,6 +307,10 @@ pm2 stop wfm-backend
 
 # --- SQL export (dev/release prep) ---
 npm run db:extract          # regenerate database/ddl.sql + dml.sql
+
+# --- Deployed app version ---
+cat VERSION
+# Example format: 1.0.0+acbafac.20260616T062000Z
 ```
 
 ---

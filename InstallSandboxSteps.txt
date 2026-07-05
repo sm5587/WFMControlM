@@ -1,0 +1,18 @@
+WFMWATCH installation
+
+---sudo su - appadmin
+
+copy complete zip in \application\wfmwatch folder
+run \application\wfmwatch\scripts\setup-db.sh
+
+/babel-plugin-istanbul/node_modules/
+
+
+z182st-bmrrwssbwas01
+
+http://z182st-bmrrwssbwas01:5555/
+
+sqlite3 "$DB" "UPDATE AppConfig SET value='http://10.182.214.25:3000,http://10.182.214.25:3100' WHERE key='infra.corsOrigins';"
+
+sqlite3 -header -column "$DB" "SELECT key,value FROM AppConfig WHERE key IN ('infra.port','infra.corsOrigins');"
+

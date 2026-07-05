@@ -62,7 +62,8 @@ function sqlLiteral(value) {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'boolean') return value ? '1' : '0';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-  if (value instanceof Date) return `'${value.toISOString().replace('T', ' ').replace('Z', '')}'`;
+  // Prisma SQLite stores DateTime as integer ms; text literals break Linux query engine.
+  if (value instanceof Date) return String(value.getTime());
   if (typeof value === 'bigint') return value.toString();
   if (Buffer.isBuffer(value)) return `'${value.toString('hex')}'`;
   return `'${String(value).replace(/'/g, "''")}'`;

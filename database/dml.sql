@@ -4,8 +4,7 @@
 -- It is safe to rerun because statements use INSERT OR IGNORE / OR REPLACE.
 --
 -- NOTE:
--- 1) Client/AppServer inventory is environment-specific and should be loaded
---    via import scripts/admin APIs, not hardcoded in this file.
+-- 1) Client/AppServer inventory is in database/clients-dml.sql (apply after this file).
 -- 2) Replace placeholder secret values before production rollout.
 
 -- ============================================================

@@ -33,6 +33,24 @@ interface FieldCacheEntry {
   expiresAt: number;
 }
 
+export interface DB2ClientConfig {
+  db2Host?: string | null;
+  db2Port?: number | null;
+  db2Database?: string | null;
+  db2Schema?: string | null;
+  db2Username?: string | null;
+  db2Password?: string | null;
+}
+
+export interface DB2Credentials {
+  username: string;
+  password: string;
+  database: string;
+  schema: string;
+  host?: string;
+  port?: number;
+}
+
 class KeeperService {
   private initialized = false;
   private fieldCache = new Map<string, FieldCacheEntry>();
@@ -129,10 +147,61 @@ class KeeperService {
     }
   }
 
-  /** Evict all cached secrets (call after a vault rotation) */
-  clearCache(): void {
-    this.fieldCache.clear();
-    logger.info('Keeper secret cache cleared');
+  /** Evict cached secrets (all entries, or one client when clientId is given) */
+  clearCache(clientId?: string): void {
+    if (!clientId) {
+      this.fieldCache.clear();
+      logger.info('Keeper secret cache cleared');
+      return;
+    }
+
+    const prefix = `${clientId}::`;
+    for (const key of this.fieldCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.fieldCache.delete(key);
+      }
+    }
+    logger.info(`Keeper secret cache cleared for ${clientId}`);
+  }
+
+  /**
+   * Resolve DB2 credentials for a client.
+   * Prisma/connection-file values are the base; Keeper login/password override when configured.
+   */
+  async getDB2Credentials(clientId: string, clientConfig: DB2ClientConfig): Promise<DB2Credentials> {
+    const database = clientConfig.db2Database?.trim();
+    if (!database) {
+      throw new Error(`DB2 database not configured for ${clientId}`);
+    }
+
+    let username =
+      clientConfig.db2Username?.trim() ||
+      config.keeper.db2Username?.trim() ||
+      '';
+    let password =
+      clientConfig.db2Password?.trim() ||
+      config.keeper.db2Password?.trim() ||
+      '';
+
+    if (this.isConfigured()) {
+      const keeperLogin = await this.getLogin(clientId);
+      const keeperPass = await this.getPassword(clientId);
+      if (keeperLogin) username = keeperLogin;
+      if (keeperPass) password = keeperPass;
+    }
+
+    if (!username || !password) {
+      throw new Error(`DB2 credentials not configured for ${clientId}`);
+    }
+
+    return {
+      username,
+      password,
+      database,
+      schema: clientConfig.db2Schema?.trim() || 'WFMADM',
+      host: clientConfig.db2Host ?? undefined,
+      port: clientConfig.db2Port ?? undefined,
+    };
   }
 
   getStatus(): { configured: boolean; initialized: boolean; cachedEntries: number } {

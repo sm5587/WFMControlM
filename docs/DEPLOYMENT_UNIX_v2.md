@@ -66,18 +66,18 @@ git --version
 ### Step 2 - Get source code (Git preferred)
 
 ```bash
-sudo mkdir -p /opt/wfm-controlm
-sudo chown "$USER":"$USER" /opt/wfm-controlm
-git clone <repo-url> /opt/wfm-controlm
-cd /opt/wfm-controlm
+sudo mkdir -p /application/wfmwatch
+sudo chown "$USER":"$USER" /application/wfmwatch
+git clone <repo-url> /application/wfmwatch
+cd /application/wfmwatch
 ```
 
 If git is unavailable, copy a prepared source zip from Windows and extract:
 
 ```bash
-mkdir -p /opt/wfm-controlm
+mkdir -p /application/wfmwatch
 unzip /path/to/WFMControlM-unix-bundle-*.zip -d /opt
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 ```
 
 ### Step 3 - Configure bootstrap environment
@@ -116,7 +116,7 @@ npm run db:bootstrap   # fresh setup only
 ### Step 6 - Start backend service
 
 ```bash
-cd /opt/wfm-controlm/backend
+cd /application/wfmwatch/backend
 npm install -g pm2
 pm2 start dist/index.js --name wfm-backend
 pm2 save
@@ -154,7 +154,7 @@ sudo yum install -y sqlite
 ### Configure DB path
 
 ```bash
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 cp .env.example .env
 ```
 
@@ -199,10 +199,10 @@ sqlite3 backend/prisma/dev.db "SELECT key, value FROM AppConfig LIMIT 10;"
 
 ```bash
 # 1) Get source
-sudo mkdir -p /opt/wfm-controlm
-sudo chown "$USER":"$USER" /opt/wfm-controlm
-git clone <repo-url> /opt/wfm-controlm
-cd /opt/wfm-controlm
+sudo mkdir -p /application/wfmwatch
+sudo chown "$USER":"$USER" /application/wfmwatch
+git clone <repo-url> /application/wfmwatch
+cd /application/wfmwatch
 
 # 2) Env bootstrap
 cp .env.example .env
@@ -231,7 +231,7 @@ npm run db:bootstrap
 
 ```bash
 # backend
-cd /opt/wfm-controlm/backend
+cd /application/wfmwatch/backend
 pm2 start dist/index.js --name wfm-backend
 pm2 save
 
@@ -249,7 +249,7 @@ curl -I http://localhost:3000
 ### Option B: Docker Compose
 
 ```bash
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 docker compose up -d --build
 docker compose ps
 ```
@@ -276,7 +276,7 @@ After first login:
 ### Routine update (existing prod/stage DB)
 
 ```bash
-cd /opt/wfm-controlm
+cd /application/wfmwatch
 git pull --rebase
 npm run install:all
 npm run build

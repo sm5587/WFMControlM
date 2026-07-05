@@ -11,3 +11,11 @@ prisma/migrations/
 deprecated/
 .saved_credentials.json
 .sfdx/
+
+# Local SQLite databases (environment-specific; seed via database/*.sql)
+backend/prisma/dev.db
+backend/prisma/*.db-journal
+*.db-journal
+
+# Deploy/runtime artifacts
+VERSION

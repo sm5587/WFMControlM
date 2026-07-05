@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  backend:
+    # Pull image from registry instead of building on Unix host.
+    image: ${REGISTRY}/wfm-controlm-backend:${RELEASE_TAG}
+    build: null
+    pull_policy: always
+
+  frontend:
+    image: ${REGISTRY}/wfm-controlm-frontend:${RELEASE_TAG}
+    build: null
+    pull_policy: always
