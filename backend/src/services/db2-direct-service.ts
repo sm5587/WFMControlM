@@ -20,6 +20,76 @@ import { prisma } from '../database/prisma';
 const execFileAsync = promisify(execFile);
 const logger = createServiceLogger('DB2Direct');
 
+/** Resolve jjs binary — never use a Windows path on Linux/WSL. */
+function resolveJjsPath(configured: string): string {
+  const trimmed = configured?.trim();
+  if (trimmed) {
+    const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed) || trimmed.includes('\\');
+    if (process.platform !== 'win32' && isWindowsPath) {
+      logger.warn(`[DB2_INIT] Ignoring Windows jjs path on ${process.platform}: ${trimmed}`);
+    } else if (fs.existsSync(trimmed)) {
+      return trimmed;
+    } else if (trimmed === 'jjs' || trimmed === 'jjs.exe') {
+      return trimmed;
+    } else {
+      logger.warn(`[DB2_INIT] Configured jjs path not found (${trimmed}); auto-detecting`);
+    }
+  }
+  if (process.env.JJS_PATH?.trim()) {
+    const fromEnv = process.env.JJS_PATH.trim();
+    if (fs.existsSync(fromEnv) || fromEnv === 'jjs' || fromEnv === 'jjs.exe') return fromEnv;
+  }
+
+  const candidates: string[] = [];
+  if (process.platform === 'win32') {
+    candidates.push(
+      'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\jjs.exe',
+      'C:\\Program Files (x86)\\Java\\jre1.8.0_491\\bin\\jjs.exe',
+    );
+    for (const root of ['C:\\Program Files\\Java', 'C:\\Program Files (x86)\\Java']) {
+      try {
+        if (!fs.existsSync(root)) continue;
+        for (const entry of fs.readdirSync(root)) {
+          const exe = path.join(root, entry, 'bin', 'jjs.exe');
+          if (fs.existsSync(exe)) candidates.push(exe);
+        }
+      } catch { /* ignore unreadable dirs */ }
+    }
+    candidates.push('jjs.exe', 'jjs');
+  } else {
+    candidates.push(
+      '/usr/bin/jjs',
+      '/usr/lib/jvm/java-8-openjdk-amd64/bin/jjs',
+      '/usr/lib/jvm/java-1.8.0-openjdk-amd64/bin/jjs',
+      '/usr/lib/jvm/java-8-openjdk/bin/jjs',
+      '/usr/lib/jvm/java-1.8.0-openjdk/bin/jjs',
+    );
+    candidates.push('jjs');
+  }
+
+  for (const candidate of candidates) {
+    if (candidate === 'jjs' || candidate === 'jjs.exe') continue;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return process.platform === 'win32' ? 'jjs.exe' : 'jjs';
+}
+
+function resolveLibDir(configured: string, root: string): string {
+  const trimmed = configured?.trim();
+  if (trimmed) {
+    const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed) || trimmed.includes('\\');
+    if (process.platform !== 'win32' && isWindowsPath) {
+      logger.warn(`[DB2_INIT] Ignoring Windows lib dir on ${process.platform}: ${trimmed}`);
+    } else if (fs.existsSync(trimmed)) {
+      return trimmed;
+    } else {
+      logger.warn(`[DB2_INIT] Configured lib dir not found (${trimmed}); using ./lib`);
+    }
+  }
+  return path.join(root, 'lib');
+}
+
 type BatchSummary = {
   clients: Record<string, { groups: BatchJobGroup[]; error?: string }>;
   pendingAlerts: { clientId: string; stalePendingCount: number; totalPending: number }[];
@@ -93,31 +163,24 @@ const STATUS_MAP: Record<string, string> = {
 // ============================================================
 
 class DB2DirectService {
-  private readonly jjsPath: string;
-  private readonly connectorScript: string;
-  private readonly db2Jar: string;
+  private readonly root: string;
   private readonly activeProcesses = new Set<ChildProcess>();
   private shuttingDown = false;
   private batchSummaryCache = new Map<number, { data: BatchSummary; updatedAtMs: number }>();
 
   constructor() {
-    const root = path.resolve(__dirname, '../../..');
-    const libDir = configService.getString('infra.db2LibDir');
-    const jjsPath = configService.getString('infra.db2JjsPath');
+    this.root = path.resolve(__dirname, '../../..');
+  }
 
-    if (!libDir) {
-      logger.warn('[DB2_INIT] infra.db2LibDir is empty; falling back to local ./lib path');
-    }
-    if (!jjsPath) {
-      logger.warn('[DB2_INIT] infra.db2JjsPath is empty; using default jjs path fallback');
-    }
-
-    const effectiveLibDir = libDir || path.join(root, 'lib');
-    const effectiveJjsPath = jjsPath || process.env.JJS_PATH || 'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\jjs.exe';
-
-    this.connectorScript = path.join(effectiveLibDir, 'DB2Connector.js');
-    this.db2Jar = path.join(effectiveLibDir, 'db2jcc4.jar');
-    this.jjsPath = effectiveJjsPath;
+  /** Resolve paths at call time — AppConfig is loaded after module import. */
+  private resolveRuntimePaths(): { jjsPath: string; connectorScript: string; db2Jar: string } {
+    const libDir = resolveLibDir(configService.getString('infra.db2LibDir'), this.root);
+    const jjsPath = resolveJjsPath(configService.getString('infra.db2JjsPath'));
+    return {
+      jjsPath,
+      connectorScript: path.join(libDir, 'DB2Connector.js'),
+      db2Jar: path.join(libDir, 'db2jcc4.jar'),
+    };
   }
 
   /**
@@ -446,7 +509,8 @@ class DB2DirectService {
     }
 
     const safeClient = clientId.replace(/[^a-zA-Z0-9_]/g, '');
-    const args = ['-cp', this.db2Jar, this.connectorScript, '--', action, safeClient];
+    const { jjsPath, connectorScript, db2Jar } = this.resolveRuntimePaths();
+    const args = ['-cp', db2Jar, connectorScript, '--', action, safeClient];
     if (sql) args.push(sql);
 
     // Build child env: start with Prisma-sourced connection details,
@@ -454,7 +518,7 @@ class DB2DirectService {
     const childEnv = await this.buildConnEnv(safeClient, caller);
 
     return new Promise((resolve) => {
-      const child = execFile(this.jjsPath, args, {
+      const child = execFile(jjsPath, args, {
         cwd: path.resolve(__dirname, '../../..'),
         timeout: configService.getInt('engine.jjsTimeoutMs'),
         maxBuffer: configService.getInt('engine.jjsMaxBuffer'),

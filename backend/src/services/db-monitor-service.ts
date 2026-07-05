@@ -83,6 +83,8 @@ class DBMonitorService {
       db2Port: client.db2Port,
       db2Database: client.db2Database,
       db2Schema: client.db2Schema,
+      db2Username: client.db2Username,
+      db2Password: client.db2Password,
     });
 
     return { client, server, db2Creds };
@@ -125,6 +127,8 @@ class DBMonitorService {
         db2Port: clientRow.db2Port,
         db2Database: clientRow.db2Database,
         db2Schema: clientRow.db2Schema,
+        db2Username: clientRow.db2Username,
+        db2Password: clientRow.db2Password,
       });
     } catch (err: any) {
       result.error = `Credentials error: ${err.message}`;

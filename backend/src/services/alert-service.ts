@@ -3,6 +3,7 @@
 // ============================================================
 
 import nodemailer from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import https from 'https';
 import dayjs from 'dayjs';
 import utcPlugin from 'dayjs/plugin/utc';
@@ -75,7 +76,7 @@ export class AlertService extends EventEmitter {
 
     const { host, port } = endpoint;
     const hasAuth = !!(config.smtp.user);
-    const transportOptions: nodemailer.TransportOptions = {
+    this.emailTransporter = nodemailer.createTransport({
       host,
       port,
       secure: port === 465,
@@ -84,8 +85,7 @@ export class AlertService extends EventEmitter {
         ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
         : { ignoreTLS: true }),
       tls: { rejectUnauthorized: false },
-    } as nodemailer.TransportOptions;
-    this.emailTransporter = nodemailer.createTransport(transportOptions);
+    } as unknown as SMTPTransport.Options);
     logger.info(`Email transporter initialized (host=${host}:${port}, auth=${hasAuth ? 'yes' : 'none'})`);
   }
 

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/dotenv.sh
+source "$SCRIPT_DIR/lib/dotenv.sh"
+
 # One-shot Unix deployment helper for WFM Control-M.
 # Default behavior prepares DB completely (migrations + DDL + DML).
 #
 # Assumes source ZIP has already been extracted on Unix.
 #
 # Optional env vars:
-#   APP_DIR=/opt/wfm-controlm
+#   APP_DIR=...              # override; default is APP_DIR from .env
 #   BOOTSTRAP_DB=true|false         # default true (runs DDL/DML bootstrap)
 #   INSTALL_DEPS=true|false
 #   BUILD_APP=true|false
@@ -18,7 +22,8 @@ set -euo pipefail
 # - Ensure .env is configured (DATABASE_URL, CONFIG_ENCRYPTION_KEY) before first run.
 # - Pass -h or --help to print this help.
 
-APP_DIR="${APP_DIR:-/opt/wfm-controlm}"
+APP_DIR="$(resolve_app_dir "$SCRIPT_DIR")"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
 BOOTSTRAP_DB="${BOOTSTRAP_DB:-true}"
 INSTALL_DEPS="${INSTALL_DEPS:-true}"
 BUILD_APP="${BUILD_APP:-true}"
@@ -39,6 +44,17 @@ require_cmd() {
   }
 }
 
+write_version_file() {
+  local pkg_ver git_sha stamp version_value
+  pkg_ver="$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")"
+  git_sha="$(git rev-parse --short HEAD 2>/dev/null || echo "nogit")"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  version_value="${pkg_ver}+${git_sha}.${stamp}"
+
+  printf "%s\n" "$version_value" > VERSION
+  log "Wrote VERSION: $version_value"
+}
+
 require_cmd node
 require_cmd npm
 
@@ -49,6 +65,7 @@ fi
 
 cd "$APP_DIR"
 log "Using extracted source at: $APP_DIR"
+write_version_file
 
 if [[ ! -f ".env" ]]; then
   if [[ -f ".env.example" ]]; then
@@ -68,21 +85,45 @@ EOF
 fi
 
 # Parse DATABASE_URL from .env (supports DATABASE_URL=file:./dev.db pattern).
-DB_URL_LINE="$(grep -E '^DATABASE_URL=' .env || true)"
-DB_URL_VALUE="${DB_URL_LINE#DATABASE_URL=}"
-DB_URL_VALUE="${DB_URL_VALUE%\"}"
-DB_URL_VALUE="${DB_URL_VALUE#\"}"
+DB_URL_VALUE="$(dotenv_read_database_url ".env" || true)"
 if [[ -z "$DB_URL_VALUE" ]]; then
   echo "[deploy-unix] DATABASE_URL is missing in .env" >&2
   exit 1
 fi
 
+# Prisma CLI runs from backend/ (via npm script), so export DATABASE_URL explicitly.
+export DATABASE_URL="$DB_URL_VALUE"
+
 if [[ "$DB_URL_VALUE" == file:* ]]; then
   # Prisma SQLite path is relative to backend/ in this repo.
   REL_DB_PATH="${DB_URL_VALUE#file:}"
-  DB_PATH="$APP_DIR/backend/${REL_DB_PATH#./}"
+  if [[ "$REL_DB_PATH" =~ ^[A-Za-z]:[/\\] ]]; then
+    echo "[deploy-unix] DATABASE_URL uses a Windows path ($REL_DB_PATH)." >&2
+    echo "[deploy-unix] In WSL/Unix use a path relative to backend/, e.g. file:./prisma/dev.db" >&2
+    exit 1
+  fi
+  if [[ "$REL_DB_PATH" == /* ]]; then
+    DB_PATH="$REL_DB_PATH"
+  else
+    DB_PATH="$(resolve_sqlite_db_path "$APP_DIR" "$DB_URL_VALUE")"
+  fi
 else
   DB_PATH="(non-sqlite-url)"
+fi
+
+if [[ "$DB_PATH" != "(non-sqlite-url)" ]]; then
+  DB_DIR="$(dirname "$DB_PATH")"
+  if ! mkdir -p "$DB_DIR" 2>/dev/null; then
+    echo "[deploy-unix] Cannot create SQLite directory: $DB_DIR" >&2
+    echo "[deploy-unix] Fix ownership: sudo chown -R \"\$(whoami)\" \"$APP_DIR\"" >&2
+    exit 1
+  fi
+  if [[ ! -w "$DB_DIR" ]]; then
+    echo "[deploy-unix] SQLite directory is not writable: $DB_DIR" >&2
+    exit 1
+  fi
+  chmod 775 "$DB_DIR" 2>/dev/null || true
+  log "SQLite DB path: $DB_PATH (Prisma resolves file: URLs relative to backend/prisma/)"
 fi
 
 if [[ "$INSTALL_DEPS" == "true" ]]; then
@@ -100,11 +141,26 @@ else
 fi
 
 log "Preparing database schema via Prisma migrations"
+log "Generating Prisma client for this host runtime"
+npm --prefix backend run prisma:generate
 npm run db:deploy
 
 if [[ "$BOOTSTRAP_DB" == "true" ]]; then
   log "Applying DDL/DML bootstrap (database/ddl.sql + database/dml.sql)"
-  npm run db:bootstrap
+  if npm run db:bootstrap; then
+    log "SQL bootstrap via Node/Prisma succeeded"
+  else
+    log "Node/Prisma SQL bootstrap failed; applying DDL/DML directly with sqlite3 fallback"
+    if [[ "$DB_PATH" == "(non-sqlite-url)" ]]; then
+      echo "[deploy-unix] sqlite3 fallback is only supported for SQLite DATABASE_URL values" >&2
+      exit 1
+    fi
+    sqlite3 "$DB_PATH" < "$APP_DIR/database/ddl.sql"
+    sqlite3 "$DB_PATH" < "$APP_DIR/database/dml.sql"
+    apply_clients_dml_sql "$APP_DIR" "$DB_PATH"
+    log "SQL bootstrap via sqlite3 fallback succeeded"
+  fi
+  configure_unix_infra_paths "$APP_DIR" "$DB_PATH"
 else
   log "Skipping DDL/DML bootstrap (BOOTSTRAP_DB=false)"
 fi

@@ -31,13 +31,13 @@ services:
       - backend
 
   # Local SMTP catcher for testing email notifications
-  mailpit:
-    image: axllent/mailpit:latest
-    container_name: wfm-mailpit
-    restart: unless-stopped
-    ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI
+  #mailpit:
+   # image: axllent/mailpit:latest
+   # container_name: wfm-mailpit
+    #restart: unless-stopped
+    #ports:
+    #  - "1025:1025"   # SMTP
+    #  - "8025:8025"   # Web UI
 
 volumes:
   backend_logs:

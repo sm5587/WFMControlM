@@ -285,6 +285,9 @@ export const clientsApi = {
   syncAllCrons: (opts?: { force?: boolean }): Promise<ApiResponse<any>> =>
     api.post('/clients/sync-all-crons', opts ?? {}, { timeout: 0 }),
 
+  resetCrons: (opts?: { clientId?: string }): Promise<ApiResponse<any>> =>
+    api.post('/clients/reset-crons', opts ?? {}, { timeout: 0 }),
+
   getCronSyncStatus: (): Promise<ApiResponse<CronSyncBatchStatus | null>> =>
     api.get('/clients/cron-sync-status'),
 

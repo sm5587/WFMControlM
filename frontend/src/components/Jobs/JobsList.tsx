@@ -67,7 +67,9 @@ export default function JobsList() {
   const [logViewerJob, setLogViewerJob] = useState<Job | null>(null);
   const [clientSearch, setClientSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [resettingCrons, setResettingCrons] = useState(false);
   const [syncingMessage, setSyncingMessage] = useState('');
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [filterDate, setFilterDate] = useState('');
   const [filterTimeFrom, setFilterTimeFrom] = useState('');
   const [filterTimeTo, setFilterTimeTo] = useState('');
@@ -75,6 +77,10 @@ export default function JobsList() {
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
 
   const { connStatus, connTesting } = useDbClientConnections();
+  const showToast = (type: 'success' | 'error', msg: string) => {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 5000);
+  };
 
   const { data: clientsData } = useQuery({
     queryKey: ['clients-list-active'],
@@ -295,6 +301,16 @@ export default function JobsList() {
 
   return (
     <div className="p-6 space-y-6">
+      {toast && (
+        <div className={`flex items-center gap-2 px-4 py-2 rounded text-sm border ${
+          toast.type === 'success'
+            ? 'bg-green-50 text-green-700 border-green-200'
+            : 'bg-red-50 text-red-700 border-red-200'
+        }`}>
+          {toast.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+          {toast.msg}
+        </div>
+      )}
       {/* Last refresh + cron sync status */}
       <div className="space-y-2">
         {jobsUpdatedAt && (
@@ -509,6 +525,41 @@ export default function JobsList() {
         >
           <RefreshCw className={`w-4 h-4 ${syncing || isLoading ? 'animate-spin' : ''}`} />
         </button>
+        {clientFilter && clientFilter !== 'none' && clients.find(cl => cl.id === clientFilter) && (
+          <button
+            onClick={async () => {
+              if (resettingCrons || syncing) return;
+              const targetClient = clients.find(cl => cl.id === clientFilter);
+              if (!targetClient) return;
+              const message = `Delete synced cron data for ${targetClient.clientId}, then fetch fresh from appserver?`;
+              if (!confirm(message)) return;
+
+              setResettingCrons(true);
+              setSyncingMessage(`Deleting cron data for ${targetClient.clientId}...`);
+              try {
+                await clientsApi.resetCrons({ clientId: targetClient.id });
+                await queryClient.refetchQueries({ queryKey: ['cron-sync-status'] });
+                queryClient.invalidateQueries({ queryKey: ['jobs-all'] });
+                queryClient.invalidateQueries({ queryKey: ['clients'] });
+                queryClient.invalidateQueries({ queryKey: ['clients-list-active'] });
+                queryClient.invalidateQueries({ queryKey: ['client-sync-history'] });
+                await refetch();
+                showToast('success', `Cron data deleted for ${targetClient.clientId}. Click Refresh to sync from appserver.`);
+              } catch (err: any) {
+                console.error('Cron reset failed:', err?.response?.data?.error || err.message);
+                showToast('error', err?.response?.data?.error || err?.message || 'Cron reset failed');
+              } finally {
+                setResettingCrons(false);
+                setSyncingMessage('');
+              }
+            }}
+            className={`p-2 text-red-500 hover:text-red-700 ${resettingCrons || syncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title="Delete and re-fetch selected client cron data"
+            disabled={resettingCrons || syncing}
+          >
+            <Trash2 className={`w-4 h-4 ${resettingCrons ? 'animate-pulse' : ''}`} />
+          </button>
+        )}
 
         {/* Time-range filter toggle */}
         <button
@@ -926,7 +977,7 @@ type CronSyncStatusBannerProps = {
   batch: CronSyncBatchStatus | null;
   syncing: boolean;
   syncingMessage: string;
-  fmt: (iso: string, mode?: 'time' | 'date' | 'datetime') => string;
+  fmt: (iso: string | null | undefined, style?: 'full' | 'short' | 'time' | 'date') => string;
 };
 
 function CronSyncStatusBanner({ batch, syncing, syncingMessage, fmt }: CronSyncStatusBannerProps) {
@@ -964,7 +1015,7 @@ function CronSyncStatusBanner({ batch, syncing, syncingMessage, fmt }: CronSyncS
   } as const;
 
   const ok = batch.succeeded + batch.partial;
-  const when = batch.finishedAt ? fmt(batch.finishedAt, 'datetime') : '';
+  const when = batch.finishedAt ? fmt(batch.finishedAt, 'full') : '';
   const message = `Last cron sync: ${ok} synced, ${batch.failed} failed (${batch.total} clients)${when ? ` at ${when}` : ''}`;
   const details = batch.sampleErrors.map(e => `${e.clientId}: ${e.error}`);
 

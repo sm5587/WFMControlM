@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/dotenv.sh
+source "$SCRIPT_DIR/lib/dotenv.sh"
+
 # Create SQLite DB file from DATABASE_URL and apply Prisma migrations.
 # Use this when you want schema only (no DDL/DML bootstrap seed data).
 
-APP_DIR="${APP_DIR:-/application/wfmwatch}"
+APP_DIR="$(resolve_app_dir "$SCRIPT_DIR")"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
 
 log() {
@@ -29,11 +33,7 @@ fi
 
 cd "$APP_DIR"
 
-DB_URL_LINE="$(grep -E '^DATABASE_URL=' "$ENV_FILE" || true)"
-DB_URL_VALUE="${DB_URL_LINE#DATABASE_URL=}"
-DB_URL_VALUE="${DB_URL_VALUE%\"}"
-DB_URL_VALUE="${DB_URL_VALUE#\"}"
-
+DB_URL_VALUE="$(dotenv_read_database_url "$ENV_FILE" || true)"
 if [[ -z "$DB_URL_VALUE" || "$DB_URL_VALUE" != file:* ]]; then
   echo "[create-db] DATABASE_URL must be SQLite file URL (example: file:./dev.db)" >&2
   exit 1
@@ -43,8 +43,7 @@ REL_DB_PATH="${DB_URL_VALUE#file:}"
 if [[ "$REL_DB_PATH" == /* ]]; then
   DB_PATH="$REL_DB_PATH"
 else
-  # Prisma resolves relative SQLite paths from backend/.
-  DB_PATH="$APP_DIR/backend/${REL_DB_PATH#./}"
+  DB_PATH="$(resolve_sqlite_db_path "$APP_DIR" "$DB_URL_VALUE")"
 fi
 DB_DIR="$(dirname "$DB_PATH")"
 
