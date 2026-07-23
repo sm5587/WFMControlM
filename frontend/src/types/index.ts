@@ -255,14 +255,6 @@ export interface MaintenanceCalendarEntry {
   month: number;
   year: number;
   status: string; // SCHEDULED | CANCELLED
-  /** Pre-computed at import */
-  title?: string | null;
-  startTimeUtc?: string | null;
-  endTimeUtc?: string | null;
-  startLocal?: string | null;
-  endLocal?: string | null;
-  /** Derived at read from stored UTC times */
-  derivedStatus?: string;
 }
 
 export interface CalendarImportEntry {

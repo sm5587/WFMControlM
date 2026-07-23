@@ -1,7 +1,3 @@
-# Windows / PowerShell offline bundle builder.
-# On WSL or Linux, use the bash equivalent instead:
-#   bash ./scripts/prepare-unix-offline-bundle.sh
-
 param(
     [string]$OutputZip = "",
     [switch]$SkipInstall,

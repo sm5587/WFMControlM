@@ -107,8 +107,8 @@ fi
 
 "$PM2_BIN" save
 
-# Resolve backend port from AppConfig (if available); default 4005.
-BACKEND_PORT="4005"
+# Resolve backend port from AppConfig (if available); default 4000.
+BACKEND_PORT="4000"
 DB_URL_VALUE="$(dotenv_read_database_url "$ENV_FILE" || true)"
 if [[ -n "$DB_URL_VALUE" && "$DB_URL_VALUE" == file:* ]] && command -v sqlite3 >/dev/null 2>&1; then
   REL_DB_PATH="${DB_URL_VALUE#file:}"

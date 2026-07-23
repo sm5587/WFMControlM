@@ -9,16 +9,14 @@ services:
     container_name: wfm-controlm-api
     restart: unless-stopped
     ports:
-      - "4005:4005"
-    environment:
-      PORT: "4005"
+      - "4000:4000"
     env_file:
       - .env
     # Bootstrap vars only in .env (DATABASE_URL, CONFIG_ENCRYPTION_KEY, Keeper paths).
     # SMTP, port, DB2 paths, etc. → AppConfig in the DB (Admin → Config).
     volumes:
       - backend_logs:/app/logs
-      - ./lib:/app/lib:ro
+      - ./config/lib:/config/lib:ro
 
   # Frontend (Nginx serving React build)
   frontend:
@@ -28,9 +26,18 @@ services:
     container_name: wfm-controlm-ui
     restart: unless-stopped
     ports:
-      - "3005:80"
+      - "3000:80"
     depends_on:
       - backend
+
+  # Local SMTP catcher for testing email notifications
+  #mailpit:
+   # image: axllent/mailpit:latest
+   # container_name: wfm-mailpit
+    #restart: unless-stopped
+    #ports:
+    #  - "1025:1025"   # SMTP
+    #  - "8025:8025"   # Web UI
 
 volumes:
   backend_logs:

@@ -408,12 +408,12 @@ fi
 
 section "Ports"
 if cmd_exists ss; then
-  LISTEN="$(ss -ltnp 2>/dev/null | egrep ':3005|:4005' || true)"
+  LISTEN="$(ss -ltnp 2>/dev/null | egrep ':3000|:4000' || true)"
   if [[ -n "$LISTEN" ]]; then
-    warn "Ports 3005/4005 currently in use:"
+    warn "Ports 3000/4000 currently in use:"
     echo "$LISTEN"
   else
-    pass "Ports 3005 and 4005 are not currently listening"
+    pass "Ports 3000 and 4000 are not currently listening"
   fi
 else
   warn "'ss' command not available; skipped port check"

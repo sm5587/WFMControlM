@@ -14,7 +14,6 @@
 import { PrismaClient } from '@prisma/client';
 import fs from 'fs';
 import path from 'path';
-import { encryptClientDb2Password } from '../src/utils/client-db2-password';
 
 const prisma = new PrismaClient();
 const connDir = path.resolve(__dirname, '../../dbconnections/Production');
@@ -110,7 +109,7 @@ async function main() {
         db2Port:     info.port,
         db2Database: info.database,
         db2Username: info.username,
-        db2Password: encryptClientDb2Password(info.password),
+        db2Password: info.password,
       },
     });
 

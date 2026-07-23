@@ -5,7 +5,6 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketServer, Socket } from 'socket.io';
 import { createServiceLogger } from '../utils/logger';
-import { configService } from '../services/config-service';
 import { jobExecutor } from '../engine/executor';
 import { alertService } from '../services/alert-service';
 import { monitoringService } from '../services/monitoring-service';
@@ -15,14 +14,9 @@ const logger = createServiceLogger('WebSocket');
 let io: SocketServer | null = null;
 
 export function initializeWebSocket(httpServer: HttpServer): SocketServer {
-  const corsOrigins = configService.getString('infra.corsOrigins')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-
   io = new SocketServer(httpServer, {
     cors: {
-      origin: corsOrigins.length > 0 ? corsOrigins : ['http://localhost:3005'],
+      origin: ['http://localhost:3000', 'http://localhost:5173'],
       methods: ['GET', 'POST'],
     },
     pingTimeout: 60000,

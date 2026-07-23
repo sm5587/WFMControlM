@@ -278,11 +278,6 @@ CREATE TABLE IF NOT EXISTS "MaintenanceCalendarEntry" (
     "month" INTEGER NOT NULL,
     "year" INTEGER NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'SCHEDULED',
-    "title" TEXT,
-    "startTimeUtc" DATETIME,
-    "endTimeUtc" DATETIME,
-    "startLocal" TEXT,
-    "endLocal" TEXT,
     CONSTRAINT "MaintenanceCalendarEntry_calendarId_fkey" FOREIGN KEY ("calendarId") REFERENCES "MaintenanceCalendar" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 

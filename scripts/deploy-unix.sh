@@ -189,7 +189,7 @@ Next:
   1) Start backend (example):
        cd backend && npm install -g pm2 && pm2 start dist/index.js --name wfm-backend
   2) Verify:
-       curl http://localhost:4005/health
+       curl http://localhost:4000/health
   3) Configure runtime secrets in Admin -> Config (SMTP/SSH/JWT/etc.).
 
 EOF

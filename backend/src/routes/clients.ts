@@ -7,7 +7,6 @@ import { prisma } from '../database/prisma';
 import { syncService } from '../services/sync-service';
 import { db2DirectService } from '../services/db2-direct-service';
 import { createServiceLogger } from '../utils/logger';
-import { encryptClientDb2Password, hasStoredDb2Password } from '../utils/client-db2-password';
 import { requirePermission } from '../middleware';
 import { z } from 'zod';
 
@@ -143,7 +142,7 @@ router.get('/', async (req: Request, res: Response) => {
       const { appServers, db2Password, ...rest } = client as any;
       return {
         ...rest,
-        db2PasswordSet: hasStoredDb2Password(db2Password),
+        db2PasswordSet: !!db2Password,
         lastTzAttemptAt,
         serverCounts: { PP: ppCount, Prod: prodCount, total: ppCount + prodCount },
         db2Connection: dbInfo ? { host: dbInfo.host, port: dbInfo.port, database: dbInfo.database } : null,
@@ -245,7 +244,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     }
 
     const { db2Password, ...safeClient } = client as any;
-    res.json({ success: true, data: { ...safeClient, db2PasswordSet: hasStoredDb2Password(db2Password) } });
+    res.json({ success: true, data: { ...safeClient, db2PasswordSet: !!db2Password } });
   } catch (error: any) {
     logger.error(`Error fetching client: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
@@ -265,7 +264,6 @@ router.patch('/:id', requirePermission('CLIENTS_EDIT', 'write'), async (req: Req
       if (req.body[key] !== undefined) {
         if (boolKeys.includes(key)) data[key] = Boolean(req.body[key]);
         else if (numKeys.includes(key)) data[key] = Number(req.body[key]);
-        else if (key === 'db2Password') data[key] = encryptClientDb2Password(String(req.body[key]));
         else data[key] = req.body[key];
       }
     }
@@ -279,15 +277,8 @@ router.patch('/:id', requirePermission('CLIENTS_EDIT', 'write'), async (req: Req
       data,
     });
 
-    const logFields = { ...data };
-    if ('db2Password' in logFields) logFields.db2Password = '[redacted]';
-    logger.info(`Updated client ${client.clientId}: ${JSON.stringify(logFields)}`);
-
-    const { db2Password, ...safeClient } = client as any;
-    res.json({
-      success: true,
-      data: { ...safeClient, db2PasswordSet: hasStoredDb2Password(db2Password) },
-    });
+    logger.info(`Updated client ${client.clientId}: ${JSON.stringify(data)}`);
+    res.json({ success: true, data: client });
   } catch (error: any) {
     logger.error(`Error updating client: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
@@ -504,7 +495,7 @@ router.post('/bulk-update-passwords', requirePermission('CLIENTS_EDIT', 'write')
       try {
         await prisma.client.update({
           where: { id: client.id },
-          data: { db2Password: encryptClientDb2Password(password.trim()) },
+          data: { db2Password: password.trim() },
         });
         updated++;
       } catch (err: any) {

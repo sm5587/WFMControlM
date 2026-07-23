@@ -9,8 +9,6 @@ Workforce Management job scheduling, monitoring, and orchestration platform.
 | [docs/README.md](docs/README.md) | Architecture, features, API reference, quick start |
 | [docs/WFM_ControlM.md](docs/WFM_ControlM.md) | WFM-specific design (DB2, SSH, clients, data flow) |
 | [docs/DEPLOYMENT_UNIX.md](docs/DEPLOYMENT_UNIX.md) | Unix / Linux install and production deployment |
-| [docs/DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) | Docker Desktop install (Windows) and SQLite data changes |
-| [docs/DOCKER_INSTALLATION_Presentation.md](docs/DOCKER_INSTALLATION_Presentation.md) | Docker install — slide-style presentation |
 | [docs/dbextract.md](docs/dbextract.md) | Regenerate `database/ddl.sql` and `dml.sql` |
 | [docs/production-readiness-checklist.md](docs/production-readiness-checklist.md) | Go-live checklist |
 | [docs/WFM_ControlM_Presentation.md](docs/WFM_ControlM_Presentation.md) | Presentation / overview slides (markdown) |
@@ -25,7 +23,7 @@ npm run db:seed
 npm run dev
 ```
 
-- Backend: http://localhost:4005
-- Frontend: http://localhost:3005
+- Backend: http://localhost:4000  
+- Frontend: http://localhost:3000  
 
 See [docs/README.md](docs/README.md) and [docs/DEPLOYMENT_UNIX.md](docs/DEPLOYMENT_UNIX.md) for full setup.
