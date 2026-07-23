@@ -1,0 +1,5 @@
+# Local smoke-test override (Windows host .env uses a Windows SQLite path).
+services:
+  backend:
+    environment:
+      DATABASE_URL: file:./dev.db

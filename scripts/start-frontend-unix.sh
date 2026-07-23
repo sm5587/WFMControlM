@@ -71,7 +71,7 @@ resolve_backend_port() {
     return
   fi
 
-  BACKEND_PORT="4000"
+  BACKEND_PORT="4005"
   local db_url_value
   db_url_value="$(dotenv_read_database_url "$ENV_FILE" || true)"
   if [[ -n "$db_url_value" && "$db_url_value" == file:* ]] && command -v sqlite3 >/dev/null 2>&1; then
@@ -247,7 +247,8 @@ configure_nginx() {
   log "Installing nginx site config -> $NGINX_CONF_DEST"
   sudo cp "$src_conf" "$NGINX_CONF_DEST"
 
-  sudo sed -i "s|http://backend:4000|${backend_upstream}|g" "$NGINX_CONF_DEST"
+  # Template may say backend:4000 or backend:4005 (Docker); host nginx uses localhost.
+  sudo sed -i -E "s|http://backend:[0-9]+|${backend_upstream}|g" "$NGINX_CONF_DEST"
   sudo sed -i "s|root /usr/share/nginx/html;|root ${serve_root};|" "$NGINX_CONF_DEST"
   if [[ "$FRONTEND_PORT" != "80" ]]; then
     sudo sed -i "s/listen 80;/listen ${FRONTEND_PORT};/" "$NGINX_CONF_DEST"
@@ -335,7 +336,7 @@ case "$MODE" in
     ;;
 
   docker)
-    FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+    FRONTEND_PORT="${FRONTEND_PORT:-3005}"
     resolve_frontend_url
     require_cmd docker
     log "Starting frontend via Docker Compose"

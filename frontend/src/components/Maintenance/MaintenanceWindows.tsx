@@ -4,7 +4,7 @@
 // Import from Excel. View affected cron jobs falling in the window.
 // ============================================================
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarClock, Plus, Upload, ChevronDown, ChevronRight,
@@ -17,6 +17,8 @@ import { maintenanceApi, maintenanceCalendarApi } from '../../services/api';
 import type { MaintenanceWindow, AffectedJob } from '../../types';
 import MaintenanceCalendarTab from './MaintenanceCalendarTab';
 import { useTimezone } from '../../hooks/useTimezone';
+import { useConfig } from '../../contexts/ConfigContext';
+import { MAINTENANCE_ADHOC_WINDOWS_KEY } from '../../constants/app-display';
 
 dayjs.extend(utc);
 
@@ -618,11 +620,19 @@ function ExcelImportButton({ clients, onImported }: {
 
 export default function MaintenanceWindows() {
   const qc = useQueryClient();
+  const { getBool } = useConfig();
+  const showAdHocWindows = getBool(MAINTENANCE_ADHOC_WINDOWS_KEY, false);
   const [pageTab, setPageTab] = useState<'windows' | 'calendar' | 'outages'>('calendar');
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateOutage, setShowCreateOutage] = useState(false);
   const [selectedWindow, setSelectedWindow] = useState<MaintenanceWindow | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('active');
+
+  useEffect(() => {
+    if (!showAdHocWindows && pageTab === 'windows') {
+      setPageTab('calendar');
+    }
+  }, [showAdHocWindows, pageTab]);
 
   const { data: winData, isLoading } = useQuery({
     queryKey: ['maintenance', filterStatus],
@@ -632,7 +642,9 @@ export default function MaintenanceWindows() {
       else if (filterStatus !== 'all') { params.status = filterStatus.toUpperCase(); }
       return maintenanceApi.list(params);
     },
-    refetchInterval: 60_000,
+    enabled: showAdHocWindows && pageTab === 'windows',
+    refetchInterval: showAdHocWindows && pageTab === 'windows' ? 60_000 : false,
+    staleTime: 30_000,
   });
 
   // Fetch clients for dropdowns
@@ -662,7 +674,7 @@ export default function MaintenanceWindows() {
     refetchInterval: 30_000,
     enabled: pageTab === 'outages',
   });
-  const outages: MaintenanceWindow[] = (outageData?.data ?? []).filter((w: any) => w.source !== 'calendar');
+  const outages: MaintenanceWindow[] = outageData?.data ?? [];
 
   const outageMutation = useMutation({
     mutationFn: (payload: any) => maintenanceApi.create(payload),
@@ -688,78 +700,96 @@ export default function MaintenanceWindows() {
   ];
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-            <CalendarClock className="w-6 h-6 text-blue-600" />
-            Maintenance
-          </h1>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Track planned &amp; unscheduled outages and the yearly maintenance calendar.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {pageTab === 'windows' && (
+    <div className="w-full max-w-6xl mx-auto flex flex-col h-[calc(100vh-3.5rem)] min-h-0 overflow-hidden p-6">
+      {/* Fixed-height header — never grows/shrinks when switching tabs */}
+      <div className="shrink-0 h-[108px] flex flex-col justify-between">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2 leading-tight">
+              <CalendarClock className="w-6 h-6 text-blue-600 shrink-0" />
+              Maintenance
+            </h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {showAdHocWindows
+                ? 'Yearly maintenance calendar (Excel import), ad-hoc windows, and unplanned outages.'
+                : 'Yearly maintenance calendar (Excel import) and unplanned outages.'}
+            </p>
+          </div>
+          <div className="relative w-[152px] h-[34px] shrink-0">
             <button
+              type="button"
               onClick={() => setShowCreate(true)}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+              aria-hidden={!showAdHocWindows || pageTab !== 'windows'}
+              tabIndex={showAdHocWindows && pageTab === 'windows' ? 0 : -1}
+              className={`absolute inset-0 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 whitespace-nowrap transition-opacity ${
+                showAdHocWindows && pageTab === 'windows' ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
             >
-              <Plus className="w-4 h-4" /> New Window
+              <Plus className="w-4 h-4 shrink-0" /> New Window
             </button>
-          )}
-          {pageTab === 'outages' && (
             <button
+              type="button"
               onClick={() => setShowCreateOutage(true)}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
+              aria-hidden={pageTab !== 'outages'}
+              tabIndex={pageTab === 'outages' ? 0 : -1}
+              className={`absolute inset-0 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 whitespace-nowrap transition-opacity ${
+                pageTab === 'outages' ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
             >
-              <Siren className="w-4 h-4" /> Report Outage
+              <Siren className="w-4 h-4 shrink-0" /> Report Outage
             </button>
+          </div>
+        </div>
+
+        <div className="flex gap-1 border-b border-slate-200 h-[41px] items-end">
+          {showAdHocWindows && (
+          <button
+            type="button"
+            onClick={() => setPageTab('windows')}
+            className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
+              pageTab === 'windows'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Ad-hoc Windows
+          </button>
           )}
+          <button
+            type="button"
+            onClick={() => setPageTab('calendar')}
+            className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
+              pageTab === 'calendar'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Maintenance Calendar
+          </button>
+          <button
+            type="button"
+            onClick={() => setPageTab('outages')}
+            className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
+              pageTab === 'outages'
+                ? 'border-red-500 text-red-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Outages
+          </button>
         </div>
       </div>
 
-      {/* Page-level tabs */}
-      <div className="flex gap-1 mb-5 border-b border-slate-200">
-        <button
-          onClick={() => setPageTab('windows')}
-          className={`px-5 py-2 text-sm font-semibold transition-colors ${
-            pageTab === 'windows'
-              ? 'border-b-2 border-blue-600 text-blue-600'
-              : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Maintenance Windows
-        </button>
-        <button
-          onClick={() => setPageTab('calendar')}
-          className={`px-5 py-2 text-sm font-semibold transition-colors ${
-            pageTab === 'calendar'
-              ? 'border-b-2 border-blue-600 text-blue-600'
-              : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Maintenance Calendar
-        </button>
-        <button
-          onClick={() => setPageTab('outages')}
-          className={`px-5 py-2 text-sm font-semibold transition-colors ${
-            pageTab === 'outages'
-              ? 'border-b-2 border-red-500 text-red-600'
-              : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Outages
-        </button>
-      </div>
+      {/* Tab content — sole scroll region; gutter reserved so layout never shifts */}
+      <div className="flex flex-col flex-1 min-h-0 mt-4 overflow-y-scroll [scrollbar-gutter:stable]">
+      {pageTab === 'calendar' && (
+        <div className="flex flex-col flex-1 min-h-0">
+          <MaintenanceCalendarTab />
+        </div>
+      )}
 
-      {/* Calendar tab */}
-      {pageTab === 'calendar' && <MaintenanceCalendarTab />}
-
-      {/* Outages tab */}
       {pageTab === 'outages' && (
-        <div className="space-y-3">
+        <div className="space-y-3 flex-1 min-h-0">
           {outageLoading ? (
             <div className="flex items-center justify-center h-40 text-slate-400">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading…
@@ -794,8 +824,8 @@ export default function MaintenanceWindows() {
         </div>
       )}
 
-      {/* Windows tab content below */}
-      {pageTab === 'windows' && <>
+      {showAdHocWindows && pageTab === 'windows' && (
+      <div className="flex-1 min-h-0">
 
       {/* Info banner */}
       <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-5 text-sm text-amber-800 flex items-start gap-2">
@@ -812,15 +842,16 @@ export default function MaintenanceWindows() {
       </div>
 
       {/* Filter tabs */}
-      <div className="flex gap-1 mb-4 border-b border-slate-200">
+      <div className="flex gap-1 mb-4 border-b border-slate-200 h-[41px] items-end">
         {filterTabs.map(tab => (
           <button
             key={tab.key}
+            type="button"
             onClick={() => setFilterStatus(tab.key)}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px box-border h-[41px] transition-colors ${
               filterStatus === tab.key
-                ? 'border-b-2 border-blue-600 text-blue-600'
-                : 'text-slate-500 hover:text-slate-700'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
             {tab.label}
@@ -836,7 +867,8 @@ export default function MaintenanceWindows() {
       ) : windows.length === 0 ? (
         <div className="text-center py-20 text-slate-400">
           <CalendarClock className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p>No maintenance windows found.</p>
+          <p>No ad-hoc windows.</p>
+          <p className="text-sm mt-1">Yearly planned maintenance is on the <strong>Maintenance Calendar</strong> tab.</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -865,7 +897,9 @@ export default function MaintenanceWindows() {
       {selectedWindow && (
         <AffectedJobsPanel window={selectedWindow} onClose={() => setSelectedWindow(null)} />
       )}
-      </>}
+      </div>
+      )}
+      </div>
     </div>
   );
 }

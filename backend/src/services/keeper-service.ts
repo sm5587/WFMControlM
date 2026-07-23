@@ -21,6 +21,7 @@
 import { config } from '../config';
 import { configService } from './config-service';
 import { createServiceLogger } from '../utils/logger';
+import { decryptClientDb2Password, encryptClientDb2Password, hasStoredDb2Password } from '../utils/client-db2-password';
 
 const logger = createServiceLogger('KeeperService');
 
@@ -179,7 +180,7 @@ class KeeperService {
       config.keeper.db2Username?.trim() ||
       '';
     let password =
-      clientConfig.db2Password?.trim() ||
+      decryptClientDb2Password(clientConfig.db2Password) ||
       config.keeper.db2Password?.trim() ||
       '';
 

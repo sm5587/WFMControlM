@@ -26,7 +26,7 @@ model Client {
   db2Database     String?
   db2Schema       String?
   db2Username     String?       // DB2 login username (e.g. rwsuser)
-  db2Password     String?       // DB2 login password (plaintext; replace with Keeper when ready)
+  db2Password     String?       // DB2 login password (AES-256-GCM encrypted at rest)
 
   // Payroll
   payrollEnabled  Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
@@ -488,6 +488,13 @@ model MaintenanceCalendarEntry {
   month             Int      // 1-12
   year              Int      // e.g. 2026
   status            String   @default("SCHEDULED") // SCHEDULED | CANCELLED
+
+  // Pre-computed at Excel import (avoids per-request timezone math)
+  title             String?
+  startTimeUtc      DateTime?
+  endTimeUtc        DateTime?
+  startLocal        String?
+  endLocal          String?
 
   @@index([calendarId])
   @@index([maintenanceDate])

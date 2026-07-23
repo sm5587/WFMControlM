@@ -17,6 +17,7 @@ const navItems = [
   { path: '/clients',     label: 'Clients',      icon: Building2,       permission: 'CLIENTS_VIEW' },
   { path: '/jobs',        label: 'Cron Jobs',    icon: Briefcase,       permission: 'JOBS_VIEW' },
   { path: '/db-jobs',     label: 'DB Jobs',      icon: Play,            permission: 'DBJOBS_VIEW' },
+  { path: '/maintenance', label: 'Maintenance',  icon: CalendarClock,   permission: 'MAINTENANCE_VIEW' },
   { path: '/monitor',     label: 'Monitor',      icon: Monitor,         permission: 'MONITOR_VIEW' },
   { path: '/db-monitor',  label: 'DB Jobs Monitor', icon: Database,      permission: 'DBMONITOR_VIEW' },
   { path: '/payroll',     label: 'Payroll Jobs',       icon: DollarSign,      permission: 'PAYROLL_VIEW' },
@@ -218,8 +219,10 @@ export default function Layout() {
           )}
         </div>
 
-        <main className="flex-1 overflow-auto">
-          <Outlet />
+        <main className="flex-1 overflow-auto flex flex-col min-h-0 [scrollbar-gutter:stable]">
+          <div className="flex-1 flex flex-col min-h-0">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

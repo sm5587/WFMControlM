@@ -142,9 +142,9 @@ INSERT OR REPLACE INTO "AppConfig" ("key", "value", "category", "label", "descri
   ('secrets.db2Username', '', 'SECRETS', 'DB2 Username', 'Fallback DB2 username', 1, 'seed', CURRENT_TIMESTAMP),
   ('secrets.db2Password', '', 'SECRETS', 'DB2 Password', 'Fallback DB2 password', 1, 'seed', CURRENT_TIMESTAMP),
 
-  ('infra.port', '4000', 'INFRA', 'HTTP Port', 'HTTP server listen port', 0, 'seed', CURRENT_TIMESTAMP),
+  ('infra.port', '4005', 'INFRA', 'HTTP Port', 'HTTP server listen port', 0, 'seed', CURRENT_TIMESTAMP),
   ('infra.nodeEnv', 'development', 'INFRA', 'Node Environment', 'development or production', 0, 'seed', CURRENT_TIMESTAMP),
-  ('infra.corsOrigins', 'http://localhost:3000,http://localhost:5173', 'INFRA', 'CORS Origins', 'Comma-separated allowed CORS origins', 0, 'seed', CURRENT_TIMESTAMP),
+  ('infra.corsOrigins', 'http://localhost:3005,http://localhost:5173', 'INFRA', 'CORS Origins', 'Comma-separated allowed CORS origins', 0, 'seed', CURRENT_TIMESTAMP),
   ('infra.bodySizeLimit', '10mb', 'INFRA', 'Body Size Limit', 'Express JSON body size limit', 0, 'seed', CURRENT_TIMESTAMP),
   ('infra.sshPort', '22', 'INFRA', 'SSH Port', 'SSH connection port for app servers', 0, 'seed', CURRENT_TIMESTAMP),
   ('infra.sshTimeout', '15000', 'INFRA', 'SSH Timeout (ms)', 'SSH connection timeout in milliseconds', 0, 'seed', CURRENT_TIMESTAMP),
@@ -210,4 +210,5 @@ INSERT OR REPLACE INTO "AppConfig" ("key", "value", "category", "label", "descri
   ('display.panelMinWidth', '160', 'DISPLAY', 'Panel Min Width (px)', 'Resizable panel min width in pixels', 0, 'seed', CURRENT_TIMESTAMP),
   ('display.panelMaxWidth', '700', 'DISPLAY', 'Panel Max Width (px)', 'Resizable panel max width in pixels', 0, 'seed', CURRENT_TIMESTAMP),
   ('display.wsReconnectAttempts', '10', 'DISPLAY', 'WS Reconnect Attempts', 'WebSocket max reconnection attempts', 0, 'seed', CURRENT_TIMESTAMP),
-  ('display.wsReconnectDelayMs', '1000', 'DISPLAY', 'WS Reconnect Delay (ms)', 'WebSocket reconnect delay in ms', 0, 'seed', CURRENT_TIMESTAMP);
+  ('display.wsReconnectDelayMs', '1000', 'DISPLAY', 'WS Reconnect Delay (ms)', 'WebSocket reconnect delay in ms', 0, 'seed', CURRENT_TIMESTAMP),
+  ('display.maintenanceAdHocWindows', 'false', 'DISPLAY', 'Maintenance Ad-hoc Windows Tab', 'Show Ad-hoc Windows tab on Maintenance page (true/false)', 0, 'seed', CURRENT_TIMESTAMP);

@@ -103,14 +103,19 @@ function parseWindowTime(t: string): { h: number; m: number } | null {
   return { h, m: min };
 }
 
-/** Convert a MaintenanceCalendarEntry into a MaintenanceWindow-compatible plain object */
-function calEntryToWindow(entry: any, now: Date): any {
+/** Compute UTC/local window times from a calendar entry (run once at import). */
+function computeCalEntryTimes(entry: {
+  maintenanceDate: Date;
+  windowStartTime?: string | null;
+  windowEndTime?: string | null;
+  timezone: string;
+  clusters: string;
+  maintenanceWindow: string;
+}) {
   const tzLabel = ((entry.timezone as string) || 'EST').toUpperCase();
   const safeTz  = tzLabel === 'UK' || tzLabel === 'GMT' ? 'UTC' : tzLabel;
   const tz      = TZ_OFFSETS[safeTz] ?? TZ_OFFSETS.UTC;
 
-  // maintenanceDate stores the calendar date as midnight UTC (e.g. 2026-04-22T00:00Z = April 22).
-  // Use the UTC date directly — do NOT shift by tz offset, that would move it to April 21 for EST.
   const yr = entry.maintenanceDate.getUTCFullYear();
   const mo = entry.maintenanceDate.getUTCMonth();
   const dy = entry.maintenanceDate.getUTCDate();
@@ -119,56 +124,54 @@ function calEntryToWindow(entry: any, now: Date): any {
   const et = entry.windowEndTime   ? parseWindowTime(entry.windowEndTime)   : null;
 
   const startLocalMs = Date.UTC(yr, mo, dy, st?.h ?? 0,  st?.m ?? 0);
-  // If end time is unparseable, default to start + 3 hours (typical window duration)
   const defaultEndH = st ? st.h + 3 : 3;
   let   endLocalMs   = Date.UTC(yr, mo, dy, et?.h ?? defaultEndH, et?.m ?? (st?.m ?? 0));
-  if (endLocalMs <= startLocalMs) endLocalMs += 86_400_000; // crosses midnight
+  if (endLocalMs <= startLocalMs) endLocalMs += 86_400_000;
 
   const startUtc = new Date(startLocalMs - tz.offsetMin * 60_000);
   const endUtc   = new Date(endLocalMs   - tz.offsetMin * 60_000);
-
-  let status: string = entry.status; // SCHEDULED | CANCELLED
-  if (status === 'SCHEDULED') {
-    if (startUtc <= now && endUtc >= now) status = 'ACTIVE';
-    else if (endUtc < now)               status = 'COMPLETED';
-  }
 
   const clusters   = (entry.clusters as string).trim();
   const windowText = (entry.maintenanceWindow as string) || '';
   const title      = `CL ${clusters} — ${windowText.slice(0, 80)}`;
 
   return {
-    id:           entry.id,
-    scope:        'CLUSTER',
-    cluster:      clusters,   // full raw string e.g. "19 & 26"
-    clientDbId:   null,
-    clientCode:   null,
     title,
-    reason:       entry.maintenanceGroup,
-    type:         'PLANNED',
-    status,
     startTimeUtc: startUtc,
-    endTimeUtc:   endUtc,
-    inputTimezone: safeTz,
-    startLocal:   utcToLocal(startUtc, safeTz),
-    endLocal:     utcToLocal(endUtc,   safeTz),
-    source:       'calendar',
-    importBatchId: entry.calendarId,
-    createdBy:    null,
-    createdAt:    entry.maintenanceDate,
-    updatedAt:    entry.maintenanceDate,
+    endTimeUtc: endUtc,
+    startLocal: utcToLocal(startUtc, safeTz),
+    endLocal:   utcToLocal(endUtc,   safeTz),
   };
+}
+
+/** Derive display status from stored times (lightweight, no timezone re-parse). */
+function deriveCalEntryStatus(
+  entry: { status: string; startTimeUtc?: Date | null; endTimeUtc?: Date | null },
+  now: Date,
+): string {
+  if (entry.status === 'CANCELLED') return 'CANCELLED';
+  if (entry.startTimeUtc && entry.endTimeUtc) {
+    if (entry.startTimeUtc <= now && entry.endTimeUtc >= now) return 'ACTIVE';
+    if (entry.endTimeUtc < now) return 'COMPLETED';
+  }
+  return 'SCHEDULED';
+}
+
+/** Backfill pre-computed fields for legacy rows imported before this migration. */
+function ensureCalEntryComputed(entry: any) {
+  if (entry.startTimeUtc && entry.endTimeUtc) return entry;
+  const computed = computeCalEntryTimes(entry);
+  return { ...entry, ...computed };
 }
 
 // ------------------------------------------------------------------ Routes
 
-// GET /api/maintenance - list windows
+// GET /api/maintenance - list ad-hoc / manual maintenance windows (not yearly calendar)
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { cluster, clientDbId, status, type, upcoming } = req.query as Record<string, string>;
     const now = new Date();
 
-    // ── Maintenance Windows ──────────────────────────────────────────────────
     const where: any = {};
     if (cluster) where.cluster = cluster;
     if (clientDbId) where.clientDbId = clientDbId;
@@ -197,50 +200,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
     await Promise.all(updates);
 
-    // ── Calendar Entries (merged as window-compatible objects) ───────────────
-    // Calendar entries are always PLANNED — skip entirely when filtering UNSCHEDULED
-    let calWindows: any[] = [];
-    if (!type || type.toUpperCase() !== 'UNSCHEDULED') {
-    const calWhere: any = {};
-    if (upcoming === '1') {
-      // show entries whose maintenance date hasn't fully passed yet
-      calWhere.maintenanceDate = { gte: new Date(now.getTime() - 86_400_000) };
-      calWhere.status = 'SCHEDULED';
-    } else if (status === 'CANCELLED') {
-      calWhere.status = 'CANCELLED';
-    } else if (status) {
-      // SCHEDULED / ACTIVE / COMPLETED are all derived from DB status=SCHEDULED
-      calWhere.status = 'SCHEDULED';
-    }
-    // no type filter for calendar (always PLANNED)
-    // no clientDbId filter (calendar entries are cluster-scoped)
-
-    const calEntries = await prisma.maintenanceCalendarEntry.findMany({
-      where: calWhere,
-      orderBy: { maintenanceDate: 'asc' },
-    });
-
-    calWindows = calEntries.map(e => calEntryToWindow(e, now));
-
-    // Apply same status / cluster filters post-conversion
-    if (status && status !== 'CANCELLED') {
-      calWindows = calWindows.filter((w: any) => w.status === status.toUpperCase());
-    }
-    if (cluster) {
-      // cluster field may be "19 & 26" — match if any token matches
-      const clTgt = cluster.replace(/^CL/i, '').trim();
-      calWindows = calWindows.filter((w: any) =>
-        (w.cluster ?? '').split(/[&,\/]/).map((s: string) => s.trim().replace(/^CL/i, '')).includes(clTgt)
-      );
-    }
-    } // end if (!UNSCHEDULED)
-
-    // ── Merge & sort ────────────────────────────────────────────────────────
-    const combined = [...windows, ...calWindows].sort(
-      (a: any, b: any) => new Date(a.startTimeUtc).getTime() - new Date(b.startTimeUtc).getTime()
-    );
-
-    res.json({ success: true, data: combined });
+    res.json({ success: true, data: windows });
   } catch (err: any) {
     logger.error(`GET /maintenance: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
@@ -589,18 +549,23 @@ router.post('/calendar/import', requirePermission('MAINTENANCE_MANAGE', 'write')
         importedBy: importedBy ?? null,
         entryCount: entries.length,
         entries: {
-          create: entries.map(e => ({
-            maintenanceGroup: e.maintenanceGroup,
-            clusters: e.clusters,
-            maintenanceWindow: e.maintenanceWindow,
-            windowStartTime: e.windowStartTime ?? null,
-            windowEndTime: e.windowEndTime ?? null,
-            timezone: e.timezone ?? 'EST',
-            maintenanceDate: new Date(e.maintenanceDate),
-            month: e.month,
-            year: e.year,
-            status: e.status ?? 'SCHEDULED',
-          })),
+          create: entries.map(e => {
+            const maintenanceDate = new Date(e.maintenanceDate);
+            const base = {
+              maintenanceGroup: e.maintenanceGroup,
+              clusters: e.clusters,
+              maintenanceWindow: e.maintenanceWindow,
+              windowStartTime: e.windowStartTime ?? null,
+              windowEndTime: e.windowEndTime ?? null,
+              timezone: e.timezone ?? 'EST',
+              maintenanceDate,
+              month: e.month,
+              year: e.year,
+              status: e.status ?? 'SCHEDULED',
+            };
+            const computed = computeCalEntryTimes(base);
+            return { ...base, ...computed };
+          }),
         },
       },
       include: { entries: false },
@@ -640,7 +605,17 @@ router.get('/calendar/:id/entries', async (req: Request, res: Response) => {
       where,
       orderBy: [{ month: 'asc' }, { maintenanceGroup: 'asc' }],
     });
-    res.json({ success: true, data: entries });
+
+    const now = new Date();
+    const data = entries.map(e => {
+      const full = ensureCalEntryComputed(e);
+      return {
+        ...full,
+        derivedStatus: deriveCalEntryStatus(full, now),
+      };
+    });
+
+    res.json({ success: true, data });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

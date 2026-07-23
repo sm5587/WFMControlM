@@ -1,0 +1,138 @@
+WFM Watch — Docker install & update steps (Windows)
+====================================================
+Run all commands from the repo root in PowerShell.
+Replace the cd path below with your own checkout if different.
+
+Prerequisites (one-time)
+------------------------
+1. Install Docker Desktop for Windows and start it (whale icon in system tray).
+2. Confirm repo has DB2 connector files:
+     lib/DB2Connector.js
+     lib/db2jcc4.jar
+
+3. Go to repo root:
+     cd "C:\Users\SM5587\OneDrive - Zebra Technologies\Daily_Work\WFMControlM"
+
+
+FIRST-TIME INSTALL
+------------------
+
+Step 1 — Create .env
+     Copy-Item .env.example .env
+
+     Edit .env and set at minimum:
+       DATABASE_URL="file:./dev.db"
+       CONFIG_ENCRYPTION_KEY=<64-char hex>
+
+     Generate a key (run on host):
+       node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+     Keep the same CONFIG_ENCRYPTION_KEY forever if you reuse the same database.
+
+Step 2 — Build production images
+     docker compose -f docker-compose.prod.yml build --no-cache backend frontend
+
+Step 3 — Start containers
+     docker compose -f docker-compose.prod.yml up -d
+
+     If .env still uses a Windows absolute DATABASE_URL path, use:
+     docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
+
+Step 4 — Bootstrap database (first install only — pick ONE option)
+
+     Option A — Reuse existing local dev.db (recommended if you already use the app locally)
+       docker compose -f docker-compose.prod.yml up -d backend
+       docker compose -f docker-compose.prod.yml stop backend
+       docker cp backend\prisma\dev.db wfm-controlm-api:/app/prisma/dev.db
+       docker compose -f docker-compose.prod.yml run --rm -u root --entrypoint sh backend -c "chown -R node:node /app/prisma && chmod -R u+rwX,g+rwX /app/prisma"
+       docker compose -f docker-compose.prod.yml up -d
+
+     Option B — Prisma seed (fresh DB with sample/admin data)
+       docker compose -f docker-compose.prod.yml exec backend npx prisma db seed
+
+     Option C — SQL bootstrap files
+       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/ddl.sql
+       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/dml.sql
+
+Step 5 — Verify
+     docker compose -f docker-compose.prod.yml ps
+     curl http://localhost:4005/health
+     Open http://localhost:3005 in a browser and log in.
+
+     Expected:
+       Backend health: http://localhost:4005/health
+       Frontend UI:    http://localhost:3005
+
+
+UPDATE AFTER CODE CHANGES (typical redeploy)
+--------------------------------------------
+
+Step 1 — Go to repo root
+     cd "C:\Users\SM5587\OneDrive - Zebra Technologies\Daily_Work\WFMControlM"
+
+Step 2 — Rebuild images (use --no-cache so new code is included)
+     docker compose -f docker-compose.prod.yml build --no-cache backend frontend
+
+Step 3 — Restart stack
+     docker compose -f docker-compose.prod.yml up -d
+
+Step 4 — Check status and logs
+     docker compose -f docker-compose.prod.yml ps
+     docker compose -f docker-compose.prod.yml logs -f backend
+
+Step 5 — Verify
+     curl http://localhost:4005/health
+
+     Note: SQLite data in Docker volume backend_prisma is kept across rebuilds.
+     Do NOT run: docker compose -f docker-compose.prod.yml down -v
+     (that deletes the database volume)
+
+
+ROUTINE COMMANDS
+----------------
+Stop:
+  docker compose -f docker-compose.prod.yml down
+
+Start (no rebuild):
+  docker compose -f docker-compose.prod.yml up -d
+
+View backend logs:
+  docker compose -f docker-compose.prod.yml logs -f backend
+
+Restart backend only:
+  docker compose -f docker-compose.prod.yml restart backend
+
+Local email testing (Mailpit — optional):
+  docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml up -d
+
+
+TROUBLESHOOTING
+---------------
+
+Backend unhealthy / "attempt to write a readonly database"
+  Usually after docker cp dev.db — file owned by root. Fix:
+    docker compose -f docker-compose.prod.yml stop backend
+    docker compose -f docker-compose.prod.yml run --rm -u root --entrypoint sh backend -c "chown -R node:node /app/prisma && chmod -R u+rwX,g+rwX /app/prisma"
+    docker compose -f docker-compose.prod.yml up -d
+
+Frontend waits on unhealthy backend:
+  Fix backend first, then:
+    docker compose -f docker-compose.prod.yml up -d
+
+Encrypt existing DB2 passwords in Docker DB (run on host, not in container):
+  cd backend
+  npx ts-node --project tsconfig.json prisma/encrypt-client-db2-passwords.ts
+
+Or copy already-encrypted local dev.db (see First-time install Option A).
+
+
+WHAT RUNS WHERE
+---------------
+Container          Host port   URL
+wfm-controlm-api   4005        http://localhost:4005/health
+wfm-controlm-ui    3005        http://localhost:3005
+
+SQLite file inside container: /app/prisma/dev.db
+Docker volume name: backend_prisma
+
+More detail: docs/DOCKER_INSTALLATION.md

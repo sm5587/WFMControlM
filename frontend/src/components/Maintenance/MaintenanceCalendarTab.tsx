@@ -37,6 +37,15 @@ function parseTime12(t: string): { h: number; m: number } | null {
   return { h, m };
 }
 
+/** Format window time for display — uses pre-computed fields when available. */
+function formatEntryWindow(e: MaintenanceCalendarEntry): string {
+  if (e.startLocal && e.endLocal) return `${e.startLocal} – ${e.endLocal}`;
+  if (e.windowStartTime) {
+    return calTimeToIST(e.maintenanceDate, e.windowStartTime, e.windowEndTime, e.timezone);
+  }
+  return e.maintenanceWindow.slice(0, 80);
+}
+
 /**
  * Convert a calendar window time ("12:15 AM" in e.g. EST) to an IST display string.
  * maintenanceDate is the midnight-UTC ISO string for that date.
@@ -307,7 +316,7 @@ function CalendarGridView({
   return (
     <div>
       {/* Month navigation */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-2">
         <button onClick={prevMonth} className="p-1.5 hover:bg-slate-100 rounded-lg">
           <ChevronLeft className="w-4 h-4" />
         </button>
@@ -317,13 +326,36 @@ function CalendarGridView({
         </button>
       </div>
 
+      {/* Selected day detail — compact strip above grid */}
+      {selectedDay && selectedEntries.length > 0 && (
+        <div className="mb-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-100 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="font-semibold text-slate-700 shrink-0">
+            {MONTHS[gridMonth]} {selectedDay}, {year}
+          </span>
+          {selectedEntries.map(e => (
+            <span key={e.id} className="text-slate-600">
+              CL {parseClustersGrid(e.clusters).join(', ')} — {formatEntryWindow(e)}
+              {e.status === 'CANCELLED' && <span className="ml-1 text-red-500">Cancelled</span>}
+            </span>
+          ))}
+          <button
+            type="button"
+            onClick={() => setSelectedDay(null)}
+            className="ml-auto text-slate-400 hover:text-slate-600 shrink-0"
+            aria-label="Clear selection"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Grid */}
       <div className="grid grid-cols-7 border-l border-t border-slate-200">
         {DAY_NAMES.map(d => (
           <div key={d} className="text-center text-[11px] font-semibold text-slate-400 py-1.5 border-r border-b border-slate-200 bg-slate-50">{d}</div>
         ))}
         {cells.map((day, idx) => {
-          if (day === null) return <div key={`p${idx}`} className="border-r border-b border-slate-200 min-h-[3.5rem]" />;
+          if (day === null) return <div key={`p${idx}`} className="border-r border-b border-slate-200 min-h-[2.25rem]" />;
           const dayEntries = byDay[day] ?? [];
           const isToday = today.getFullYear() === year && today.getMonth() + 1 === gridMonth && today.getDate() === day;
           const isSelected = selectedDay === day;
@@ -334,7 +366,7 @@ function CalendarGridView({
             <button
               key={day}
               onClick={() => hasMaint ? setSelectedDay(isSelected ? null : day) : undefined}
-              className={`p-1.5 flex flex-col items-center min-h-[3.5rem] transition-colors border-r border-b border-slate-200 ${
+              className={`p-1 flex flex-col items-center min-h-[2.25rem] transition-colors border-r border-b border-slate-200 ${
                 isSelected ? 'bg-blue-50 ring-2 ring-inset ring-blue-400' :
                 hasMaint && !isCancelled ? 'hover:bg-slate-50 cursor-pointer' :
                 hasMaint ? 'opacity-40 cursor-default' : 'cursor-default'
@@ -359,38 +391,6 @@ function CalendarGridView({
           );
         })}
       </div>
-
-      {/* Selected day detail */}
-      {selectedDay && selectedEntries.length > 0 && (
-        <div className="mt-4 p-4 bg-slate-50 rounded-xl border border-slate-200">
-          <p className="text-sm font-semibold text-slate-700 mb-3">
-            {MONTHS[gridMonth]} {selectedDay}, {year}
-          </p>
-          <div className="space-y-2">
-            {selectedEntries.map(e => (
-              <div key={e.id} className="flex items-start gap-3 text-sm">
-                <div className="flex flex-wrap gap-1 flex-shrink-0 mt-0.5">
-                  {parseClustersGrid(e.clusters).map(cl => (
-                    <span key={cl} className="text-[11px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-700">
-                      CL {cl}
-                    </span>
-                  ))}
-                </div>
-                <div>
-                  <span className="text-slate-700">
-                    {e.windowStartTime
-                      ? calTimeToIST(e.maintenanceDate, e.windowStartTime, e.windowEndTime, e.timezone)
-                      : e.maintenanceWindow.slice(0, 80)}
-                  </span>
-                  {e.status === 'CANCELLED' && (
-                    <span className="ml-2 text-xs text-red-500 font-medium">Cancelled</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -413,8 +413,12 @@ function StatusBadge({ status }: { status: string }) {
 function PreviewTable({ preview }: { preview: PreviewGroup[] }) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
 
+  useEffect(() => {
+    setCollapsed(Object.fromEntries(preview.map((_, i) => [i, true])));
+  }, [preview]);
+
   return (
-    <div className="space-y-1 max-h-80 overflow-auto text-xs">
+    <div className="space-y-1 text-xs">
       {preview.map((g, i) => (
         <div key={i} className="border border-gray-200 rounded-lg overflow-hidden">
           <button
@@ -451,58 +455,6 @@ function PreviewTable({ preview }: { preview: PreviewGroup[] }) {
           )}
         </div>
       ))}
-    </div>
-  );
-}
-
-function CalendarCard({
-  cal,
-  onDelete,
-  onView,
-  isViewing,
-}: {
-  cal: MaintenanceCalendar;
-  onDelete: (id: string) => void;
-  onView: (id: string) => void;
-  isViewing: boolean;
-}) {
-  const { fmt } = useTimezone();
-  return (
-    <div className={`border rounded-xl p-4 ${isViewing ? 'border-zebra-400 bg-zebra-50' : 'border-gray-200 bg-white'}`}>
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <Calendar className="w-5 h-5 text-zebra-600 flex-shrink-0" />
-          <div>
-            <div className="font-semibold text-gray-900">{cal.year} Maintenance Calendar</div>
-            <div className="text-xs text-gray-400 mt-0.5">
-              {cal.fileName} &middot; {cal.entryCount} entries
-            </div>
-            <div className="text-xs text-gray-400">
-              Imported {fmt(cal.importedAt)}
-              {cal.importedBy ? ` by ${cal.importedBy}` : ''}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => onView(cal.id)}
-            className={`text-xs px-3 py-1.5 rounded-lg font-medium ${
-              isViewing
-                ? 'bg-zebra-600 text-white'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-            }`}
-          >
-            {isViewing ? 'Viewing' : 'View'}
-          </button>
-          <button
-            onClick={() => onDelete(cal.id)}
-            className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg"
-            title="Delete calendar"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -602,12 +554,10 @@ function EntryTable({
                     })}
                   </td>
                   <td className="px-4 py-2.5 text-slate-500 text-xs">
-                    {e.windowStartTime
-                      ? calTimeToIST(e.maintenanceDate, e.windowStartTime, e.windowEndTime, e.timezone)
-                      : e.maintenanceWindow.slice(0, 60)}
+                    {formatEntryWindow(e)}
                   </td>
                   <td className="px-4 py-2.5">
-                    <StatusBadge status={e.status} />
+                    <StatusBadge status={e.derivedStatus ?? e.status} />
                   </td>
                 </tr>
               ))}
@@ -624,18 +574,25 @@ function EntryTable({
 export default function MaintenanceCalendarTab() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
-  const { fmt } = useTimezone();
 
   const [parsing, setParsing] = useState(false);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [viewMonth, setViewMonth] = useState<number>(0);
   const [displayMode, setDisplayMode] = useState<'grid' | 'list'>('grid');
+  const [importOpen, setImportOpen] = useState(false);
+
+  // Auto-expand import when a file is parsed or when there is nothing to view yet
+  useEffect(() => {
+    if (parseResult) setImportOpen(true);
+  }, [parseResult]);
 
   // List calendars
   const { data: calData, isLoading } = useQuery({
     queryKey: ['maintenance-calendars'],
     queryFn: () => maintenanceCalendarApi.list(),
+    staleTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
   const calendars: MaintenanceCalendar[] = calData?.data ?? [];
 
@@ -653,6 +610,8 @@ export default function MaintenanceCalendarTab() {
     queryKey: ['maintenance-calendar-entries', viewingId],
     queryFn: () => maintenanceCalendarApi.getEntries(viewingId!, {}),
     enabled: !!viewingId,
+    staleTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
   const entries: MaintenanceCalendarEntry[] = entryData?.data ?? [];
 
@@ -663,6 +622,7 @@ export default function MaintenanceCalendarTab() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['maintenance-calendars'] });
       setParseResult(null);
+      setImportOpen(false);
       if (fileRef.current) fileRef.current.value = '';
     },
   });
@@ -705,24 +665,28 @@ export default function MaintenanceCalendarTab() {
     });
   };
 
+  const viewingCal = calendars.find(c => c.id === viewingId);
+
   return (
-    <div className="space-y-6">
-      {/* Header + upload */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">Yearly Maintenance Calendars</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Import the annual NETOPS Excel file. Re-importing a year replaces existing data.
-            </p>
-          </div>
+    <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-hidden">
+      {/* Collapsible import — collapsed by default */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm shrink-0">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => setImportOpen(o => !o)}
+            className="flex items-center gap-1.5 text-sm font-semibold text-gray-900 hover:text-zebra-700 min-w-0"
+          >
+            {importOpen ? <ChevronDown className="w-4 h-4 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
+            <span className="truncate">Import yearly calendar</span>
+          </button>
           <button
             onClick={() => fileRef.current?.click()}
             disabled={parsing || importMut.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-zebra-600 hover:bg-zebra-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-zebra-600 hover:bg-zebra-700 text-white text-xs font-medium rounded-lg disabled:opacity-50 shrink-0"
           >
-            <Upload className="w-4 h-4" />
-            {parsing ? 'Parsing…' : 'Import Calendar'}
+            <Upload className="w-3.5 h-3.5" />
+            {parsing ? 'Parsing…' : 'Import'}
           </button>
           <input
             ref={fileRef}
@@ -733,62 +697,68 @@ export default function MaintenanceCalendarTab() {
           />
         </div>
 
-        {/* Column hints */}
-        <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2">
-          Expected columns — Sheet 1 "Maintenance Calendar":
-          <span className="font-mono ml-1 text-gray-600">
-            Maintenance Group · Clusters · Maint Window · January 2026 … December 2026
-          </span>
-          &nbsp;&nbsp; Sheet 2 "Maintenance by Customer":
-          <span className="font-mono ml-1 text-gray-600">
-            Maintenance Window START · Maintenance Window END
-          </span>
-        </div>
-      </div>
-
-      {/* Parse preview panel */}
-      {parseResult && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              {parseResult.errors.length > 0 ? (
-                <AlertTriangle className="w-4 h-4 text-amber-500" />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 text-green-500" />
-              )}
-              <span className="font-semibold text-gray-900">
-                {parseResult.year} — {parseResult.preview.length} groups, {parseResult.entries.length} date entries
+        {importOpen && (
+          <div className="px-3 pb-3 border-t border-gray-100">
+            <p className="text-xs text-gray-500 mt-2 mb-2">
+              Import the annual NETOPS Excel file. Re-importing a year replaces existing data.
+            </p>
+            <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2">
+              Sheet 1 "Maintenance Calendar":
+              <span className="font-mono ml-1 text-gray-600">
+                Maintenance Group · Clusters · Maint Window · Jan…Dec
+              </span>
+              &nbsp;· Sheet 2 "Maintenance by Customer":
+              <span className="font-mono ml-1 text-gray-600">
+                Window START · Window END
               </span>
             </div>
-            <div className="flex gap-2">
+          </div>
+        )}
+      </div>
+
+      {/* Parse preview — only while confirming an import */}
+      {parseResult && (
+        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm shrink-0">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {parseResult.errors.length > 0 ? (
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+              )}
+              <span className="font-semibold text-gray-900 text-sm truncate">
+                {parseResult.year} — {parseResult.preview.length} groups, {parseResult.entries.length} dates
+              </span>
+            </div>
+            <div className="flex gap-2 shrink-0">
               <button
                 onClick={() => { setParseResult(null); if (fileRef.current) fileRef.current.value = ''; }}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
+                className="px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded-lg"
               >
                 Cancel
               </button>
               <button
                 onClick={handleConfirmImport}
                 disabled={importMut.isPending || parseResult.entries.length === 0}
-                className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg disabled:opacity-50"
               >
                 {importMut.isPending ? (
                   <><RefreshCw className="w-3 h-3 animate-spin" /> Importing…</>
                 ) : (
-                  <><Upload className="w-3 h-3" /> Confirm Import</>
+                  <><Upload className="w-3 h-3" /> Confirm</>
                 )}
               </button>
             </div>
           </div>
 
           {parseResult.errors.length > 0 && (
-            <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
               {parseResult.errors.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}
 
           {importMut.isError && (
-            <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
               Import failed: {(importMut.error as Error).message}
             </div>
           )}
@@ -797,45 +767,39 @@ export default function MaintenanceCalendarTab() {
         </div>
       )}
 
-      {/* Existing calendars */}
       {isLoading ? (
-        <div className="text-center py-8 text-gray-400 text-sm">Loading…</div>
-      ) : calendars.length === 0 ? (
-        <div className="text-center py-8 text-gray-400 text-sm">
-          No calendars imported yet. Use the Import button above.
+        <div className="text-center py-6 text-gray-400 text-sm">Loading…</div>
+      ) : calendars.length === 0 && !parseResult ? (
+        <div className="text-center py-6 text-gray-400 text-sm">
+          No calendars yet. Use <strong>Import</strong> above to upload the yearly Excel file.
         </div>
-      ) : (
-        <div className="space-y-3">
-          {calendars.map(cal => (
-            <CalendarCard
-              key={cal.id}
-              cal={cal}
-              isViewing={viewingId === cal.id}
-              onView={id => { setViewingId(viewingId === id ? null : id); setViewMonth(0); }}
-              onDelete={id => {
-                if (confirm(`Delete ${cal.year} maintenance calendar? This cannot be undone.`)) {
-                  deleteMut.mutate(id);
-                }
-              }}
-            />
-          ))}
-        </div>
-      )}
+      ) : viewingId && viewingCal ? (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-2 flex-wrap shrink-0">
+            <Calendar className="w-4 h-4 text-zebra-600 shrink-0" />
 
-      {/* Entry viewer */}
-      {viewingId && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-3 flex-wrap">
-            <Calendar className="w-4 h-4 text-zebra-600" />
-            <span className="font-semibold text-gray-900 text-sm">
-              {calendars.find(c => c.id === viewingId)?.year} Schedule
+            {calendars.length > 1 ? (
+              <select
+                value={viewingId}
+                onChange={e => { setViewingId(e.target.value); setViewMonth(0); }}
+                className="text-sm font-semibold text-gray-900 border border-gray-200 rounded px-2 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-zebra-300"
+              >
+                {calendars.map(c => (
+                  <option key={c.id} value={c.id}>{c.year} Schedule</option>
+                ))}
+              </select>
+            ) : (
+              <span className="font-semibold text-gray-900 text-sm">{viewingCal.year} Schedule</span>
+            )}
+
+            <span className="text-xs text-gray-400 hidden sm:inline">
+              {viewingCal.entryCount} entries · {viewingCal.fileName}
             </span>
 
-            {/* View mode toggle */}
-            <div className="flex rounded-lg border border-gray-200 overflow-hidden ml-2">
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden ml-auto">
               <button
                 onClick={() => setDisplayMode('grid')}
-                className={`px-3 py-1 text-xs font-medium transition-colors ${
+                className={`px-2.5 py-0.5 text-xs font-medium transition-colors ${
                   displayMode === 'grid' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
                 }`}
               >
@@ -843,7 +807,7 @@ export default function MaintenanceCalendarTab() {
               </button>
               <button
                 onClick={() => setDisplayMode('list')}
-                className={`px-3 py-1 text-xs font-medium transition-colors ${
+                className={`px-2.5 py-0.5 text-xs font-medium transition-colors ${
                   displayMode === 'list' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
                 }`}
               >
@@ -851,37 +815,48 @@ export default function MaintenanceCalendarTab() {
               </button>
             </div>
 
-            {/* Month filter — list mode only */}
             {displayMode === 'list' && (
-              <div className="ml-auto flex items-center gap-2">
-                <span className="text-xs text-gray-500">Filter by month:</span>
-                <select
-                  value={viewMonth}
-                  onChange={e => setViewMonth(Number(e.target.value))}
-                  className="text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-zebra-300"
-                >
-                  <option value={0}>All Months</option>
-                  {MONTHS.slice(1).map((m, i) => (
-                    <option key={i + 1} value={i + 1}>{m}</option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={viewMonth}
+                onChange={e => setViewMonth(Number(e.target.value))}
+                className="text-xs border border-gray-200 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-zebra-300"
+              >
+                <option value={0}>All Months</option>
+                {MONTHS.slice(1).map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
             )}
+
+            <button
+              onClick={() => {
+                if (confirm(`Delete ${viewingCal.year} maintenance calendar? This cannot be undone.`)) {
+                  deleteMut.mutate(viewingCal.id);
+                }
+              }}
+              className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg shrink-0"
+              title="Delete calendar"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
           </div>
-          <div className="p-4">
+
+          <div className="p-3 flex-1 min-h-0 overflow-hidden">
             {entriesLoading ? (
-              <div className="py-8 text-center text-gray-400 text-sm">Loading entries…</div>
+              <div className="py-6 text-center text-gray-400 text-sm">Loading entries…</div>
             ) : displayMode === 'grid' ? (
               <CalendarGridView
                 entries={entries}
-                year={calendars.find(c => c.id === viewingId)?.year ?? new Date().getFullYear()}
+                year={viewingCal.year}
               />
             ) : (
-              <EntryTable entries={entries} selectedMonth={viewMonth} />
+              <div className="overflow-auto max-h-full">
+                <EntryTable entries={entries} selectedMonth={viewMonth} />
+              </div>
             )}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
