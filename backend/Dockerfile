@@ -5,7 +5,8 @@ WORKDIR /app
 COPY package.json tsconfig.json ./
 COPY prisma ./prisma/
 
-RUN npm install
+RUN apk add --no-cache openssl
+RUN npm install --ignore-scripts
 
 COPY src ./src/
 
@@ -24,7 +25,7 @@ COPY --from=builder /app/node_modules ./node_modules/
 
 RUN mkdir -p /app/logs
 
-EXPOSE 4000
+EXPOSE 4005
 
 # Run migrations then start
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]

@@ -10,23 +10,23 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: 3005,
     watch: {
       usePolling: true,
       interval: 300,
     },
     proxy: {
       '/api': {
-        target: 'http://localhost:4000',
+        target: 'http://localhost:4005',
         changeOrigin: true,
         timeout: 300000,
       },
       '/dev': {
-        target: 'http://localhost:4000',
+        target: 'http://localhost:4005',
         changeOrigin: true,
       },
       '/socket.io': {
-        target: 'http://localhost:4000',
+        target: 'http://localhost:4005',
         ws: true,
       },
     },

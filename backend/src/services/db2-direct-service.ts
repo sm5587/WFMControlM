@@ -15,6 +15,7 @@ import path from 'path';
 import { createServiceLogger } from '../utils/logger';
 import { keeperService } from './keeper-service';
 import { configService } from './config-service';
+import { decryptClientDb2Password } from '../utils/client-db2-password';
 import { prisma } from '../database/prisma';
 
 const execFileAsync = promisify(execFile);
@@ -59,10 +60,8 @@ function resolveJjsPath(configured: string): string {
   } else {
     candidates.push(
       '/usr/bin/jjs',
-      '/usr/lib/jvm/java-8-openjdk-amd64/bin/jjs',
-      '/usr/lib/jvm/java-1.8.0-openjdk-amd64/bin/jjs',
-      '/usr/lib/jvm/java-8-openjdk/bin/jjs',
-      '/usr/lib/jvm/java-1.8.0-openjdk/bin/jjs',
+      '/usr/lib/jvm/java-1.8-openjdk/jre/bin/jjs',
+      '/usr/lib/jvm/java-1.8-openjdk/bin/jjs',
     );
     candidates.push('jjs');
   }
@@ -75,19 +74,39 @@ function resolveJjsPath(configured: string): string {
   return process.platform === 'win32' ? 'jjs.exe' : 'jjs';
 }
 
+function hasDb2LibArtifacts(dir: string): boolean {
+  return fs.existsSync(path.join(dir, 'DB2Connector.js'))
+    && fs.existsSync(path.join(dir, 'db2jcc4.jar'));
+}
+
+/** Backend root in Docker (/app) vs repo root in local dev (parent of backend/). */
+function resolveAppRoot(fromDir: string): string {
+  const candidates = [
+    path.resolve(fromDir, '../../..'), // repo root — local dev: .../WFMControlM
+    path.resolve(fromDir, '../..'),    // backend root — Docker: /app
+  ];
+  for (const root of candidates) {
+    if (hasDb2LibArtifacts(path.join(root, 'lib'))) return root;
+  }
+  return path.resolve(fromDir, '../..');
+}
+
 function resolveLibDir(configured: string, root: string): string {
+  const defaultDir = path.join(root, 'lib');
   const trimmed = configured?.trim();
   if (trimmed) {
     const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed) || trimmed.includes('\\');
     if (process.platform !== 'win32' && isWindowsPath) {
       logger.warn(`[DB2_INIT] Ignoring Windows lib dir on ${process.platform}: ${trimmed}`);
-    } else if (fs.existsSync(trimmed)) {
+    } else if (hasDb2LibArtifacts(trimmed)) {
       return trimmed;
+    } else if (fs.existsSync(trimmed)) {
+      logger.warn(`[DB2_INIT] Configured lib dir exists but missing DB2Connector.js/db2jcc4.jar (${trimmed}); using ${defaultDir}`);
     } else {
-      logger.warn(`[DB2_INIT] Configured lib dir not found (${trimmed}); using ./lib`);
+      logger.warn(`[DB2_INIT] Configured lib dir not found (${trimmed}); using ${defaultDir}`);
     }
   }
-  return path.join(root, 'lib');
+  return defaultDir;
 }
 
 type BatchSummary = {
@@ -169,7 +188,7 @@ class DB2DirectService {
   private batchSummaryCache = new Map<number, { data: BatchSummary; updatedAtMs: number }>();
 
   constructor() {
-    this.root = path.resolve(__dirname, '../../..');
+    this.root = resolveAppRoot(__dirname);
   }
 
   /** Resolve paths at call time — AppConfig is loaded after module import. */
@@ -519,7 +538,7 @@ class DB2DirectService {
 
     return new Promise((resolve) => {
       const child = execFile(jjsPath, args, {
-        cwd: path.resolve(__dirname, '../../..'),
+        cwd: this.root,
         timeout: configService.getInt('engine.jjsTimeoutMs'),
         maxBuffer: configService.getInt('engine.jjsMaxBuffer'),
         env: childEnv,
@@ -596,7 +615,8 @@ class DB2DirectService {
         const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
         env.DB2_URL_OVERRIDE = jdbcUrl;
         if (rec.db2Username) env.DB2_USER_OVERRIDE = rec.db2Username;
-        if (rec.db2Password) env.DB2_PASS_OVERRIDE = rec.db2Password;
+        const password = decryptClientDb2Password(rec.db2Password);
+        if (password) env.DB2_PASS_OVERRIDE = password;
         logger.debug(`Using Prisma connection for ${clientId}${caller ? ` [caller: ${caller}]` : ''}: ${jdbcUrl}`);
       } else {
         logger.warn(`No DB2 connection configured in database for ${clientId}`);

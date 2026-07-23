@@ -19,3 +19,7 @@ backend/prisma/*.db-journal
 
 # Deploy/runtime artifacts
 VERSION
+
+# Local Confluence upload script (may contain PAT)
+scripts/upload-confluence-page.py
+scripts/__pycache__/
