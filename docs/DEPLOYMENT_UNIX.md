@@ -134,9 +134,16 @@ curl -I http://localhost:3000         # frontend
 
 | Container | Port | Purpose |
 | --------- | ---- | ------- |
-| `wfm-controlm-api` | 4000 | Express backend (SQLite) |
-| `wfm-controlm-ui` | 3000 | React frontend (Nginx) |
-| `wfm-mailpit` | 1025 / 8025 | Local SMTP catcher (optional, for email testing) |
+| `wfm-controlm-api` | 4005 | Express backend (SQLite) |
+| `wfm-controlm-ui` | 3005 | React frontend (Nginx) |
+
+Production uses your corporate SMTP relay (set in **Admin → Config**). For local email testing only:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml up -d
+# Web UI http://localhost:8025  |  SMTP localhost:1025
+# AppConfig: secrets.smtpHost=host.docker.internal, secrets.smtpPort=1025
+```
 
 ### Database bootstrap (first install)
 

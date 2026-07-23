@@ -1,0 +1,272 @@
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Document purpose:</strong> Describes WFM Watch — a central tool for monitoring Workforce Management batch jobs and sending alerts when something goes wrong.</p>
+<p><strong>Audience:</strong> Security review, operations, and support teams.</p>
+<p><strong>Last updated:</strong> July 2026</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h1>WFM Watch — Job Monitoring and Alerting</h1>
+
+<h2>What is WFM Watch?</h2>
+<p>WFM Watch is a web application that gives the WFM team <strong>one place to see job health</strong> across many client environments (75+). Instead of logging into servers one by one, operators use a single dashboard to:</p>
+<ul>
+<li>See which scheduled jobs are due to run and whether they completed</li>
+<li>Check batch job status in client databases</li>
+<li>Get notified by email and in the app when jobs fail, run late, or miss deadlines</li>
+<li>Track planned maintenance windows</li>
+</ul>
+
+<h2>Why we built it</h2>
+<table><tbody>
+<tr><th>Before</th><th>With WFM Watch</th></tr>
+<tr><td>Manual checks on many servers</td><td>One dashboard for all clients</td></tr>
+<tr><td>Problems found late or missed</td><td>Automatic alerts when thresholds are crossed</td></tr>
+<tr><td>Job schedules scattered on app servers</td><td>Schedules collected and shown in one list</td></tr>
+<tr><td>Database batch status checked client by client</td><td>Batch status summarized across all clients</td></tr>
+</tbody></table>
+
+<h2>High-level architecture</h2>
+<p>WFM Watch has three main layers: a browser UI, an application server, and connections to existing WFM systems.</p>
+
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:parameter ac:name="title">System overview</ac:parameter><ac:plain-text-body><![CDATA[
+┌─────────────────────────────────────────────────────────────────┐
+│                     USERS (WFM Operations)                       │
+│              Web browser — login required for access             │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      WFM WATCH APPLICATION                       │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐ │
+│  │  Web UI      │◄──►│  App Server  │◄──►│  Local database  │ │
+│  │  (Dashboard, │    │  (monitoring,│    │  (settings, job  │ │
+│  │   Alerts)    │    │   alerts)    │    │   history, users)│ │
+│  └──────────────┘    └──────┬───────┘    └──────────────────┘ │
+└─────────────────────────────┼───────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+   │ App servers │    │ Client DB2  │    │ Corporate   │
+   │ (read cron  │    │ databases   │    │ email       │
+   │  schedules, │    │ (batch job  │    │ (SMTP)      │
+   │  log files) │    │  status)    │    │             │
+   └─────────────┘    └─────────────┘    └─────────────┘
+]]></ac:plain-text-body></ac:structured-macro>
+
+<h2>Main workflows</h2>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Workflow 1 — Discover and monitor scheduled jobs</ac:parameter><ac:rich-text-body>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[
+  Operator clicks "Sync" (or scheduled sync runs)
+           │
+           ▼
+  WFM Watch connects to client app server (secure login)
+           │
+           ▼
+  Reads the cron schedule file for WFM jobs only
+           │
+           ▼
+  Saves job name, schedule, and log path in WFM Watch database
+           │
+           ▼
+  Dashboard shows upcoming runs, last run status, and overdue jobs
+]]></ac:plain-text-body></ac:structured-macro>
+<p><strong>In plain terms:</strong> WFM Watch reads the existing job schedule from each client's application server and displays it centrally. It is read-only — it does not change schedules or run jobs on those servers.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Workflow 2 — Monitor batch jobs in databases</ac:parameter><ac:rich-text-body>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[
+  WFM Watch refresh cycle starts (configurable interval)
+           │
+           ▼
+  For each client: connect to DB2 database (read-only queries)
+           │
+           ▼
+  Read BATCH_STATUS table — completed, failed, running, pending
+           │
+           ▼
+  Flag jobs pending longer than threshold (e.g. 30 minutes)
+           │
+           ▼
+  DB Monitor screen and Dashboard show status and stale-job counts
+]]></ac:plain-text-body></ac:structured-macro>
+<p><strong>In plain terms:</strong> WFM Watch checks the same batch-status information operators would query manually, but does it automatically for all clients and highlights jobs that appear stuck.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Workflow 3 — Detect problems and send alerts</ac:parameter><ac:rich-text-body>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[
+  Monitoring finds: batch job stuck │ batch error │ log shows failure
+           │
+           ▼
+  Alert rule matches the condition (severity + channel)
+           │
+           ▼
+  Alert recorded in WFM Watch (audit trail)
+           │
+           ├──► Email (SMTP)
+           └──► In-app notification on dashboard
+           │
+           ▼
+  Operator acknowledges alert in the UI when handled
+]]></ac:plain-text-body></ac:structured-macro>
+<p><strong>In plain terms:</strong> When something crosses a defined threshold, the right people are notified automatically. Alerts can be acknowledged so the team knows an issue is being handled.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Workflow 4 — User access</ac:parameter><ac:rich-text-body>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[
+  User opens WFM Watch in browser
+           │
+           ▼
+  Enters username and password
+           │
+           ▼
+  App issues a signed session token (time-limited)
+           │
+           ▼
+  Each API request is checked — admin actions require admin role
+           │
+           ▼
+  User actions logged for audit (who did what, when)
+]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<h2>Application screens</h2>
+<table><tbody>
+<tr><th>Screen</th><th>What it shows</th></tr>
+<tr><td><strong>Dashboard</strong></td><td>Summary of batch jobs and scheduled jobs — errors, pending items, upcoming runs</td></tr>
+<tr><td><strong>Clients</strong></td><td>List of client environments, app servers, and database connection status</td></tr>
+<tr><td><strong>Cron Jobs</strong></td><td>Discovered schedules per client; sync from app servers</td></tr>
+<tr><td><strong>DB Jobs Monitor</strong></td><td>Live batch status from client DB2 databases</td></tr>
+<tr><td><strong>DB Jobs</strong></td><td>Database-side job queue and execution status</td></tr>
+<tr><td><strong>Payroll Jobs</strong></td><td>Payroll-related batch job monitoring</td></tr>
+<tr><td><strong>Unprocessed Punch</strong></td><td>Alerts for unprocessed punch data</td></tr>
+<tr><td><strong>Alerts</strong></td><td>Active and historical alerts; acknowledge when resolved</td></tr>
+<tr><td><strong>Monitor</strong></td><td>Live job execution feed (updates without page refresh)</td></tr>
+<tr><td><strong>Maintenance</strong></td><td>Planned maintenance windows on the calendar</td></tr>
+<tr><td><strong>Admin</strong></td><td>Users, roles, and application settings (restricted)</td></tr>
+</tbody></table>
+
+<h2>Security overview</h2>
+<ac:structured-macro ac:name="warning"><ac:rich-text-body>
+<p>This section summarizes how WFM Watch handles access, credentials, and external connections — intended for security review.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h3>Access control</h3>
+<ul>
+<li><strong>Login required</strong> — all monitoring and admin functions require an authenticated user.</li>
+<li><strong>Role-based access</strong> — admin settings (users, secrets, global config) are limited to authorized roles.</li>
+<li><strong>Session tokens</strong> — short-lived signed tokens; configurable expiry in Admin settings.</li>
+<li><strong>HTTP protections</strong> — security headers and CORS limited to approved front-end origins.</li>
+</ul>
+
+<h3>Data protection and encryption</h3>
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p>WFM Watch protects sensitive data in three layers: <strong>encryption at rest</strong> for application secrets, <strong>one-way hashing</strong> for user passwords, and <strong>access controls</strong> so credentials are never exposed through the web UI.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h4>Application secrets (SMTP, JWT, SSH)</h4>
+<p>Settings marked as secrets in Admin → Config are encrypted before they are written to the SQLite database.</p>
+<table><tbody>
+<tr><th>Setting</th><th>Value</th></tr>
+<tr><td><strong>Algorithm</strong></td><td>AES-256-GCM (industry-standard symmetric encryption with authentication)</td></tr>
+<tr><td><strong>Key</strong></td><td><code>CONFIG_ENCRYPTION_KEY</code> — a 256-bit key set in the server environment at startup (not stored in the database)</td></tr>
+<tr><td><strong>Per-value randomness</strong></td><td>A new random 12-byte initialization vector (IV) is generated for each secret when it is saved</td></tr>
+<tr><td><strong>Tamper detection</strong></td><td>A 16-byte authentication tag (GCM) ensures encrypted values cannot be altered without detection</td></tr>
+<tr><td><strong>Stored format</strong></td><td>Base64-encoded blob: IV + auth tag + ciphertext</td></tr>
+<tr><td><strong>At runtime</strong></td><td>Secrets are decrypted in server memory only when needed; they are never sent to the browser</td></tr>
+</tbody></table>
+
+<h4>DB2 credentials (per client)</h4>
+<p>Each client’s DB2 host, database name, username, and password are stored in the <strong>Client</strong> table in SQLite. Passwords are <strong>encrypted at rest with AES-256-GCM</strong> (same algorithm and key as application secrets) before they are saved.</p>
+<ul>
+<li><strong>Admin-only updates</strong> — only users with Client Edit permission can change DB2 credentials.</li>
+<li><strong>Not exposed in the UI</strong> — the API returns a <em>password is set</em> indicator only; the actual password is never returned in client lists or dashboards.</li>
+<li><strong>Used only at connection time</strong> — passwords are decrypted in server memory and passed to a short-lived DB2 connector process when a monitoring query runs; they are not logged.</li>
+</ul>
+
+<h4>User login passwords</h4>
+<ul>
+<li>Stored as a <strong>bcrypt</strong> one-way hash (cannot be reversed to the original password).</li>
+<li>Login uses signed <strong>JWT</strong> session tokens with configurable expiry.</li>
+</ul>
+
+<h3>Credentials and secrets (summary)</h3>
+<table><tbody>
+<tr><th>Secret type</th><th>Storage</th><th>Protection</th></tr>
+<tr><td>App secrets (SMTP, JWT, SSH)</td><td>SQLite AppConfig table</td><td>AES-256-GCM encrypted at rest; key in server environment only</td></tr>
+<tr><td>Per-client DB2 connection (host, user, password)</td><td>SQLite Client table</td><td>Password AES-256-GCM encrypted at rest; admin RBAC; hidden from UI/API</td></tr>
+<tr><td>User login passwords</td><td>SQLite User table</td><td>bcrypt hash (one-way)</td></tr>
+<tr><td>SSH access to app servers</td><td>AppConfig or local credential store</td><td>Encrypted app secrets + TOTP 2FA where required</td></tr>
+</tbody></table>
+
+<h3>External connections</h3>
+<table><tbody>
+<tr><th>System</th><th>Direction</th><th>Purpose</th><th>Typical port</th></tr>
+<tr><td>Client app servers</td><td>WFM Watch → server</td><td>Read cron schedules and log files</td><td>SSH (22)</td></tr>
+<tr><td>Client DB2 databases</td><td>WFM Watch → database</td><td>Read batch job status</td><td>DB2 (50000)</td></tr>
+<tr><td>Corporate SMTP</td><td>WFM Watch → mail server</td><td>Send alert emails</td><td>587 / 25</td></tr>
+<tr><td>User browsers</td><td>User → WFM Watch</td><td>Web UI and API</td><td>443 (HTTPS in production)</td></tr>
+</tbody></table>
+<p>WFM Watch is a <strong>monitoring and notification tool</strong>. It reads status from existing systems; it does not replace Control-M or change production job definitions.</p>
+
+<h3>Audit and logging</h3>
+<ul>
+<li>User sign-in and configuration changes are recorded.</li>
+<li>Alert events retain severity, title, timestamp, and acknowledgment status.</li>
+<li>Application logs are written to server log files (not inside the container image in production).</li>
+</ul>
+
+<h2>Alert channels</h2>
+<table><tbody>
+<tr><th>Channel</th><th>When used</th></tr>
+<tr><td><strong>In-app</strong></td><td>Always available on the Alerts screen and live dashboard</td></tr>
+<tr><td><strong>Email</strong></td><td>Primary channel for operations — via corporate SMTP</td></tr>
+</tbody></table>
+
+<h2>Deployment (summary)</h2>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:parameter ac:name="title">Typical production layout</ac:parameter><ac:plain-text-body><![CDATA[
+                    Internet / corporate network
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │ Reverse proxy   │  HTTPS termination
+                    │ (e.g. Nginx)    │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+     ┌─────────────────┐           ┌─────────────────┐
+     │  Web UI         │           │  App Server     │
+     │  (static files) │           │  (API + jobs)   │
+     └─────────────────┘           └────────┬────────┘
+                                            │
+                                   ┌────────┴────────┐
+                                   ▼                 ▼
+                            Application DB      Java DB2 connector
+                            (SQLite)            (jjs + JDBC library)
+                            — users, settings,
+                              client DB2 creds,
+                              job history, alerts
+]]></ac:plain-text-body></ac:structured-macro>
+<ul>
+<li>Runs on Linux servers or Docker; HTTPS required in production.</li>
+<li>Application database (SQLite) holds users, settings, client DB2 connection details, job history, and alerts.</li>
+<li>Full DB2 monitoring requires Java 8 (jjs) and the DB2 connector library (<code>DB2Connector.js</code> + <code>db2jcc4.jar</code>) on the host — not separate connection files per client.</li>
+<li>See repository docs: <code>DEPLOYMENT_UNIX.md</code> and <code>production-readiness-checklist.md</code>.</li>
+</ul>
+
+<h2>Key facts at a glance</h2>
+<table><tbody>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Client environments monitored</td><td>75+</td></tr>
+<tr><td>DB2 database connections</td><td>65+</td></tr>
+<tr><td>Primary alert channel</td><td>Email (SMTP)</td></tr>
+<tr><td>In-app alerts</td><td>Alerts screen and live dashboard</td></tr>
+<tr><td>Stale-job alert threshold</td><td>Configurable (default 30 minutes pending)</td></tr>
+<tr><td>Encryption for app secrets</td><td>AES-256-GCM (CONFIG_ENCRYPTION_KEY)</td></tr>
+<tr><td>Product name in UI</td><td>WFM Watch</td></tr>
+</tbody></table>
+
+<ac:structured-macro ac:name="note"><ac:rich-text-body>
+<p><strong>Questions or security review feedback?</strong> Contact the WFM L2 Engg team, Swapna Mishra, owning this application.</p>
+</ac:rich-text-body></ac:structured-macro>

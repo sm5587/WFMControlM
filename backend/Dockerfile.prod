@@ -5,11 +5,14 @@ WORKDIR /app
 # Runtime packages:
 # - tini: proper PID 1 / signal handling
 # - libc6-compat: compatibility layer for some native modules
-RUN apk add --no-cache tini libc6-compat
+# - openssl: required by Prisma migrate/query engine on Alpine
+# - openjdk8: Nashorn jjs for DB2 JDBC bridge (DB Monitor / DB Jobs)
+RUN apk add --no-cache tini libc6-compat openssl openjdk8
 
 FROM base AS deps
 COPY package*.json ./
-RUN npm ci
+# ibm_db is unused (DB2 uses Java/jjs bridge) — skip native compile on Alpine
+RUN npm ci --ignore-scripts
 
 FROM deps AS build
 COPY tsconfig.json ./
@@ -19,20 +22,22 @@ RUN npx prisma generate && npm run build
 
 FROM base AS runtime
 ENV NODE_ENV=production
-ENV PORT=4000
+ENV PORT=4005
+ENV JJS_PATH=/usr/bin/jjs
 
 WORKDIR /app
 
 COPY --from=deps /app/package*.json ./
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
+COPY scripts ./scripts/
 
 RUN mkdir -p /app/logs /app/prisma \
   && chown -R node:node /app
 
 USER node
-EXPOSE 4000
+EXPOSE 4005
 
 # Healthcheck against backend health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \

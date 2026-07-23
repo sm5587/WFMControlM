@@ -58,6 +58,7 @@ class ConfigService {
 
     await this.ensureAppNameConfig();
     await this.ensureNotifyCooldownConfig();
+    await this.ensureMaintenanceAdHocWindowsConfig();
     await this.ensureMasterAccountConfig();
 
     this.loaded = true;
@@ -112,6 +113,34 @@ class ConfigService {
       category: 'THRESHOLDS',
       label: 'Notify Cooldown (min)',
       description: 'Minutes before notify icon reappears after email sent',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert display.maintenanceAdHocWindows when upgrading an older database. */
+  private async ensureMaintenanceAdHocWindowsConfig(): Promise<void> {
+    const key = 'display.maintenanceAdHocWindows';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: 'false',
+        category: 'DISPLAY',
+        label: 'Maintenance Ad-hoc Windows Tab',
+        description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: 'false',
+      category: 'DISPLAY',
+      label: 'Maintenance Ad-hoc Windows Tab',
+      description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)',
       isSecret: false,
       updatedBy: 'system',
       updatedAt: new Date(),

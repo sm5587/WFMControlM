@@ -300,9 +300,9 @@ async function main() {
     { key: 'secrets.db2Password',      value: '',                              category: 'SECRETS', label: 'DB2 Password',          description: 'Fallback DB2 password', isSecret: true },
 
     // ---- INFRA ----
-    { key: 'infra.port',              value: '4000',                                   category: 'INFRA', label: 'HTTP Port',              description: 'HTTP server listen port' },
+    { key: 'infra.port',              value: '4005',                                   category: 'INFRA', label: 'HTTP Port',              description: 'HTTP server listen port' },
     { key: 'infra.nodeEnv',           value: 'development',                        category: 'INFRA', label: 'Node Environment',       description: 'development or production' },
-    { key: 'infra.corsOrigins',       value: 'http://localhost:3000,http://localhost:5173',                 category: 'INFRA', label: 'CORS Origins',           description: 'Comma-separated allowed CORS origins' },
+    { key: 'infra.corsOrigins',       value: 'http://localhost:3005,http://localhost:5173',                 category: 'INFRA', label: 'CORS Origins',           description: 'Comma-separated allowed CORS origins' },
     { key: 'infra.bodySizeLimit',     value: '10mb',                                                       category: 'INFRA', label: 'Body Size Limit',        description: 'Express JSON body size limit' },
     { key: 'infra.sshPort',           value: '22',                                 category: 'INFRA', label: 'SSH Port',               description: 'SSH connection port for app servers' },
     { key: 'infra.sshTimeout',        value: '15000',                           category: 'INFRA', label: 'SSH Timeout (ms)',       description: 'SSH connection timeout in milliseconds' },
@@ -373,6 +373,7 @@ async function main() {
     { key: 'display.panelMaxWidth',          value: '700',          category: 'DISPLAY', label: 'Panel Max Width (px)',   description: 'Resizable panel max width in pixels' },
     { key: 'display.wsReconnectAttempts',    value: '10',           category: 'DISPLAY', label: 'WS Reconnect Attempts', description: 'WebSocket max reconnection attempts' },
     { key: 'display.wsReconnectDelayMs',     value: '1000',         category: 'DISPLAY', label: 'WS Reconnect Delay (ms)', description: 'WebSocket reconnect delay in ms' },
+    { key: 'display.maintenanceAdHocWindows', value: 'false',        category: 'DISPLAY', label: 'Maintenance Ad-hoc Windows Tab', description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)' },
   ];
 
   for (const c of configDefaults) {
