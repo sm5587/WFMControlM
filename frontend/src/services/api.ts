@@ -69,10 +69,13 @@ function formatHttpErrorMessage(error: any): string {
   return error.message || 'An error occurred';
 }
 
-async function postNdjsonStream<TComplete>(
+async function postNdjsonStream<
+  TComplete,
+  TEvent extends { type: string; data?: TComplete },
+>(
   path: string,
   body: unknown,
-  onEvent: (event: { type: string; data?: TComplete }) => void,
+  onEvent: (event: TEvent) => void,
   labels: { failed: string; incomplete: string; timeout: string },
 ): Promise<TComplete> {
   const token = localStorage.getItem('wfm_token');
@@ -100,7 +103,7 @@ async function postNdjsonStream<TComplete>(
   if (!contentType.includes('application/x-ndjson')) {
     const jsonBody = await resp.json();
     const result = jsonBody.data as TComplete;
-    if (result) onEvent({ type: 'complete', data: result });
+    if (result) onEvent({ type: 'complete', data: result } as TEvent);
     return result;
   }
 
@@ -121,7 +124,7 @@ async function postNdjsonStream<TComplete>(
       const trimmed = line.trim();
       if (!trimmed) continue;
       const event = JSON.parse(trimmed);
-      onEvent(event);
+      onEvent(event as TEvent);
       if (event.type === 'complete') finalResult = event.data as TComplete;
     }
   }
@@ -129,7 +132,7 @@ async function postNdjsonStream<TComplete>(
   const trailing = buffer.trim();
   if (trailing) {
     const event = JSON.parse(trailing);
-    onEvent(event);
+    onEvent(event as TEvent);
     if (event.type === 'complete') finalResult = event.data as TComplete;
   }
 
