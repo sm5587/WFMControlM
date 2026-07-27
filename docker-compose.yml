@@ -9,9 +9,10 @@ services:
     container_name: wfm-controlm-api
     restart: unless-stopped
     ports:
-      - "4005:4005"
+      - "4015:4005"
     environment:
       PORT: "4005"
+      DEPLOYMENT_LABEL: "Docker"
     env_file:
       - .env
     # Bootstrap vars only in .env (DATABASE_URL, CONFIG_ENCRYPTION_KEY, Keeper paths).
@@ -28,7 +29,7 @@ services:
     container_name: wfm-controlm-ui
     restart: unless-stopped
     ports:
-      - "3005:80"
+      - "3015:80"
     depends_on:
       - backend
 

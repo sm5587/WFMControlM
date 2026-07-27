@@ -25,7 +25,8 @@ npm run db:seed
 npm run dev
 ```
 
-- Backend: http://localhost:4005
-- Frontend: http://localhost:3005
+- Backend: http://localhost:4005 (local dev)
+- Frontend: http://localhost:3005 (local dev)
+- Docker: http://localhost:3015 (UI) / http://localhost:4015 (API direct)
 
 See [docs/README.md](docs/README.md) and [docs/DEPLOYMENT_UNIX.md](docs/DEPLOYMENT_UNIX.md) for full setup.

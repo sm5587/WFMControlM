@@ -36,6 +36,8 @@ import unprocessedPunchRouter from './routes/unprocessed-punch';
 import escalationsRouter from './routes/escalations';
 import dbJobsRouter from './routes/db-jobs';
 import maintenanceRouter from './routes/maintenance';
+import outageRouter from './routes/outage';
+import fileMonitorRouter from './routes/file-monitor';
 import configRouter from './routes/config';
 import emailPreviewRouter from './routes/email-preview';
 
@@ -94,6 +96,7 @@ async function bootstrap() {
     res.json({
       status: 'ok',
       service: configService.getAppName(),
+      deployment: config.deploymentLabel,
       version: '1.0.0',
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
@@ -109,6 +112,17 @@ async function bootstrap() {
   // Public: login (no auth needed)
   apiRouter.use('/auth', authRouter);
 
+  // Public: which instance this is (local dev vs Docker) — used on login page before auth
+  apiRouter.get('/deployment-info', (_req, res) => {
+    res.json({
+      success: true,
+      data: {
+        label: config.deploymentLabel,
+        port: config.port,
+      },
+    });
+  });
+
   // All other API routes require a valid token
   apiRouter.use(authMiddleware);
 
@@ -123,6 +137,8 @@ async function bootstrap() {
   apiRouter.use('/escalations', escalationsRouter);
   apiRouter.use('/db-jobs', dbJobsRouter);
   apiRouter.use('/maintenance', maintenanceRouter);
+  apiRouter.use('/outage', outageRouter);
+  apiRouter.use('/file-monitor', fileMonitorRouter);
   apiRouter.use('/admin', adminRouter);
   apiRouter.use('/config', configRouter);
 

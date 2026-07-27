@@ -4,7 +4,8 @@
 // Import from Excel. View affected cron jobs falling in the window.
 // ============================================================
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarClock, Plus, Upload, ChevronDown, ChevronRight,
@@ -14,11 +15,14 @@ import {
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import { maintenanceApi, maintenanceCalendarApi } from '../../services/api';
-import type { MaintenanceWindow, AffectedJob } from '../../types';
+import type { MaintenanceWindow, AffectedJob, OutageImpactInitialValues } from '../../types';
 import MaintenanceCalendarTab from './MaintenanceCalendarTab';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useConfig } from '../../contexts/ConfigContext';
+import { usePermission } from '../../context/AuthContext';
 import { MAINTENANCE_ADHOC_WINDOWS_KEY } from '../../constants/app-display';
+
+const OutageImpact = React.lazy(() => import('../Outage/OutageImpact'));
 
 dayjs.extend(utc);
 
@@ -37,6 +41,14 @@ const STATUS_STYLE: Record<string, string> = {
 const TYPE_STYLE: Record<string, string> = {
   PLANNED:     'bg-indigo-50 text-indigo-700',
   UNSCHEDULED: 'bg-red-50 text-red-600',
+};
+
+/** User-facing lifecycle labels for outage records (status field). */
+const OUTAGE_STATUS_LABEL: Record<string, string> = {
+  SCHEDULED: 'Upcoming',
+  ACTIVE:    'In Progress',
+  COMPLETED: 'Ended',
+  CANCELLED: 'Cancelled',
 };
 
 /** Expected Excel columns (case-insensitive) → field mapping */
@@ -321,35 +333,122 @@ function ClientJobGroup({ clientId, jobs, tz }: { clientId: string; jobs: Affect
 
 // ---- Outage Form -------------------------------------------------------------
 
+type OutageScope = 'ALL' | 'CLUSTER' | 'CLIENT';
+
+const TZ_OFFSET_MIN: Record<string, number> = {
+  IST: 330, EDT: -240, EST: -300, CST: -360, CDT: -300, UTC: 0,
+};
+
+/** UTC ISO → datetime-local value in the given TZ label. */
+function utcIsoToDatetimeLocal(isoUtc: string, tzLabel: string): string {
+  const offsetMin = TZ_OFFSET_MIN[tzLabel.toUpperCase()] ?? TZ_OFFSET_MIN.IST;
+  const utc = new Date(isoUtc);
+  if (Number.isNaN(utc.getTime())) return '';
+  const local = new Date(utc.getTime() + offsetMin * 60_000);
+  return local.toISOString().replace('T', ' ').slice(0, 16).replace(' ', 'T');
+}
+
+/** Normalise stored/display datetime strings to HTML datetime-local (YYYY-MM-DDTHH:mm). */
+function toDatetimeLocalInput(raw: string, tzLabel?: string): string {
+  if (!raw?.trim()) return '';
+  const stripped = raw.trim().replace(/\s+(IST|EDT|EST|CST|CDT|UTC|GMT|UK(?:\s+Time)?)\s*$/i, '');
+  const m = stripped.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2})/);
+  if (m) return `${m[1]}T${m[2]}`;
+  if (stripped.endsWith('Z') && tzLabel) return utcIsoToDatetimeLocal(stripped, tzLabel);
+  return '';
+}
+
+/** Format YYYY-MM-DDTHH:mm (datetime-local) as "Jul 24, 2026" for outage titles. */
+function outageDateLabel(startLocal: string): string {
+  const m = startLocal.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) {
+    return new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/** Map a reported outage to Impact Analysis prefill. */
+function buildImpactPrefill(source: {
+  scope: string;
+  cluster?: string | null;
+  clientCode?: string | null;
+  startLocal?: string;
+  endLocal?: string;
+  startTimeUtc?: string;
+  endTimeUtc?: string;
+  inputTimezone: string;
+}): OutageImpactInitialValues {
+  const tz = source.inputTimezone || 'IST';
+  let startLocal = source.startLocal ? toDatetimeLocalInput(source.startLocal, tz) : '';
+  let endLocal = source.endLocal ? toDatetimeLocalInput(source.endLocal, tz) : '';
+  if (!startLocal && source.startTimeUtc) startLocal = utcIsoToDatetimeLocal(source.startTimeUtc, tz);
+  if (!endLocal && source.endTimeUtc) endLocal = utcIsoToDatetimeLocal(source.endTimeUtc, tz);
+  const base = {
+    startLocal,
+    endLocal,
+    inputTimezone: source.inputTimezone,
+  };
+  if (source.scope === 'ALL') {
+    return { ...base, allClusters: true, allClients: true };
+  }
+  if (source.scope === 'CLUSTER' && source.cluster) {
+    return { ...base, allClusters: false, clusters: [source.cluster], allClients: true };
+  }
+  if (source.scope === 'CLIENT' && source.clientCode) {
+    return { ...base, allClusters: true, allClients: false, clientIds: [source.clientCode] };
+  }
+  return base;
+}
+
 function OutageForm({ clients, onSave, onClose, saving }: {
   clients: { id: string; clientId: string; name: string; cluster: string }[];
   onSave: (payload: any) => void;
   onClose: () => void;
   saving: boolean;
 }) {
+  const [scope, setScope] = useState<OutageScope>('ALL');
   const [cluster, setCluster] = useState('');
+  const [clientDbId, setClientDbId] = useState('');
   const [tz, setTz] = useState<TzOption>('IST');
   const [startLocal, setStartLocal] = useState('');
   const [endLocal, setEndLocal] = useState('');
   const [notes, setNotes] = useState('');
 
   const clusters = [...new Set(clients.map(c => c.cluster).filter(Boolean))].sort();
+  const selectedClient = clients.find(c => c.id === clientDbId);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const now = new Date();
-    const title = `Outage — CL${cluster} — ${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
-    onSave({
-      scope: 'CLUSTER',
-      cluster,
+    const dateLabel = outageDateLabel(startLocal);
+    let title = `Outage — All Clients — ${dateLabel}`;
+    if (scope === 'CLUSTER') {
+      title = `Outage — CL${cluster} — ${dateLabel}`;
+    } else if (scope === 'CLIENT') {
+      title = `Outage — ${selectedClient?.clientId ?? 'Client'} — ${dateLabel}`;
+    }
+
+    const payload: Record<string, unknown> = {
+      scope,
       title,
       reason: notes || undefined,
       type: 'UNSCHEDULED',
       inputTimezone: tz,
       startLocal,
       endLocal,
-    });
+    };
+    if (scope === 'CLUSTER') payload.cluster = cluster;
+    if (scope === 'CLIENT') {
+      payload.clientDbId = clientDbId;
+      payload.clientCode = selectedClient?.clientId;
+    }
+    onSave(payload);
   };
+
+  const scopeValid =
+    scope === 'ALL'
+    || (scope === 'CLUSTER' && !!cluster)
+    || (scope === 'CLIENT' && !!clientDbId);
 
   const inputCls = 'w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400';
   const labelCls = 'block text-xs font-medium text-slate-600 mb-0.5';
@@ -364,12 +463,37 @@ function OutageForm({ clients, onSave, onClose, saving }: {
         </div>
         <form onSubmit={handleSubmit} className="p-5 space-y-3">
           <div>
-            <label className={labelCls}>Affected Cluster</label>
-            <select className={inputCls} value={cluster} onChange={e => setCluster(e.target.value)} required>
-              <option value="">— select cluster —</option>
-              {clusters.map(c => <option key={c} value={c}>{c}</option>)}
+            <label className={labelCls}>Affected Scope</label>
+            <select
+              className={inputCls}
+              value={scope}
+              onChange={e => setScope(e.target.value as OutageScope)}
+            >
+              <option value="ALL">All Clients</option>
+              <option value="CLUSTER">Cluster</option>
+              <option value="CLIENT">Single Client</option>
             </select>
           </div>
+          {scope === 'CLUSTER' && (
+            <div>
+              <label className={labelCls}>Cluster</label>
+              <select className={inputCls} value={cluster} onChange={e => setCluster(e.target.value)} required>
+                <option value="">— select cluster —</option>
+                {clusters.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
+          {scope === 'CLIENT' && (
+            <div>
+              <label className={labelCls}>Client</label>
+              <select className={inputCls} value={clientDbId} onChange={e => setClientDbId(e.target.value)} required>
+                <option value="">— select client —</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>{c.clientId} — {c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className={labelCls}>Timezone</label>
             <select className={inputCls + ' w-32'} value={tz} onChange={e => setTz(e.target.value as TzOption)}>
@@ -393,9 +517,12 @@ function OutageForm({ clients, onSave, onClose, saving }: {
             <textarea className={inputCls} value={notes} onChange={e => setNotes(e.target.value)}
               rows={2} placeholder="What happened? Impact details…" />
           </div>
+          <p className="text-xs text-slate-500">
+            After saving, Impact Analysis opens with this window pre-filled (when you have access).
+          </p>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-1.5 text-sm text-slate-600 border border-slate-300 rounded-md hover:bg-slate-50">Cancel</button>
-            <button type="submit" disabled={saving}
+            <button type="submit" disabled={saving || !scopeValid}
               className="px-4 py-1.5 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50">
               {saving ? 'Saving…' : 'Log Outage'}
             </button>
@@ -621,18 +748,61 @@ function ExcelImportButton({ clients, onImported }: {
 export default function MaintenanceWindows() {
   const qc = useQueryClient();
   const { getBool } = useConfig();
+  const canOutageImpact = usePermission('OUTAGE_VIEW', 'read');
+  const [searchParams, setSearchParams] = useSearchParams();
   const showAdHocWindows = getBool(MAINTENANCE_ADHOC_WINDOWS_KEY, false);
-  const [pageTab, setPageTab] = useState<'windows' | 'calendar' | 'outages'>('calendar');
+
+  const tabFromUrl = searchParams.get('tab');
+  const initialTab: 'windows' | 'calendar' | 'outages' =
+    tabFromUrl === 'outages' ? 'outages'
+    : tabFromUrl === 'windows' && showAdHocWindows ? 'windows'
+    : 'calendar';
+  const initialOutageSub: 'history' | 'impact' =
+    searchParams.get('sub') === 'impact' && canOutageImpact ? 'impact' : 'history';
+
+  const [pageTab, setPageTab] = useState<'windows' | 'calendar' | 'outages'>(initialTab);
+  const [outageSubTab, setOutageSubTab] = useState<'history' | 'impact'>(initialOutageSub);
+  const [impactPrefill, setImpactPrefill] = useState<OutageImpactInitialValues | null>(null);
+  const [impactPrefillKey, setImpactPrefillKey] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateOutage, setShowCreateOutage] = useState(false);
   const [selectedWindow, setSelectedWindow] = useState<MaintenanceWindow | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('active');
 
+  const syncUrl = useCallback((tab: typeof pageTab, sub: typeof outageSubTab = outageSubTab) => {
+    const params: Record<string, string> = { tab };
+    if (tab === 'outages' && sub === 'impact') params.sub = 'impact';
+    setSearchParams(params, { replace: true });
+  }, [outageSubTab, setSearchParams]);
+
+  const openImpactFromOutage = useCallback((source: {
+    scope: string;
+    cluster?: string | null;
+    clientCode?: string | null;
+    startLocal?: string;
+    endLocal?: string;
+    startTimeUtc?: string;
+    endTimeUtc?: string;
+    inputTimezone: string;
+  }) => {
+    setImpactPrefill(buildImpactPrefill(source));
+    setImpactPrefillKey(k => k + 1);
+    setOutageSubTab('impact');
+    syncUrl('outages', 'impact');
+  }, [syncUrl]);
+
   useEffect(() => {
     if (!showAdHocWindows && pageTab === 'windows') {
       setPageTab('calendar');
+      syncUrl('calendar');
     }
-  }, [showAdHocWindows, pageTab]);
+  }, [showAdHocWindows, pageTab, syncUrl]);
+
+  useEffect(() => {
+    if (outageSubTab === 'impact' && !canOutageImpact) {
+      setOutageSubTab('history');
+    }
+  }, [outageSubTab, canOutageImpact]);
 
   const { data: winData, isLoading } = useQuery({
     queryKey: ['maintenance', filterStatus],
@@ -678,14 +848,22 @@ export default function MaintenanceWindows() {
 
   const outageMutation = useMutation({
     mutationFn: (payload: any) => maintenanceApi.create(payload),
-    onSuccess: () => {
+    onSuccess: (resp, variables) => {
       qc.invalidateQueries({ queryKey: ['maintenance-outages'] });
       setShowCreateOutage(false);
+      if (canOutageImpact) {
+        openImpactFromOutage(resp?.data ?? variables);
+      }
     },
   });
 
   const cancelOutageMutation = useMutation({
     mutationFn: (id: string) => maintenanceApi.update(id, { status: 'CANCELLED' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['maintenance-outages'] }),
+  });
+
+  const deleteOutageMutation = useMutation({
+    mutationFn: (id: string) => maintenanceApi.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['maintenance-outages'] }),
   });
 
@@ -730,10 +908,10 @@ export default function MaintenanceWindows() {
             <button
               type="button"
               onClick={() => setShowCreateOutage(true)}
-              aria-hidden={pageTab !== 'outages'}
-              tabIndex={pageTab === 'outages' ? 0 : -1}
+              aria-hidden={pageTab !== 'outages' || outageSubTab !== 'history'}
+              tabIndex={pageTab === 'outages' && outageSubTab === 'history' ? 0 : -1}
               className={`absolute inset-0 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 whitespace-nowrap transition-opacity ${
-                pageTab === 'outages' ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                pageTab === 'outages' && outageSubTab === 'history' ? 'opacity-100' : 'opacity-0 pointer-events-none'
               }`}
             >
               <Siren className="w-4 h-4 shrink-0" /> Report Outage
@@ -745,7 +923,7 @@ export default function MaintenanceWindows() {
           {showAdHocWindows && (
           <button
             type="button"
-            onClick={() => setPageTab('windows')}
+            onClick={() => { setPageTab('windows'); syncUrl('windows'); }}
             className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
               pageTab === 'windows'
                 ? 'border-blue-600 text-blue-600'
@@ -757,7 +935,7 @@ export default function MaintenanceWindows() {
           )}
           <button
             type="button"
-            onClick={() => setPageTab('calendar')}
+            onClick={() => { setPageTab('calendar'); syncUrl('calendar'); }}
             className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
               pageTab === 'calendar'
                 ? 'border-blue-600 text-blue-600'
@@ -768,7 +946,7 @@ export default function MaintenanceWindows() {
           </button>
           <button
             type="button"
-            onClick={() => setPageTab('outages')}
+            onClick={() => { setPageTab('outages'); setOutageSubTab('history'); syncUrl('outages', 'history'); }}
             className={`px-5 py-2 text-sm font-semibold border-b-2 -mb-px box-border h-[41px] transition-colors ${
               pageTab === 'outages'
                 ? 'border-red-500 text-red-600'
@@ -790,6 +968,35 @@ export default function MaintenanceWindows() {
 
       {pageTab === 'outages' && (
         <div className="space-y-3 flex-1 min-h-0">
+          <div className="flex gap-1 border-b border-slate-200">
+            <button
+              type="button"
+              onClick={() => { setOutageSubTab('history'); syncUrl('outages', 'history'); }}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                outageSubTab === 'history'
+                  ? 'border-red-500 text-red-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Recorded Outages
+            </button>
+            {canOutageImpact && (
+              <button
+                type="button"
+                onClick={() => { setImpactPrefill(null); setOutageSubTab('impact'); syncUrl('outages', 'impact'); }}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  outageSubTab === 'impact'
+                    ? 'border-red-500 text-red-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Impact Analysis
+              </button>
+            )}
+          </div>
+
+          {outageSubTab === 'history' && (
+            <>
           {outageLoading ? (
             <div className="flex items-center justify-center h-40 text-slate-400">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading…
@@ -805,8 +1012,15 @@ export default function MaintenanceWindows() {
               <WindowCard
                 key={win.id}
                 win={win}
+                mode="outage"
                 onViewJobs={() => setSelectedWindow(win)}
+                onViewImpact={canOutageImpact ? () => openImpactFromOutage(win) : undefined}
                 onCancel={() => cancelOutageMutation.mutate(win.id)}
+                onDelete={() => {
+                  if (window.confirm('Delete this outage record permanently?')) {
+                    deleteOutageMutation.mutate(win.id);
+                  }
+                }}
               />
             ))
           )}
@@ -820,6 +1034,22 @@ export default function MaintenanceWindows() {
           )}
           {selectedWindow && (
             <AffectedJobsPanel window={selectedWindow} onClose={() => setSelectedWindow(null)} />
+          )}
+            </>
+          )}
+
+          {outageSubTab === 'impact' && canOutageImpact && (
+            <Suspense fallback={
+              <div className="flex items-center justify-center h-40 text-slate-400">
+                <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading…
+              </div>
+            }>
+              <OutageImpact
+                embedded
+                initialValues={impactPrefill}
+                key={impactPrefill ? impactPrefillKey : 'manual'}
+              />
+            </Suspense>
           )}
         </div>
       )}
@@ -906,13 +1136,21 @@ export default function MaintenanceWindows() {
 
 // ---- Window Card --------------------------------------------------------------
 
-function WindowCard({ win, onViewJobs, onCancel }: {
+function WindowCard({ win, mode = 'maintenance', onViewJobs, onViewImpact, onCancel, onDelete }: {
   win: MaintenanceWindow;
+  mode?: 'maintenance' | 'outage';
   onViewJobs: () => void;
+  onViewImpact?: () => void;
   onCancel: () => void;
+  onDelete?: () => void;
 }) {
   const { fmt } = useTimezone();
   const duration = fmtDuration(win.startTimeUtc, win.endTimeUtc);
+  const isOutage = mode === 'outage';
+  const statusLabel = isOutage ? (OUTAGE_STATUS_LABEL[win.status] ?? win.status) : win.status;
+  const canSoftCancel = win.source !== 'calendar' && (win.status === 'SCHEDULED' || win.status === 'ACTIVE');
+  const canDelete = isOutage && win.source !== 'calendar'
+    && (win.status === 'COMPLETED' || win.status === 'CANCELLED');
 
   return (
     <div className={`bg-white border rounded-lg px-5 py-4 flex items-start gap-4 shadow-sm ${
@@ -920,7 +1158,11 @@ function WindowCard({ win, onViewJobs, onCancel }: {
     }`}>
       {/* Scope badge */}
       <div className="flex-shrink-0 flex flex-col gap-1 items-center min-w-[3.5rem]">
-        {win.scope === 'CLUSTER' ? (
+        {win.scope === 'ALL' ? (
+          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 whitespace-nowrap">
+            All Clients
+          </span>
+        ) : win.scope === 'CLUSTER' ? (
           (win.cluster ?? '').split(/[&,]/).map(s => s.trim()).filter(Boolean).map(cl => (
             <span key={cl} className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 whitespace-nowrap">
               CL {cl}
@@ -938,11 +1180,13 @@ function WindowCard({ win, onViewJobs, onCancel }: {
         <div className="flex items-center gap-2 flex-wrap">
           <h3 className="font-semibold text-slate-800 text-sm">{win.title}</h3>
           <span className={`text-[11px] px-1.5 py-0.5 rounded flex items-center gap-0.5 ${STATUS_STYLE[win.status] ?? ''}`}>
-            {statusIcon(win.status)} {win.status}
+            {statusIcon(win.status)} {statusLabel}
           </span>
-          <span className={`text-[11px] px-1.5 py-0.5 rounded ${TYPE_STYLE[win.type] ?? ''}`}>
-            {win.type}
-          </span>
+          {!isOutage && (
+            <span className={`text-[11px] px-1.5 py-0.5 rounded ${TYPE_STYLE[win.type] ?? ''}`}>
+              {win.type}
+            </span>
+          )}
         </div>
         {win.reason && <p className="text-xs text-slate-500 mt-0.5">{win.reason}</p>}
         <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500 flex-wrap">
@@ -962,7 +1206,16 @@ function WindowCard({ win, onViewJobs, onCancel }: {
 
       {/* Actions */}
       <div className="flex items-center gap-2 flex-shrink-0">
-        {win.status !== 'CANCELLED' && win.status !== 'COMPLETED' && (
+        {onViewImpact && (
+          <button
+            type="button"
+            onClick={onViewImpact}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-red-100 text-red-700 rounded-md hover:bg-red-200 font-medium"
+          >
+            <Siren className="w-3.5 h-3.5" /> Impact Analysis
+          </button>
+        )}
+        {(isOutage || (win.status !== 'CANCELLED' && win.status !== 'COMPLETED')) && (
           <button
             onClick={onViewJobs}
             className="flex items-center gap-1 px-3 py-1.5 text-xs bg-amber-100 text-amber-700 rounded-md hover:bg-amber-200 font-medium"
@@ -970,12 +1223,22 @@ function WindowCard({ win, onViewJobs, onCancel }: {
             <Eye className="w-3.5 h-3.5" /> View Affected Jobs
           </button>
         )}
-        {win.source !== 'calendar' && (win.status === 'SCHEDULED' || win.status === 'ACTIVE') && (
+        {canSoftCancel && (
           <button
+            type="button"
             onClick={onCancel}
             className="flex items-center gap-1 px-2 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-600 hover:border-red-200"
           >
-            <Trash2 className="w-3.5 h-3.5" /> Cancel
+            <Trash2 className="w-3.5 h-3.5" /> {isOutage ? 'Cancel Outage' : 'Cancel'}
+          </button>
+        )}
+        {canDelete && onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex items-center gap-1 px-2 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-md hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Delete
           </button>
         )}
       </div>

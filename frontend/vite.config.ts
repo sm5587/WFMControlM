@@ -19,7 +19,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:4005',
         changeOrigin: true,
-        timeout: 300000,
+        timeout: 3600000,
       },
       '/dev': {
         target: 'http://localhost:4005',

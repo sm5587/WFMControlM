@@ -7,7 +7,7 @@ import {
   Building2, Layers, CalendarDays, Activity, Briefcase
 } from 'lucide-react';
 import { jobsApi, clientsApi } from '../../services/api';
-import { Job, JobType, JobExecution, Client, LastRunStatus, CronSyncBatchStatus } from '../../types';
+import { Job, JobType, JobExecution, Client, CronSyncBatchStatus } from '../../types';
 import { useDbClientConnections } from '../../hooks/useDbClientConnections';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
@@ -277,15 +277,6 @@ export default function JobsList() {
       case 'nextRun': {
         const ta = a.nextRunTime ? new Date(a.nextRunTime).getTime() : 0;
         const tb = b.nextRunTime ? new Date(b.nextRunTime).getTime() : 0;
-        return dir * (ta - tb);
-      }
-      case 'lastRun': {
-        const statusOrder: Record<string, number> = { FAILED: 0, STALE: 1, NOT_RUN: 2, RUNNING: 3, UNKNOWN: 4, SUCCESS: 5 };
-        const sa = statusOrder[a.lastRunStatus || 'UNKNOWN'] ?? 4;
-        const sb = statusOrder[b.lastRunStatus || 'UNKNOWN'] ?? 4;
-        if (sa !== sb) return dir * (sa - sb);
-        const ta = a.lastRunAt ? new Date(a.lastRunAt).getTime() : 0;
-        const tb = b.lastRunAt ? new Date(b.lastRunAt).getTime() : 0;
         return dir * (ta - tb);
       }
       case 'status': {
@@ -641,7 +632,6 @@ export default function JobsList() {
                 <SortableHeader column="schedule" label="Schedule" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} className="w-28" />
                 <SortableHeader column="command" label="Command" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} />
                 <SortableHeader column="nextRun" label="Next Run" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} className="w-40" />
-                <SortableHeader column="lastRun" label="Last Run (Calculated)" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} className="w-28" />
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase w-24">Actions</th>
               </tr>
             </thead>
@@ -657,7 +647,7 @@ export default function JobsList() {
                 return Array.from(groups.entries()).map(([key, group]) => (
                   <>
                     <tr key={`group-${key}`} className="bg-orange-50 border-t border-orange-100">
-                      <td colSpan={6} className="px-3 py-2">
+                      <td colSpan={5} className="px-3 py-2">
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
                           <span className="text-xs font-semibold text-orange-700">{group.client?.name || 'Unknown Client'}</span>
@@ -700,9 +690,6 @@ export default function JobsList() {
                           ) : (
                             <span className="text-xs text-gray-300">—</span>
                           )}
-                        </td>
-                        <td className="px-3 py-2">
-                          <LastRunBadge status={job.lastRunStatus} lastRunAt={job.lastRunAt} computed={job.lastRunComputed} />
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-end gap-0.5">
@@ -764,9 +751,6 @@ export default function JobsList() {
                     ) : (
                       <span className="text-xs text-gray-300">—</span>
                     )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <LastRunBadge status={job.lastRunStatus} lastRunAt={job.lastRunAt} computed={job.lastRunComputed} />
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-0.5">
@@ -838,28 +822,6 @@ function SortableHeader({ column, label, sortColumn, sortDirection, onSort, clas
         )}
       </span>
     </th>
-  );
-}
-
-const LAST_RUN_CONFIG: Record<string, { icon: React.ReactNode; color: string; bg: string; label: string }> = {
-  SUCCESS:  { icon: <CheckCircle className="w-3 h-3" />, color: 'text-green-700', bg: 'bg-green-50', label: 'Success' },
-  FAILED:   { icon: <XCircle className="w-3 h-3" />,     color: 'text-red-700',   bg: 'bg-red-50',   label: 'Failed' },
-  NOT_RUN:  { icon: <Clock className="w-3 h-3" />,       color: 'text-gray-500',  bg: 'bg-gray-50',  label: 'Not Run' },
-  STALE:    { icon: <AlertTriangle className="w-3 h-3" />, color: 'text-yellow-700', bg: 'bg-yellow-50', label: 'Stale' },
-  UNKNOWN:  { icon: <AlertTriangle className="w-3 h-3" />, color: 'text-gray-500', bg: 'bg-gray-50', label: 'Unknown' },
-};
-
-function LastRunBadge({ status, lastRunAt, computed }: { status?: LastRunStatus; lastRunAt?: string; computed?: boolean }) {
-  const { fmt } = useTimezone();
-  if (!lastRunAt) {
-    return <span className="text-xs text-gray-300">—</span>;
-  }
-  return (
-    <div className={`text-xs ${computed ? 'text-gray-300 italic' : 'text-gray-600'}`}
-      title={computed ? 'Estimated from cron schedule — not confirmed from logs' : undefined}
-    >
-      {computed ? '~' : ''}{fmt(lastRunAt, 'short')}
-    </div>
   );
 }
 

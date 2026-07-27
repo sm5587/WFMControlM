@@ -14,7 +14,7 @@ export type ExecutionStatus =
 
 export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL' | 'EMERGENCY';
 
-export type MaintenanceScope  = 'CLUSTER' | 'CLIENT';
+export type MaintenanceScope  = 'CLUSTER' | 'CLIENT' | 'ALL';
 export type MaintenanceType   = 'PLANNED' | 'UNSCHEDULED';
 export type MaintenanceStatus = 'SCHEDULED' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
 export type MaintenanceTz     = 'IST' | 'EDT' | 'EST' | 'CST' | 'CDT' | 'UTC';
@@ -56,6 +56,143 @@ export interface AffectedJob {
   fireTimesLocal: string[];
   fireCount: number;
 }
+
+export interface OutageImpactJob {
+  jobId: string;
+  clientId: string;
+  clientName?: string;
+  cluster: string;
+  name: string;
+  cronExpression: string;
+  serverTimezone: string;
+  command?: string;
+  fireTimesUtc: string[];
+  fireTimesDisplay: string[];
+  fireTimesServer: string[];
+  fireCount: number;
+  willRetryToday: boolean;
+}
+
+/** Prefill Impact Analysis from a reported outage (Maintenance → Outages). */
+export interface OutageImpactInitialValues {
+  allClusters?: boolean;
+  clusters?: string[];
+  allClients?: boolean;
+  clientIds?: string[];
+  startLocal?: string;
+  endLocal?: string;
+  inputTimezone?: string;
+  autoCalculate?: boolean;
+}
+
+export interface OutageImpactResult {
+  rows: OutageImpactJob[];
+  summary: {
+    uniqueJobs: number;
+    totalFireTimes: number;
+    uniqueClients: number;
+    excludedRetryToday: number;
+    parseErrors: number;
+  };
+  window: {
+    startLocal: string;
+    endLocal: string;
+    inputTimezone: string;
+    startUtc: string;
+    endUtc: string;
+  };
+  plannedTotal?: number;
+  cancelled?: boolean;
+}
+
+export type OutageImpactStreamEvent =
+  | {
+      type: 'start';
+      plannedTotal: number;
+      window: OutageImpactResult['window'];
+    }
+  | {
+      type: 'progress';
+      completed: number;
+      plannedTotal: number;
+      clientId: string;
+      rows: OutageImpactJob[];
+      impactedJobs: number;
+    }
+  | {
+      type: 'complete';
+      data: OutageImpactResult;
+    };
+
+export interface FileMonitorFile {
+  name: string;
+  size: number;
+  mtime: string;
+  path?: string;
+}
+
+export interface FileMonitorRejectedFolder {
+  folder: string;
+  files: FileMonitorFile[];
+}
+
+export interface ClientFileMonitorResult {
+  clientId: string;
+  clientName?: string;
+  cluster?: string;
+  server: string;
+  pendingCount: number;
+  rejectedCount: number;
+  pendingFiles: FileMonitorFile[];
+  rejectedFolders: FileMonitorRejectedFolder[];
+  error?: string;
+  status: 'CLEAN' | 'ALERT' | 'ERROR' | 'SKIPPED';
+}
+
+export interface FileMonitorFetchResult {
+  rows: ClientFileMonitorResult[];
+  summary: {
+    total: number;
+    alert: number;
+    clean: number;
+    errors: number;
+    skipped: number;
+    totalPending: number;
+    totalRejected: number;
+  };
+  scannedAt: string;
+  paths: { pending: string; rejected: string };
+  usesTotpAuth: boolean;
+  cancelled?: boolean;
+  plannedTotal: number;
+  scanError?: string;
+}
+
+export type FileMonitorStreamEvent =
+  | {
+      type: 'start';
+      plannedTotal: number;
+      paths: { pending: string; rejected: string };
+      usesTotpAuth: boolean;
+    }
+  | {
+      type: 'progress';
+      completed: number;
+      plannedTotal: number;
+      clientId: string;
+      row: ClientFileMonitorResult;
+    }
+  | {
+      type: 'heartbeat';
+      completed: number;
+      plannedTotal: number;
+      phase: 'totp-cooldown';
+      clientId: string;
+    }
+  | {
+      type: 'complete';
+      data: FileMonitorFetchResult;
+    };
 
 // Client & Server types
 export interface Client {

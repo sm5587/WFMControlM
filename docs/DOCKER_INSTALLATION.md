@@ -12,12 +12,14 @@ For Unix server deployment (registry pull, bare metal), see [DEPLOYMENT_UNIX.md]
 
 | Container | Image | Host port | Purpose |
 | --------- | ----- | --------- | ------- |
-| `wfm-controlm-api` | `wfm-controlm-backend:prod` | **4005** | Express API, SQLite, Prisma, DB2/jjs bridge |
-| `wfm-controlm-ui` | `wfm-controlm-frontend:prod` | **3005** | Nginx serving the React build |
+| `wfm-controlm-api` | `wfm-controlm-backend:prod` | **4015** | Express API, SQLite, Prisma, DB2/jjs bridge |
+| `wfm-controlm-ui` | `wfm-controlm-frontend:prod` | **3015** | Nginx serving the React build |
 
-- **Backend URL:** http://localhost:4005  
-- **Frontend URL:** http://localhost:3005  
-- **Health check:** http://localhost:4005/health  
+- **Backend URL:** http://localhost:4015  
+- **Frontend URL:** http://localhost:3015  
+- **Health check:** http://localhost:4015/health  
+
+Local dev (non-Docker) stays on **3005** / **4005** so both can run side by side.
 
 Containers use `restart: unless-stopped`, so they come back after a reboot (no Windows Task Scheduler needed).
 
@@ -116,11 +118,11 @@ docker compose -f docker-compose.prod.yml build
 
 `docker-compose.prod.yml` defines:
 
-- **Backend** — port `4005`, env from `.env`, volumes:
+- **Backend** — host port `4015` → container `4005`, env from `.env`, `DEPLOYMENT_LABEL=Docker`, volumes:
   - `backend_prisma` → `/app/prisma` (SQLite persistence)
   - `backend_logs` → `/app/logs`
   - `./lib` → `/app/lib:ro` (DB2 connector)
-- **Frontend** — port `3005` → container `8080`, waits for backend health
+- **Frontend** — host port `3015` → container `8080`, waits for backend health
 - **Migrations** — `RUN_MIGRATIONS=true` runs `prisma migrate deploy` on backend start
 
 Mailpit is **not** in production compose. For local email testing only:
@@ -206,11 +208,11 @@ docker compose -f docker-compose.prod.yml up -d
 ## Step 6 — Verify
 
 ```powershell
-curl http://localhost:4005/health
-curl -I http://localhost:3005
+curl http://localhost:4015/health
+curl -I http://localhost:3015
 ```
 
-Open http://localhost:3005 in a browser and log in.
+Open http://localhost:3015 in a browser and log in (sidebar shows a **Docker** badge; local dev uses http://localhost:3005 with a **Local** badge).
 
 Expected health response shape:
 
@@ -396,7 +398,7 @@ Replace `wfmcontrolm_backend_prisma` with the actual volume name from `docker vo
 | `spawn jjs ENOENT` | Java/jjs not in image or wrong path | Use current `Dockerfile.prod` (includes OpenJDK 8); ensure `./lib` is mounted |
 | DB2 queries fail | Missing jars in `/app/lib` | Verify `lib/DB2Connector.js` and `lib/db2jcc4.jar` on host |
 | Empty clients / config | Fresh volume, no bootstrap | Run Step 5 (ddl/dml or copy existing dev.db) |
-| Port conflict on 4005/3005 | Old native `start.ps1` or another app | `.\start.ps1 stop` or change compose port mapping |
+| Port conflict on 3015/4015 | Local dev already on 3005/4005, or another app | Stop the other stack or change compose port mapping |
 | `apply-sql.js` file not found | `database/` not in image | Mount `./database:/app/database:ro` or `docker cp` the file |
 | Windows `.env` DB path breaks container | Host path not visible in Linux container | Use `docker-compose.smoke.override.yml` or `file:./dev.db` |
 

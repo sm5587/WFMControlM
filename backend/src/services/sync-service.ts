@@ -182,9 +182,14 @@ function loadCredentials(): SSHCredentials {
  *   Prompt 1 ("First factor" / "Password") -> password
  *   Prompt 2 ("Second factor" / "Token")   -> TOTP code
  */
-function sshConnect(hostname: string, creds: SSHCredentials): Promise<SSH2Client> {
+function sshConnect(
+  hostname: string,
+  creds: SSHCredentials,
+  hooks?: { onClient?: (conn: SSH2Client) => void },
+): Promise<SSH2Client> {
   return new Promise((resolve, reject) => {
     const conn = new SSH2Client();
+    hooks?.onClient?.(conn);
     const timeoutMs = config.ssh.timeout || 15000;
 
     const timer = setTimeout(() => {
@@ -1690,3 +1695,15 @@ class SyncService extends EventEmitter {
 }
 
 export const syncService = new SyncService();
+
+/** True when SSH credentials include a TOTP secret (personal/2FA auth). Service accounts return false. */
+export function sshCredentialsUseTotp(): boolean {
+  try {
+    return !!loadCredentials().totpSecret;
+  } catch {
+    return false;
+  }
+}
+
+/** Shared SSH helpers for other services (file monitor, etc.) */
+export { sshConnect, sshExec, loadCredentials };

@@ -6,15 +6,18 @@
 //   clean start/end times and cluster codes).
 // ============================================================
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Upload, Calendar, Trash2, ChevronDown, ChevronRight, ChevronLeft,
-  Clock, AlertTriangle, RefreshCw, CheckCircle2,
+  Clock, AlertTriangle, RefreshCw, CheckCircle2, Download, Siren, Square,
 } from 'lucide-react';
-import { maintenanceCalendarApi } from '../../services/api';
-import type { MaintenanceCalendar, MaintenanceCalendarEntry, CalendarImportEntry } from '../../types';
-import { useTimezone } from '../../hooks/useTimezone';
+import { maintenanceCalendarApi, outageApi } from '../../services/api';
+import type {
+  MaintenanceCalendar, MaintenanceCalendarEntry, CalendarImportEntry,
+  OutageImpactJob, OutageImpactResult, OutageImpactStreamEvent,
+} from '../../types';
+import { usePermission } from '../../context/AuthContext';
 
 // ---------------------------------------------------------------- helpers
 
@@ -464,6 +467,178 @@ function parseClusters(raw: string): string[] {
   return raw.split(/[&,/]/).map(s => s.trim().replace(/^CL\s*/i, '')).filter(Boolean);
 }
 
+function entryToApiDateTime(raw: string): string {
+  if (!raw?.trim()) return '';
+  const stripped = raw.trim().replace(/\s+(IST|EDT|EST|CST|CDT|UTC|GMT|UK(?:\s+Time)?)\s*$/i, '');
+  const m = stripped.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]}` : stripped.slice(0, 16).replace('T', ' ');
+}
+
+function entryInputTimezone(entry: MaintenanceCalendarEntry): string {
+  const fromLocal = entry.startLocal?.match(/\s+(IST|EDT|EST|CST|CDT|UTC|GMT|UK)\s*$/i)?.[1];
+  return (fromLocal ?? entry.timezone ?? 'IST').toUpperCase().replace(' TIME', '');
+}
+
+/** Calendar Excel uses "19 & 26"; client.cluster in DB is "CL19", "CL26". */
+function clustersForImpactApi(raw: string): string[] {
+  return parseClusters(raw).map(cl => (/^CL/i.test(cl) ? cl.toUpperCase() : `CL${cl}`));
+}
+
+function buildEntryImpactParams(entry: MaintenanceCalendarEntry) {
+  if (!entry.startLocal || !entry.endLocal) return null;
+  const entryClusters = clustersForImpactApi(entry.clusters);
+  if (entryClusters.length === 0) return null;
+  const tz = entryInputTimezone(entry);
+  return {
+    clusters: entryClusters,
+    startLocal: entryToApiDateTime(entry.startLocal),
+    endLocal: entryToApiDateTime(entry.endLocal),
+    inputTimezone: tz,
+    noRetryToday: true,
+  };
+}
+
+function summarizeImpactRows(rows: OutageImpactJob[]) {
+  return {
+    uniqueJobs: rows.length,
+    totalFireTimes: rows.reduce((n, r) => n + r.fireCount, 0),
+    uniqueClients: new Set(rows.map(r => r.clientId)).size,
+    excludedRetryToday: 0,
+    parseErrors: 0,
+  };
+}
+
+function applyImpactStreamEvent(
+  event: OutageImpactStreamEvent,
+  setResult: React.Dispatch<React.SetStateAction<OutageImpactResult | null>>,
+  setCalcProgress: React.Dispatch<React.SetStateAction<{ completed: number; total: number; clientId?: string } | null>>,
+) {
+  if (event.type === 'start') {
+    setResult({
+      rows: [],
+      summary: summarizeImpactRows([]),
+      window: event.window,
+      plannedTotal: event.plannedTotal,
+    });
+    setCalcProgress({ completed: 0, total: event.plannedTotal });
+    return;
+  }
+  if (event.type === 'progress') {
+    setCalcProgress({ completed: event.completed, total: event.plannedTotal, clientId: event.clientId });
+    if (event.rows.length > 0) {
+      setResult(prev => {
+        if (!prev) return prev;
+        const rows = [...prev.rows, ...event.rows].sort((a, b) =>
+          (a.fireTimesUtc[0] ?? '').localeCompare(b.fireTimesUtc[0] ?? ''),
+        );
+        return {
+          ...prev,
+          rows,
+          summary: {
+            ...prev.summary,
+            uniqueJobs: rows.length,
+            totalFireTimes: rows.reduce((n, r) => n + r.fireCount, 0),
+            uniqueClients: new Set(rows.map(r => r.clientId)).size,
+          },
+        };
+      });
+    }
+    return;
+  }
+  if (event.type === 'complete') {
+    setResult(event.data);
+    setCalcProgress(null);
+  }
+}
+
+function exportImpactCsv(
+  rows: OutageImpactJob[],
+  tz: string,
+  filenameSuffix: string,
+  extraColumns?: Record<string, string>,
+) {
+  const extraKeys = extraColumns ? Object.keys(extraColumns) : [];
+  const header = [
+    ...extraKeys,
+    'clientId', 'cluster', 'jobName', 'cronExpression', 'serverTimezone',
+    'fireTimesDisplay', 'fireTimesServer', 'fireTimesUtc', 'willRetryToday', 'command',
+  ];
+  const lines = rows.map(r =>
+    header.map(h => {
+      let v: string | boolean = extraColumns?.[h] ?? '';
+      if (!extraColumns || !(h in extraColumns)) {
+        if (h === 'jobName') v = r.name;
+        else if (h === 'fireTimesDisplay') v = r.fireTimesDisplay.join('; ');
+        else if (h === 'fireTimesServer') v = r.fireTimesServer.join('; ');
+        else if (h === 'fireTimesUtc') v = r.fireTimesUtc.join('; ');
+        else if (h === 'clientId') v = r.clientId;
+        else if (h === 'cluster') v = r.cluster;
+        else if (h === 'cronExpression') v = r.cronExpression;
+        else if (h === 'serverTimezone') v = r.serverTimezone;
+        else if (h === 'willRetryToday') v = r.willRetryToday;
+        else if (h === 'command') v = r.command ?? '';
+        else v = '';
+      }
+      return `"${String(v).replace(/"/g, '""')}"`;
+    }).join(','),
+  );
+  const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `maintenance-impact-${filenameSuffix}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ImpactJobGroup({ clientId, jobs, tz }: { clientId: string; jobs: OutageImpactJob[]; tz: string }) {
+  const [open, setOpen] = useState(true);
+  const client = jobs[0];
+
+  return (
+    <div className="border border-slate-200 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-left"
+        onClick={() => setOpen(o => !o)}
+      >
+        {open ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
+        <span className="font-semibold text-xs">{clientId}</span>
+        {client.clientName && <span className="text-slate-500 text-[11px]">— {client.clientName}</span>}
+        {client.cluster && <span className="ml-auto text-[10px] text-slate-400">{client.cluster}</span>}
+        <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full ml-1">{jobs.length} jobs</span>
+      </button>
+      {open && (
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase">
+              <th className="text-left px-3 py-1.5 font-medium">Job</th>
+              <th className="text-left px-3 py-1.5 font-medium">Schedule</th>
+              <th className="text-left px-3 py-1.5 font-medium">Fire times ({tz})</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {jobs.map(job => (
+              <tr key={job.jobId} className="hover:bg-red-50/40">
+                <td className="px-3 py-1.5 max-w-xs">
+                  <p className="font-medium text-slate-700 truncate">{job.name}</p>
+                  {job.command && <p className="text-slate-400 truncate">{job.command.slice(0, 60)}</p>}
+                </td>
+                <td className="px-3 py-1.5 font-mono text-slate-600 whitespace-nowrap">{job.cronExpression}</td>
+                <td className="px-3 py-1.5">
+                  {job.fireTimesDisplay.map((t, i) => (
+                    <div key={i} className="text-slate-700">{t}</div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function EntryTable({
   entries,
   selectedMonth,
@@ -471,32 +646,146 @@ function EntryTable({
   entries: MaintenanceCalendarEntry[];
   selectedMonth: number;
 }) {
-  // Build cluster → entries map (an entry appears under each of its clusters)
-  const clusterMap: Record<string, MaintenanceCalendarEntry[]> = {};
-  for (const e of entries) {
-    for (const cl of parseClusters(e.clusters)) {
-      if (!clusterMap[cl]) clusterMap[cl] = [];
-      clusterMap[cl].push(e);
+  const canOutageImpact = usePermission('OUTAGE_VIEW', 'read');
+  const impactAllowed = selectedMonth > 0 && canOutageImpact;
+
+  const clusters = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of entries) {
+      for (const cl of parseClusters(e.clusters)) set.add(cl);
+    }
+    return [...set].sort((a, b) => {
+      const na = parseInt(a), nb = parseInt(b);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.localeCompare(b);
+    });
+  }, [entries]);
+
+  const [allClustersSelected, setAllClustersSelected] = useState(true);
+  const [selectedClusters, setSelectedClusters] = useState<string[]>([]);
+  const [analyzingEntryId, setAnalyzingEntryId] = useState<string | null>(null);
+  const [impactByEntry, setImpactByEntry] = useState<Record<string, OutageImpactResult>>({});
+  const [liveResult, setLiveResult] = useState<OutageImpactResult | null>(null);
+  const [calcProgress, setCalcProgress] = useState<{ completed: number; total: number; clientId?: string } | null>(null);
+  const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+  const [impactError, setImpactError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  const sorted = useMemo(() => {
+    let list = selectedMonth
+      ? entries.filter(e => e.month === selectedMonth)
+      : entries;
+    if (!allClustersSelected && selectedClusters.length > 0) {
+      list = list.filter(e =>
+        parseClusters(e.clusters).some(cl => selectedClusters.includes(cl)),
+      );
+    }
+    return [...list].sort(
+      (a, b) => new Date(a.maintenanceDate).getTime() - new Date(b.maintenanceDate).getTime(),
+    );
+  }, [entries, selectedMonth, allClustersSelected, selectedClusters]);
+
+  const analyzedCount = Object.keys(impactByEntry).length;
+
+  function toggleCluster(cl: string) {
+    setSelectedClusters(prev =>
+      prev.includes(cl) ? prev.filter(c => c !== cl) : [...prev, cl],
+    );
+  }
+
+  async function runImpact(entry: MaintenanceCalendarEntry) {
+    if (!impactAllowed || analyzingEntryId || entry.status === 'CANCELLED') return;
+    const params = buildEntryImpactParams(entry);
+    if (!params) {
+      setImpactError('Missing window times or cluster scope for this entry.');
+      return;
+    }
+
+    setAnalyzingEntryId(entry.id);
+    setImpactError(null);
+    setCalcProgress(null);
+    setLiveResult(null);
+    setExpandedEntryId(entry.id);
+
+    try {
+      const result = await outageApi.calculateStream(params, (event) =>
+        applyImpactStreamEvent(event, setLiveResult, setCalcProgress),
+      );
+      setImpactByEntry(prev => ({ ...prev, [entry.id]: result }));
+      setLiveResult(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Impact analysis failed';
+      setImpactError(msg);
+    } finally {
+      setAnalyzingEntryId(null);
+      setCalcProgress(null);
+      setLiveResult(null);
+      setCancelling(false);
     }
   }
 
-  // Sort clusters numerically where possible
-  const clusters = Object.keys(clusterMap).sort((a, b) => {
-    const na = parseInt(a), nb = parseInt(b);
-    if (!isNaN(na) && !isNaN(nb)) return na - nb;
-    return a.localeCompare(b);
-  });
+  async function handleCancel() {
+    if (!analyzingEntryId) return;
+    setCancelling(true);
+    try {
+      await outageApi.cancel();
+    } catch {
+      /* server may already be done */
+    }
+  }
 
-  const [selectedCluster, setSelectedCluster] = useState<string>('');
-  const activeCluster = selectedCluster || clusters[0] || '';
+  function exportEntryResult(entry: MaintenanceCalendarEntry) {
+    const result = impactByEntry[entry.id];
+    if (!result?.rows.length) return;
+    const dateLabel = new Date(entry.maintenanceDate).toISOString().slice(0, 10);
+    exportImpactCsv(result.rows, result.window.inputTimezone, dateLabel, {
+      maintenanceDate: dateLabel,
+      maintenanceGroup: entry.maintenanceGroup,
+      clusters: entry.clusters,
+    });
+  }
 
-  const clusterEntries = clusterMap[activeCluster] ?? [];
-  const filtered = selectedMonth
-    ? clusterEntries.filter(e => e.month === selectedMonth)
-    : clusterEntries;
-  const sorted = [...filtered].sort(
-    (a, b) => new Date(a.maintenanceDate).getTime() - new Date(b.maintenanceDate).getTime()
-  );
+  function exportAllResults() {
+    const extraKeys = ['maintenanceDate', 'maintenanceGroup', 'clusters'];
+    const header = [
+      ...extraKeys,
+      'clientId', 'cluster', 'jobName', 'cronExpression', 'serverTimezone',
+      'fireTimesDisplay', 'fireTimesServer', 'fireTimesUtc', 'willRetryToday', 'command',
+    ];
+    const lines: string[] = [];
+    for (const entry of sorted) {
+      const result = impactByEntry[entry.id];
+      if (!result?.rows.length) continue;
+      const dateLabel = new Date(entry.maintenanceDate).toISOString().slice(0, 10);
+      for (const r of result.rows) {
+        const rowVals: Record<string, string | boolean> = {
+          maintenanceDate: dateLabel,
+          maintenanceGroup: entry.maintenanceGroup,
+          clusters: entry.clusters,
+          clientId: r.clientId,
+          cluster: r.cluster,
+          jobName: r.name,
+          cronExpression: r.cronExpression,
+          serverTimezone: r.serverTimezone,
+          fireTimesDisplay: r.fireTimesDisplay.join('; '),
+          fireTimesServer: r.fireTimesServer.join('; '),
+          fireTimesUtc: r.fireTimesUtc.join('; '),
+          willRetryToday: r.willRetryToday,
+          command: r.command ?? '',
+        };
+        lines.push(header.map(h => `"${String(rowVals[h] ?? '').replace(/"/g, '""')}"`).join(','));
+      }
+    }
+    if (lines.length === 0) return;
+    const monthLabel = selectedMonth ? MONTHS[selectedMonth].toLowerCase() : 'all';
+    const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `maintenance-impact-${monthLabel}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   if (clusters.length === 0) {
     return (
@@ -508,30 +797,75 @@ function EntryTable({
 
   return (
     <div>
-      {/* Cluster selector pills */}
-      <div className="flex flex-wrap gap-1.5 mb-4">
-        {clusters.map(cl => (
-          <button
-            key={cl}
-            onClick={() => setSelectedCluster(cl)}
-            className={`px-3 py-1 rounded-full text-sm font-semibold border transition-colors ${
-              activeCluster === cl
-                ? 'bg-zebra-600 text-white border-zebra-600'
-                : 'bg-white text-slate-600 border-slate-300 hover:border-zebra-400 hover:text-zebra-600'
-            }`}
-          >
-            CL{cl}
-            <span className="ml-1.5 text-xs font-normal opacity-75">
-              ({clusterMap[cl].length})
-            </span>
-          </button>
-        ))}
+      {/* Cluster selector — filters the list; impact uses each row's own clusters */}
+      <div className="mb-4 space-y-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={allClustersSelected}
+              onChange={e => {
+                setAllClustersSelected(e.target.checked);
+                if (e.target.checked) setSelectedClusters([]);
+              }}
+              className="rounded"
+            />
+            All clusters
+          </label>
+          {!allClustersSelected && (
+            <div className="flex flex-wrap gap-1.5">
+              {clusters.map(cl => (
+                <button
+                  key={cl}
+                  type="button"
+                  onClick={() => toggleCluster(cl)}
+                  className={`px-3 py-1 rounded-full text-sm font-semibold border transition-colors ${
+                    selectedClusters.includes(cl)
+                      ? 'bg-zebra-600 text-white border-zebra-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:border-zebra-400 hover:text-zebra-600'
+                  }`}
+                >
+                  CL{cl}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {canOutageImpact && selectedMonth === 0 && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            Select a specific month to run impacted jobs analysis. &quot;All Months&quot; is disabled to avoid performance issues.
+          </p>
+        )}
+
+        {impactAllowed && (
+          <p className="text-xs text-slate-500">
+            Impact analysis uses each row&apos;s clusters (see Clusters column) and maintenance window times.
+          </p>
+        )}
+
+        {analyzedCount > 0 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportAllResults}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-slate-300 rounded-md text-slate-700 hover:bg-slate-50"
+            >
+              <Download className="w-3.5 h-3.5" /> Export all analyzed ({analyzedCount})
+            </button>
+          </div>
+        )}
+
+        {impactError && !analyzingEntryId && (
+          <p className="text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" /> {impactError}
+          </p>
+        )}
       </div>
 
-      {/* Maintenance dates for selected cluster */}
       {sorted.length === 0 ? (
         <div className="py-8 text-center text-gray-400 text-sm">
-          No maintenance dates for Cluster {activeCluster} in this period.
+          No maintenance dates for this cluster selection{selectedMonth ? ` in ${MONTHS[selectedMonth]}` : ''}.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -540,27 +874,151 @@ function EntryTable({
               <tr className="bg-slate-50 border-b border-gray-200">
                 <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Month</th>
                 <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Maintenance Date</th>
+                <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Clusters</th>
                 <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Window</th>
                 <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Status</th>
+                {canOutageImpact && (
+                  <th className="text-left px-4 py-2.5 font-semibold text-slate-500 text-xs uppercase tracking-wide">Impact</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {sorted.map(e => (
-                <tr key={e.id} className={`hover:bg-slate-50 ${e.status === 'CANCELLED' ? 'opacity-50' : ''}`}>
-                  <td className="px-4 py-2.5 text-slate-500">{MONTHS[e.month]}</td>
-                  <td className="px-4 py-2.5 font-semibold text-slate-800">
-                    {new Date(e.maintenanceDate).toLocaleDateString('en-US', {
-                      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
-                    })}
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-500 text-xs">
-                    {formatEntryWindow(e)}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <StatusBadge status={e.derivedStatus ?? e.status} />
-                  </td>
-                </tr>
-              ))}
+              {sorted.map(e => {
+                const isAnalyzing = analyzingEntryId === e.id;
+                const result = isAnalyzing && liveResult ? liveResult : impactByEntry[e.id];
+                const isExpanded = expandedEntryId === e.id;
+                const entryClusters = parseClusters(e.clusters);
+                const canRun = impactAllowed
+                  && !analyzingEntryId
+                  && e.status !== 'CANCELLED'
+                  && !!e.startLocal
+                  && !!e.endLocal
+                  && entryClusters.length > 0;
+                const showResults = isExpanded && result && (result.rows.length > 0 || !isAnalyzing);
+                const grouped = result?.rows.reduce<Record<string, OutageImpactJob[]>>((acc, j) => {
+                  (acc[j.clientId] ??= []).push(j);
+                  return acc;
+                }, {}) ?? {};
+
+                return (
+                  <React.Fragment key={e.id}>
+                    <tr className={`hover:bg-slate-50 ${e.status === 'CANCELLED' ? 'opacity-50' : ''}`}>
+                      <td className="px-4 py-2.5 text-slate-500">{MONTHS[e.month]}</td>
+                      <td className="px-4 py-2.5 font-semibold text-slate-800">
+                        {new Date(e.maintenanceDate).toLocaleDateString('en-US', {
+                          weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+                        })}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-600 text-xs">
+                        {parseClusters(e.clusters).map(cl => `CL${cl}`).join(', ')}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs">
+                        {formatEntryWindow(e)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <StatusBadge status={e.derivedStatus ?? e.status} />
+                      </td>
+                      {canOutageImpact && (
+                        <td className="px-4 py-2.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!canRun && !isAnalyzing}
+                              onClick={() => runImpact(e)}
+                              title={
+                                selectedMonth === 0
+                                  ? 'Select a specific month first'
+                                  : analyzingEntryId && !isAnalyzing
+                                  ? 'Another date is being analyzed'
+                                  : entryClusters.length > 0
+                                  ? `Analyze impact for CL${entryClusters.join(', CL')}`
+                                  : undefined
+                              }
+                              className="flex items-center gap-1 px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md hover:bg-red-200 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                            >
+                              {isAnalyzing ? (
+                                <>
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                  {calcProgress
+                                    ? `${calcProgress.completed}/${calcProgress.total}`
+                                    : '…'}
+                                </>
+                              ) : (
+                                <>
+                                  <Siren className="w-3 h-3" /> Analyze
+                                </>
+                              )}
+                            </button>
+                            {isAnalyzing && calcProgress && (
+                              <button
+                                type="button"
+                                disabled={cancelling}
+                                onClick={handleCancel}
+                                className="flex items-center gap-1 px-2 py-1 text-xs border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50"
+                              >
+                                {cancelling ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3" />}
+                                Cancel
+                              </button>
+                            )}
+                            {impactByEntry[e.id]?.rows.length ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedEntryId(isExpanded ? null : e.id)}
+                                  className="px-2 py-1 text-xs text-slate-600 border border-slate-200 rounded-md hover:bg-slate-50"
+                                >
+                                  {isExpanded ? 'Hide' : `${impactByEntry[e.id].summary.uniqueJobs} jobs`}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => exportEntryResult(e)}
+                                  className="flex items-center gap-1 px-2 py-1 text-xs border border-slate-300 rounded-md hover:bg-slate-50"
+                                >
+                                  <Download className="w-3 h-3" />
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                    {showResults && (
+                      <tr className="bg-slate-50/80">
+                        <td colSpan={canOutageImpact ? 6 : 5} className="px-4 py-3">
+                          {result!.rows.length === 0 ? (
+                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                              <CheckCircle2 className="w-4 h-4 text-green-500" />
+                              No jobs impacted during this maintenance window.
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <p className="text-xs text-slate-600">
+                                <span className="font-semibold text-red-700">{result!.summary.uniqueJobs}</span> job
+                                {result!.summary.uniqueJobs !== 1 ? 's' : ''} across{' '}
+                                <span className="font-semibold">{result!.summary.uniqueClients}</span> client
+                                {result!.summary.uniqueClients !== 1 ? 's' : ''}
+                                {' · '}
+                                {result!.window.startLocal} → {result!.window.endLocal}
+                              </p>
+                              {Object.entries(grouped).map(([cid, cJobs]) => (
+                                <ImpactJobGroup
+                                  key={cid}
+                                  clientId={cid}
+                                  jobs={cJobs}
+                                  tz={result!.window.inputTimezone}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          {result!.cancelled && (
+                            <p className="text-xs text-amber-700 mt-2">Analysis was cancelled — partial results shown.</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -60,6 +60,7 @@ class ConfigService {
     await this.ensureNotifyCooldownConfig();
     await this.ensureMaintenanceAdHocWindowsConfig();
     await this.ensureMasterAccountConfig();
+    await this.ensureFileMonitorConfig();
 
     this.loaded = true;
     logger.info(`Loaded ${rows.length} config entries from DB`);
@@ -187,6 +188,42 @@ class ConfigService {
       });
     }
     logger.info(`Configured default master account "${username}" (change password in Admin → Config before production)`);
+  }
+
+  /** Upload File Monitor paths/timeouts — added when upgrading older databases. */
+  private async ensureFileMonitorConfig(): Promise<void> {
+    const defaults = [
+      ['infra.sshPendingFolderPath', '/mount/RWS4/batch_jobs/in', 'Pending IN Folder', 'Remote path for pending upload files'] as const,
+      ['infra.sshRejectedUploadRoot', '/mount/RWS4/appuploads/upload', 'Rejected Upload Root', 'Root path for rejected DTS file scan'] as const,
+      ['infra.sshCommandTimeoutSec', '30', 'SSH Command Timeout (sec)', 'Timeout for pending IN folder find (maxdepth 1)'] as const,
+      ['infra.sshRejectedFindTimeoutSec', '120', 'Rejected Find Timeout (sec)', 'Timeout for recursive rejected DTS find under upload root'] as const,
+    ];
+
+    for (const [key, value, label, description] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: {
+          key,
+          value,
+          category: 'INFRA',
+          label,
+          description,
+          isSecret: false,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(key, {
+        key,
+        value,
+        category: 'INFRA',
+        label,
+        description,
+        isSecret: false,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
   }
 
   /**

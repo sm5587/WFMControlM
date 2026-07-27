@@ -14,8 +14,9 @@ services:
       RUN_MIGRATIONS: "true"
       NODE_ENV: production
       PORT: "4005"
+      DEPLOYMENT_LABEL: "Docker"
     ports:
-      - "4005:4005"
+      - "4015:4005"
     volumes:
       - backend_logs:/app/logs
       - backend_prisma:/app/prisma
@@ -40,7 +41,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "3005:8080"
+      - "3015:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
       interval: 30s

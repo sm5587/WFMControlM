@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Activity, Lock, User, Eye, EyeOff, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAppName } from '../../contexts/ConfigContext';
+import { instanceUrlHint } from '../DeploymentBadge';
 
 export default function LoginPage() {
   const appName = useAppName();
@@ -34,7 +35,7 @@ export default function LoginPage() {
             <Activity className="w-10 h-10 text-zebra-400" />
             <div>
               <h1 className="text-2xl font-bold text-white tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400">Job Monitoring & Alerting Platform</p>
+              <p className="text-xs text-slate-400 font-mono">{instanceUrlHint()}</p>
             </div>
           </div>
         </div>

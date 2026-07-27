@@ -9,6 +9,8 @@ export const config = {
   // Server
   port: parseInt(process.env.PORT || '0', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
+  /** Shown in UI/health so local vs Docker instances are distinguishable (see DEPLOYMENT_LABEL in .env). */
+  deploymentLabel: (process.env.DEPLOYMENT_LABEL || 'Local').trim() || 'Local',
   
   // Database (SQLite)
   databaseUrl: process.env.DATABASE_URL || '',

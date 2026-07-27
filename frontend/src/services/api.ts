@@ -35,11 +35,107 @@ api.interceptors.response.use(
         _onUnauthorized();
       }
     }
-    const message = error.response?.data?.error || error.message || 'An error occurred';
-    console.error('API Error:', message);
-    throw new Error(message);
+
+    const data = error.response?.data;
+    const status = error.response?.status;
+
+    // Preserve partial scan payload when proxy/backend included it
+    if (data?.data?.rows) {
+      const partialErr = new Error(
+        typeof data.error === 'string' ? data.error : formatHttpErrorMessage(error),
+      ) as Error & { partialData?: unknown };
+      partialErr.partialData = data.data;
+      throw partialErr;
+    }
+
+    if (status === 504 || status === 502) {
+      throw new Error(
+        'Scan timed out at the gateway/proxy before the server finished. ' +
+        'Try scanning fewer clusters or clients, or ask ops to raise the proxy read timeout for /api/file-monitor/fetch.',
+      );
+    }
+
+    throw new Error(formatHttpErrorMessage(error));
   }
 );
+
+function formatHttpErrorMessage(error: any): string {
+  const data = error.response?.data;
+  if (typeof data?.error === 'string' && data.error) return data.error;
+  if (error.code === 'ERR_CANCELED') return 'Request cancelled';
+  if (error.message === 'Network Error') {
+    return 'Network error — connection lost before the scan completed (proxy timeout or server unreachable).';
+  }
+  return error.message || 'An error occurred';
+}
+
+async function postNdjsonStream<TComplete>(
+  path: string,
+  body: unknown,
+  onEvent: (event: { type: string; data?: TComplete }) => void,
+  labels: { failed: string; incomplete: string; timeout: string },
+): Promise<TComplete> {
+  const token = localStorage.getItem('wfm_token');
+  const resp = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const contentType = resp.headers.get('content-type') ?? '';
+
+  if (!resp.ok) {
+    let message = resp.statusText || labels.failed;
+    try {
+      const errBody = await resp.json();
+      if (typeof errBody?.error === 'string') message = errBody.error;
+    } catch { /* ignore */ }
+    if (resp.status === 504 || resp.status === 502) message = labels.timeout;
+    throw new Error(message);
+  }
+
+  if (!contentType.includes('application/x-ndjson')) {
+    const jsonBody = await resp.json();
+    const result = jsonBody.data as TComplete;
+    if (result) onEvent({ type: 'complete', data: result });
+    return result;
+  }
+
+  if (!resp.body) throw new Error(`${labels.failed} — empty response body`);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: TComplete | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = JSON.parse(trimmed);
+      onEvent(event);
+      if (event.type === 'complete') finalResult = event.data as TComplete;
+    }
+  }
+
+  const trailing = buffer.trim();
+  if (trailing) {
+    const event = JSON.parse(trailing);
+    onEvent(event);
+    if (event.type === 'complete') finalResult = event.data as TComplete;
+  }
+
+  if (!finalResult) throw new Error(labels.incomplete);
+  return finalResult;
+}
 
 // ---- Jobs ----
 export const jobsApi = {
@@ -466,6 +562,65 @@ export const maintenanceApi = {
 
   getAffectedJobs: (id: string): Promise<ApiResponse<any>> =>
     api.get(`/maintenance/${id}/affected-jobs`),
+};
+
+// ---- Outage Impact ----
+export const outageApi = {
+  calculate: (data: {
+    clusters?: string[];
+    clientIds?: string[];
+    clientDbIds?: string[];
+    startLocal: string;
+    endLocal: string;
+    inputTimezone: string;
+    noRetryToday?: boolean;
+  }): Promise<ApiResponse<import('../types').OutageImpactResult>> =>
+    api.post('/outage/impact', data, { timeout: 120000 }),
+  calculateStream: (
+    data: {
+      clusters?: string[];
+      clientIds?: string[];
+      clientDbIds?: string[];
+      startLocal: string;
+      endLocal: string;
+      inputTimezone: string;
+      noRetryToday?: boolean;
+    },
+    onEvent: (event: import('../types').OutageImpactStreamEvent) => void,
+  ): Promise<import('../types').OutageImpactResult> =>
+    postNdjsonStream('/outage/impact', data, onEvent, {
+      failed: 'Calculation failed',
+      incomplete: 'Calculation ended unexpectedly before completion',
+      timeout: 'Calculation timed out at the gateway/proxy (no progress for 30 minutes). Partial results are shown below.',
+    }),
+  cancel: (): Promise<ApiResponse> =>
+    api.post('/outage/cancel', {}, { timeout: 5000 }),
+};
+
+// ---- Upload File Monitor ----
+export const fileMonitorApi = {
+  authInfo: (): Promise<ApiResponse<{ usesTotpAuth: boolean; paths: { pending: string; rejected: string } }>> =>
+    api.get('/file-monitor/auth-info'),
+  fetchStream: async (
+    data: {
+      clusters?: string[];
+      clientIds?: string[];
+      checkPending?: boolean;
+      checkRejected?: boolean;
+      pendingPath?: string;
+      rejectedRoot?: string;
+    } | undefined,
+    onEvent: (event: import('../types').FileMonitorStreamEvent) => void,
+  ): Promise<import('../types').FileMonitorFetchResult> =>
+    postNdjsonStream('/file-monitor/fetch', data ?? {}, onEvent, {
+      failed: 'Scan failed',
+      incomplete: 'Scan ended unexpectedly before completion',
+      timeout:
+        'Scan timed out at the gateway/proxy (no progress for 30 minutes). ' +
+        'Partial results shown below if any clients completed.',
+    }),
+  cancel: (): Promise<ApiResponse> =>
+    api.post('/file-monitor/cancel', {}, { timeout: 5000 }),
 };
 
 // ---- Maintenance Calendar ----

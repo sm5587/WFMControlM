@@ -57,6 +57,13 @@ function localToUtc(localStr: string, tzLabel: string): Date {
   return new Date(localMs - tz.offsetMin * 60_000);
 }
 
+/** Derive lifecycle status from UTC window bounds. */
+function computeWindowStatus(startTimeUtc: Date, endTimeUtc: Date, now = new Date()): 'SCHEDULED' | 'ACTIVE' | 'COMPLETED' {
+  if (endTimeUtc < now) return 'COMPLETED';
+  if (startTimeUtc <= now && endTimeUtc >= now) return 'ACTIVE';
+  return 'SCHEDULED';
+}
+
 /** Format a UTC date in the given TZ label for display */
 function utcToLocal(utc: Date, tzLabel: string): string {
   const tz = TZ_OFFSETS[tzLabel.toUpperCase()] ?? TZ_OFFSETS.IST;
@@ -68,7 +75,7 @@ function utcToLocal(utc: Date, tzLabel: string): string {
 // ------------------------------------------------------------------ Validation schema
 
 const WindowSchema = z.object({
-  scope:         z.enum(['CLUSTER', 'CLIENT']),
+  scope:         z.enum(['CLUSTER', 'CLIENT', 'ALL']),
   cluster:       z.string().optional(),
   clientDbId:    z.string().optional(),
   clientCode:    z.string().optional(),
@@ -187,10 +194,13 @@ router.get('/', async (req: Request, res: Response) => {
       orderBy: { startTimeUtc: 'asc' },
     });
 
-    // Auto-update SCHEDULED → ACTIVE / ACTIVE → COMPLETED
+    // Auto-update SCHEDULED → ACTIVE / ACTIVE → COMPLETED / past SCHEDULED → COMPLETED
     const updates: Promise<any>[] = [];
     for (const w of windows) {
-      if (w.status === 'SCHEDULED' && w.startTimeUtc <= now && w.endTimeUtc >= now) {
+      if (w.status === 'SCHEDULED' && w.endTimeUtc < now) {
+        updates.push(prisma.maintenanceWindow.update({ where: { id: w.id }, data: { status: 'COMPLETED' } }));
+        w.status = 'COMPLETED';
+      } else if (w.status === 'SCHEDULED' && w.startTimeUtc <= now && w.endTimeUtc >= now) {
         updates.push(prisma.maintenanceWindow.update({ where: { id: w.id }, data: { status: 'ACTIVE' } }));
         w.status = 'ACTIVE';
       } else if (w.status === 'ACTIVE' && w.endTimeUtc < now) {
@@ -222,6 +232,9 @@ router.post('/', requirePermission('MAINTENANCE_MANAGE', 'write'), async (req: R
     if (d.scope === 'CLIENT' && !d.clientDbId) {
       return res.status(400).json({ success: false, error: 'clientDbId is required when scope=CLIENT' });
     }
+    if (d.scope === 'ALL' && (d.cluster || d.clientDbId)) {
+      return res.status(400).json({ success: false, error: 'cluster and clientDbId must be empty when scope=ALL' });
+    }
 
     const startTimeUtc = localToUtc(d.startLocal, d.inputTimezone);
     const endTimeUtc   = localToUtc(d.endLocal,   d.inputTimezone);
@@ -240,7 +253,7 @@ router.post('/', requirePermission('MAINTENANCE_MANAGE', 'write'), async (req: R
         title: d.title,
         reason: d.reason ?? null,
         type: d.type,
-        status: startTimeUtc <= new Date() && endTimeUtc >= new Date() ? 'ACTIVE' : 'SCHEDULED',
+        status: computeWindowStatus(startTimeUtc, endTimeUtc),
         startTimeUtc,
         endTimeUtc,
         inputTimezone: d.inputTimezone.toUpperCase(),
@@ -297,7 +310,7 @@ router.post('/bulk', requirePermission('MAINTENANCE_MANAGE', 'write'), async (re
             title: d.title,
             reason: d.reason ?? null,
             type: d.type,
-            status: startTimeUtc <= new Date() && endTimeUtc >= new Date() ? 'ACTIVE' : 'SCHEDULED',
+            status: computeWindowStatus(startTimeUtc, endTimeUtc),
             startTimeUtc,
             endTimeUtc,
             inputTimezone: d.inputTimezone.toUpperCase(),
@@ -376,7 +389,13 @@ router.get('/:id/affected-jobs', async (req: Request, res: Response) => {
     // Determine which clients are in scope
     let clientDbIds: string[] = [];
 
-    if (win.scope === 'CLUSTER' && win.cluster) {
+    if (win.scope === 'ALL') {
+      const clients = await prisma.client.findMany({
+        where: { isActive: true },
+        select: { id: true },
+      });
+      clientDbIds = clients.map(c => c.id);
+    } else if (win.scope === 'CLUSTER' && win.cluster) {
       const clients = await prisma.client.findMany({
         where: { cluster: win.cluster, isActive: true },
         select: { id: true },

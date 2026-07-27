@@ -183,6 +183,19 @@ ORDER BY cluster ASC, clientId ASC;
 
 -- Counts from client DB2 (TA_UNPROC_PUNCH); /all uses in-memory cache, no extra SQLite reads
 
+-- ---------- Outage Impact (/outage) ----------
+
+-- POST /api/outage/impact — stateless calculation (no persistence)
+SELECT j.*, c.clientId, c.name, c.cluster, c.timezone
+FROM Job j
+JOIN Client c ON c.id = j.clientId
+WHERE j.deleteStatus IS NULL
+  AND j.isActive = 1
+  AND j.cronExpression IS NOT NULL
+  AND j.category = 'client-cron'
+  AND c.isActive = 1
+  AND ({cluster IN filter OR clientId IN filter OR all clients});
+
 -- ---------- Alerts (/alerts) ----------
 
 SELECT * FROM EscalatedAlert

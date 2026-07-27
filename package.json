@@ -27,8 +27,9 @@
     "startup:prepare": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 prepare",
     "startup:up": "powershell -ExecutionPolicy Bypass -File .\\start.ps1 up",
     "test": "cd backend && npm test",
-    "docker:up": "docker-compose up -d",
-    "docker:down": "docker-compose down"
+    "docker:up": "docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml -f docker-compose.smoke.override.yml up -d --build",
+    "docker:down": "docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml down",
+    "docker:ps": "docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml ps"
   },
   "devDependencies": {
     "concurrently": "^8.2.0"

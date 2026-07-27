@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Briefcase, Monitor,
+  LayoutDashboard, Briefcase,
   Bell, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play,
-  LogOut, Shield, Eye, Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench,
+  LogOut, Shield, Eye, Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
@@ -11,6 +11,7 @@ import { useEscalatedAlerts } from './Alerts/AlertCenter';
 import { useAuth, usePermission } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
 import { useAppName } from '../contexts/ConfigContext';
+import { instanceUrlHint } from './DeploymentBadge';
 
 const navItems = [
   { path: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, permission: null },
@@ -18,7 +19,7 @@ const navItems = [
   { path: '/jobs',        label: 'Cron Jobs',    icon: Briefcase,       permission: 'JOBS_VIEW' },
   { path: '/db-jobs',     label: 'DB Jobs',      icon: Play,            permission: 'DBJOBS_VIEW' },
   { path: '/maintenance', label: 'Maintenance',  icon: CalendarClock,   permission: 'MAINTENANCE_VIEW' },
-  { path: '/monitor',     label: 'Monitor',      icon: Monitor,         permission: 'MONITOR_VIEW' },
+  { path: '/file-monitor', label: 'Upload Monitor', icon: FolderSearch, permission: 'FILE_MONITOR_VIEW' },
   { path: '/db-monitor',  label: 'DB Jobs Monitor', icon: Database,      permission: 'DBMONITOR_VIEW' },
   { path: '/payroll',     label: 'Payroll Jobs',       icon: DollarSign,      permission: 'PAYROLL_VIEW' },
   { path: '/unprocessed-punch', label: 'Unprocessed Punch', icon: Timer,        permission: 'UNPROC_PUNCH_VIEW' },
@@ -64,7 +65,7 @@ export default function Layout() {
           {!collapsed && (
             <div>
               <h1 className="text-lg font-bold tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400">Job Monitoring & Alerting</p>
+              <p className="text-xs text-slate-400 font-mono">{instanceUrlHint()}</p>
             </div>
           )}
         </div>

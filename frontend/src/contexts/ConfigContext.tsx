@@ -5,12 +5,14 @@
 
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { configApi } from '../services/api';
-import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME } from '../constants/app-display';
+import { instanceUrlHint } from '../components/DeploymentBadge';
+import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME, DEFAULT_DEPLOYMENT_LABEL } from '../constants/app-display';
 
 interface ConfigContextValue {
   config: Record<string, string>;
   loaded: boolean;
   appName: string;
+  deploymentLabel: string;
   getString: (key: string, fallback: string) => string;
   getInt: (key: string, fallback: number) => number;
   getFloat: (key: string, fallback: number) => number;
@@ -22,6 +24,7 @@ const ConfigContext = createContext<ConfigContextValue>({
   config: {},
   loaded: false,
   appName: DEFAULT_APP_NAME,
+  deploymentLabel: DEFAULT_DEPLOYMENT_LABEL,
   getString: (_, fb) => fb,
   getInt: (_, fb) => fb,
   getFloat: (_, fb) => fb,
@@ -32,8 +35,22 @@ const ConfigContext = createContext<ConfigContextValue>({
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
+  const [deploymentLabel, setDeploymentLabel] = useState(DEFAULT_DEPLOYMENT_LABEL);
 
   const load = async () => {
+    try {
+      const depRes = await fetch('/api/deployment-info');
+      if (depRes.ok) {
+        const depJson = await depRes.json();
+        const label = depJson?.data?.label;
+        if (typeof label === 'string' && label.trim()) {
+          setDeploymentLabel(label.trim());
+        }
+      }
+    } catch {
+      // deployment-info unavailable — keep default
+    }
+
     try {
       const res = await configApi.getPublic();
       if (res.success && res.data) {
@@ -66,7 +83,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loaded) return;
-    document.title = `${appName} | Job Monitoring & Alerting`;
+    document.title = `${appName} · ${instanceUrlHint()} | Job Monitoring & Alerting`;
   }, [loaded, appName]);
   const getInt = (key: string, fallback: number) => {
     const v = config[key];
@@ -87,7 +104,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <ConfigContext.Provider value={{ config, loaded, appName, getString, getInt, getFloat, getBool, reload: load }}>
+    <ConfigContext.Provider value={{ config, loaded, appName, deploymentLabel, getString, getInt, getFloat, getBool, reload: load }}>
       {children}
     </ConfigContext.Provider>
   );
@@ -99,4 +116,8 @@ export function useConfig() {
 
 export function useAppName(): string {
   return useContext(ConfigContext).appName;
+}
+
+export function useDeploymentLabel(): string {
+  return useContext(ConfigContext).deploymentLabel;
 }

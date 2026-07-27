@@ -52,6 +52,12 @@ export const APP_FUNCTIONS: Record<string, FunctionDef> = {
   MAINTENANCE_VIEW:   { id: 'MAINTENANCE_VIEW',    module: 'MAINTENANCE', name: 'View Maintenance Windows',   sortOrder: 55 },
   MAINTENANCE_MANAGE: { id: 'MAINTENANCE_MANAGE',  module: 'MAINTENANCE', name: 'Create / Edit / Cancel Maintenance Windows', sortOrder: 56 },
 
+  // ── OUTAGE ────────────────────────────────────────────────
+  OUTAGE_VIEW:        { id: 'OUTAGE_VIEW',         module: 'OUTAGE',    name: 'View Outage Impact Calculator', sortOrder: 57 },
+
+  // ── FILE MONITOR ──────────────────────────────────────────
+  FILE_MONITOR_VIEW:  { id: 'FILE_MONITOR_VIEW',   module: 'MONITOR',   name: 'View Upload File Monitor',      sortOrder: 58 },
+
   // ── ADMIN ─────────────────────────────────────────────────
   USERS_VIEW:         { id: 'USERS_VIEW',          module: 'ADMIN',     name: 'View Users',                 sortOrder: 80 },
   USERS_MANAGE:       { id: 'USERS_MANAGE',        module: 'ADMIN',     name: 'Create / Edit / Deactivate Users', sortOrder: 81 },

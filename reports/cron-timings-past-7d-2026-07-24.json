@@ -1,0 +1,10 @@
+{
+  "generatedAt": "2026-07-24T10:47:55.528Z",
+  "windowStartUtc": "2026-07-17T10:47:55.528Z",
+  "windowEndUtc": "2026-07-24T10:47:55.528Z",
+  "days": 7,
+  "direction": "backward",
+  "jobCount": 865,
+  "totalFireTimes": 43833,
+  "parseErrors": []
+}

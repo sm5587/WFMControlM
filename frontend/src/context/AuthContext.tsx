@@ -34,20 +34,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(false);
 
-  // Rehydrate from localStorage on mount
+  // Rehydrate from localStorage on mount (permissions always taken from JWT, not stale cached user)
   useEffect(() => {
     const stored = localStorage.getItem(USER_KEY);
     const token  = localStorage.getItem(TOKEN_KEY);
     if (stored && token) {
       try {
-        // Check if token is expired before rehydrating
         const payload = JSON.parse(atob(token.split('.')[1]));
         if (payload.exp && payload.exp * 1000 < Date.now()) {
           localStorage.removeItem(TOKEN_KEY);
           localStorage.removeItem(USER_KEY);
           setSessionExpired(true);
         } else {
-          setUser(JSON.parse(stored) as AuthUser);
+          const cached = JSON.parse(stored) as AuthUser;
+          const authUser: AuthUser = {
+            ...cached,
+            timezone: payload.timezone || cached.timezone || 'Asia/Kolkata',
+            permissions: payload.permissions ?? cached.permissions ?? {},
+          };
+          localStorage.setItem(USER_KEY, JSON.stringify(authUser));
+          setUser(authUser);
         }
       } catch { /* ignore malformed */ }
     }

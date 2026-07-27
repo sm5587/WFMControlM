@@ -111,8 +111,8 @@ function Initialize-Environment {
 }
 
 function Start-Backend {
-    Write-Host "`n[WFM] Starting backend on http://localhost:4005 ..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "`$env:SSH_CREDENTIALS_FILE = '$Root\.saved_credentials.json'; Set-Location '$Backend'; node node_modules\ts-node-dev\lib\bin.js --respawn --transpile-only src/index.ts" -WindowStyle Normal
+    Write-Host "`n[WFM] Starting backend on http://localhost:4005 (Local) ..." -ForegroundColor Cyan
+    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "`$env:SSH_CREDENTIALS_FILE = '$Root\.saved_credentials.json'; `$env:DEPLOYMENT_LABEL = 'Local'; Set-Location '$Backend'; node node_modules\ts-node-dev\lib\bin.js --respawn --transpile-only src/index.ts" -WindowStyle Normal
 }
 
 function Start-Frontend {
@@ -135,8 +135,9 @@ function Start-All {
     Start-Backend
     Start-Frontend
     Write-Host "`n[WFM] All services starting!" -ForegroundColor Magenta
-    Write-Host "  Backend:  http://localhost:4005" -ForegroundColor Cyan
-    Write-Host "  Frontend: http://localhost:3005" -ForegroundColor Green
+    Write-Host "  Backend:  http://localhost:4005  (Local)" -ForegroundColor Cyan
+    Write-Host "  Frontend: http://localhost:3005  (Local)" -ForegroundColor Green
+    Write-Host "  Docker:   http://localhost:3015  (use when compose is running)" -ForegroundColor DarkGray
     Write-Host "  Run '.\start.ps1 stop' to shut down.`n" -ForegroundColor Gray
 }
 
