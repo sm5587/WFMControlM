@@ -7,11 +7,7 @@
 // ============================================================
 
 import { EventEmitter } from 'events';
-import { Client as SSH2Client } from 'ssh2';
-import { generateSync } from 'otplib';
-import * as fs from 'fs';
-import * as path from 'path';
-import { execSync } from 'child_process';
+import type { Client as SSH2Client } from 'ssh2';
 import cronParser from 'cron-parser';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -20,7 +16,22 @@ import { prisma } from '../database/prisma';
 import { config } from '../config';
 import { configService } from './config-service';
 import { createServiceLogger } from '../utils/logger';
+import {
+  loadCredentials,
+  sshConnect,
+  sshExec,
+  sshCredentialsUseTotp as credsUseTotp,
+  type SSHCredentials,
+} from '../utils/ssh-client';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  validateRemoteLogPath,
+  validateRemoteCronFilePath,
+  sanitizePgrepSearchTerm,
+  sanitizeGrepKey,
+  shellQuote,
+  defaultLogPathAllowPrefixes,
+} from '../utils/remote-path';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -68,207 +79,6 @@ interface SyncResult {
   duration: number;
 }
 
-// ------------------------------------------------------------------ Credentials
-
-interface SSHCredentials {
-  username: string;
-  password: string;
-  totpSecret: string;
-}
-
-/**
- * Decrypt a password from the credentials file.
- * Supports two formats:
- *   dpapi  — Windows DPAPI (ConvertFrom-SecureString), only decryptable by same user/machine
- *   base64 — legacy plain base64 encoding (default if no password_format field)
- */
-function decryptPassword(raw: Record<string, any>): string {
-  if (!raw.password) return '';
-  if (raw.password_format === 'dpapi') {
-    try {
-      const escaped = (raw.password as string).replace(/"/g, '`"');
-      const cmd = `powershell -NoProfile -NonInteractive -Command "$ss = ConvertTo-SecureString '${escaped}'; [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss))"`;
-      return execSync(cmd, { timeout: 8000 }).toString().trim();
-    } catch (err: any) {
-      throw new Error(`Failed to DPAPI-decrypt password: ${err.message}`);
-    }
-  }
-  // Default: base64
-  return Buffer.from(raw.password, 'base64').toString();
-}
-
-/**
- * Walk up from `startDir` until `.saved_credentials.json` is found or root is reached.
- */
-function findCredentialsFile(startDir: string): string | null {
-  let dir = startDir;
-  while (true) {
-    const candidate = path.join(dir, '.saved_credentials.json');
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null; // filesystem root
-    dir = parent;
-  }
-}
-
-/**
- * Load SSH credentials. Priority:
- * 1. AppConfig / config.ssh (via applyDbConfig at startup)
- * 2. .saved_credentials.json — legacy fallback
- */
-function loadCredentials(): SSHCredentials {
-  if (config.ssh.username && config.ssh.password) {
-    logger.info(`[Creds] Using SSH credentials from AppConfig (user: ${config.ssh.username})`);
-    return {
-      username: config.ssh.username,
-      password: config.ssh.password,
-      totpSecret: config.ssh.totpSecret || '',
-    };
-  }
-
-  // Build candidate list: explicit config + upward search from __dirname + upward search from cwd
-  const explicit = config.ssh.credentialsFile ? [config.ssh.credentialsFile] : [];
-  const fromDir  = findCredentialsFile(__dirname);
-  const fromCwd  = findCredentialsFile(process.cwd());
-
-  const candidates = [...explicit, ...(fromDir ? [fromDir] : []), ...(fromCwd ? [fromCwd] : [])];
-
-  logger.info(`[Creds] __dirname=${__dirname}  cwd=${process.cwd()}`);
-  logger.info(`[Creds] Credential candidates: ${candidates.join(' | ') || '(none)'}`);
-
-  for (const credPath of candidates) {
-    try {
-      let text = fs.readFileSync(credPath, 'utf-8');
-      // Strip UTF-8 BOM if present (editors on Windows may add it)
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-      const raw = JSON.parse(text);
-      const mode = (raw.credential_mode || 'service').toLowerCase();
-
-      let creds: SSHCredentials;
-      if (mode === 'personal' && raw.personal_username) {
-        creds = {
-          username: raw.personal_username,
-          password: raw.personal_password ? Buffer.from(raw.personal_password, 'base64').toString() : '',
-          totpSecret: raw.personal_totp_secret ? Buffer.from(raw.personal_totp_secret, 'base64').toString() : '',
-        };
-      } else {
-        creds = {
-          username: raw.username || '',
-          password: decryptPassword(raw),
-          totpSecret: raw.totp_secret ? Buffer.from(raw.totp_secret, 'base64').toString() : '',
-        };
-      }
-      logger.info(`[Creds] ✓ Loaded from ${credPath} (mode: ${mode}, user: ${creds.username})`);
-      if (!creds.username || !creds.password) {
-        throw new Error(
-          `Credentials file ${credPath} is missing username or password (mode=${mode}). ` +
-          'Set secrets.sshUsername and secrets.sshPassword in Admin → Config, or fix the credentials file.',
-        );
-      }
-      return creds;
-    } catch (err: any) {
-      logger.warn(`[Creds] Failed to load from ${credPath}: ${err.message}`);
-    }
-  }
-
-  throw new Error('No SSH credentials configured. Set secrets.sshUsername/secrets.sshPassword in Admin → Config');
-}
-
-// ------------------------------------------------------------------ SSH Helper
-
-/**
- * Connect to a remote server via SSH using keyboard-interactive auth with TOTP.
- * Matches the auth flow from AppServerTools:
- *   Prompt 1 ("First factor" / "Password") -> password
- *   Prompt 2 ("Second factor" / "Token")   -> TOTP code
- */
-function sshConnect(
-  hostname: string,
-  creds: SSHCredentials,
-  hooks?: { onClient?: (conn: SSH2Client) => void },
-): Promise<SSH2Client> {
-  return new Promise((resolve, reject) => {
-    const conn = new SSH2Client();
-    hooks?.onClient?.(conn);
-    const timeoutMs = config.ssh.timeout || 15000;
-
-    const timer = setTimeout(() => {
-      conn.end();
-      reject(new Error(`SSH connection to ${hostname} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    conn.on('ready', () => {
-      clearTimeout(timer);
-      resolve(conn);
-    });
-
-    conn.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new Error(`SSH error connecting to ${hostname}: ${err.message}`));
-    });
-
-    conn.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
-      const responses: string[] = [];
-      for (const prompt of prompts) {
-        const p = prompt.prompt.toLowerCase();
-        if (p.includes('first') || p.includes('password')) {
-          responses.push(creds.password);
-        } else if (p.includes('second') || p.includes('token') || p.includes('factor')) {
-          if (creds.totpSecret) {
-            const token = generateSync({ secret: creds.totpSecret });
-            responses.push(token);
-          } else {
-            responses.push('');
-          }
-        } else {
-          responses.push(creds.password);
-        }
-      }
-      finish(responses);
-    });
-
-    const connectOpts: any = {
-      host: hostname,
-      port: config.ssh.port,
-      username: creds.username,
-      tryKeyboard: true,
-      readyTimeout: timeoutMs,
-    };
-    // Service accounts (no TOTP) use password auth; personal accounts use keyboard-interactive for TOTP
-    if (!creds.totpSecret) {
-      connectOpts.password = creds.password;
-      connectOpts.authHandler = ['password', 'keyboard-interactive'];
-    }
-    conn.connect(connectOpts);
-  });
-}
-
-/**
- * Execute a command on a remote SSH session and return stdout.
- */
-/** Remote command timeout — separate from SSH connect timeout (infra.sshTimeout). */
-function sshExec(conn: SSH2Client, command: string, timeoutSec = 60): Promise<string> {
-  return new Promise((resolve, reject) => {
-    conn.exec(command, (err, stream) => {
-      if (err) return reject(err);
-
-      let stdout = '';
-      let stderr = '';
-      const timer = setTimeout(() => {
-        stream.close();
-        reject(new Error(`Command timed out after ${timeoutSec}s: ${command}`));
-      }, timeoutSec * 1000);
-
-      stream.on('data', (data: Buffer) => { stdout += data.toString(); });
-      stream.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-      stream.on('close', () => {
-        clearTimeout(timer);
-        resolve(stdout);
-      });
-    });
-  });
-}
-
 // ------------------------------------------------------------------ Cron Parsing
 
 /** Read at runtime — AppConfig is applied after module load. */
@@ -278,6 +88,14 @@ function cronEntryPath(): string {
 
 function wfmPathPrefix(): string {
   return config.ssh.wfmPathPrefix || configService.getString('infra.sshWfmPathPrefix', '/mount/RWS4');
+}
+
+function logPathAllowPrefixes(): string[] {
+  return defaultLogPathAllowPrefixes(wfmPathPrefix());
+}
+
+function cronFileAllowPrefixes(): string[] {
+  return logPathAllowPrefixes();
 }
 
 // Failure patterns to look for in log files
@@ -352,6 +170,9 @@ function parseCronEntries(raw: string, pathPrefix = wfmPathPrefix()): CronEntry[
       if (!command.includes(pathPrefix)) continue;
       if (/\bfind\b/.test(command)) continue;
       const logPath = extractLogPath(command);
+      if (logPath === null && command.match(/>>?\s+\S|tee\s+/)) {
+        logger.warn(`Rejected invalid log path in cron command: ${trimmed.substring(0, 120)}`);
+      }
       entries.push({ schedule, command, logPath, rawLine: trimmed });
       continue;
     }
@@ -367,6 +188,9 @@ function parseCronEntries(raw: string, pathPrefix = wfmPathPrefix()): CronEntry[
 
     // Extract log path from output redirection
     const logPath = extractLogPath(command);
+    if (logPath === null && command.match(/>>?\s+\S|tee\s+/)) {
+      logger.warn(`Rejected invalid log path in cron command: ${trimmed.substring(0, 120)}`);
+    }
 
     entries.push({ schedule, command, logPath, rawLine: trimmed });
   }
@@ -381,19 +205,25 @@ function parseCronEntries(raw: string, pathPrefix = wfmPathPrefix()): CronEntry[
  *   2>&1 | tee /path/to/log.txt
  */
 function extractLogPath(command: string): string | null {
+  let raw: string | null = null;
+
   // Match >> path or > path (stdout redirect)
   const redirectMatch = command.match(/>>?\s+(\S+\.(?:log|txt|out))/);
-  if (redirectMatch) return redirectMatch[1];
+  if (redirectMatch) raw = redirectMatch[1];
+  else {
+    // Match tee output
+    const teeMatch = command.match(/tee\s+(?:-a\s+)?(\S+)/);
+    if (teeMatch) raw = teeMatch[1];
+    else {
+      // Match any path after >> or >
+      const genericRedirect = command.match(/>>?\s+(\/\S+)/);
+      if (genericRedirect) raw = genericRedirect[1];
+    }
+  }
 
-  // Match tee output
-  const teeMatch = command.match(/tee\s+(?:-a\s+)?(\S+)/);
-  if (teeMatch) return teeMatch[1];
+  if (!raw) return null;
 
-  // Match any path after >> or >
-  const genericRedirect = command.match(/>>?\s+(\/\S+)/);
-  if (genericRedirect) return genericRedirect[1];
-
-  return null;
+  return validateRemoteLogPath(raw, { allowedPrefixes: logPathAllowPrefixes() });
 }
 
 /**
@@ -646,10 +476,10 @@ class SyncService extends EventEmitter {
       }
 
       // Read cron entries file
-      const cronPath = cronEntryPath();
-      if (!cronPath) throw new Error('Cron entry path not configured (infra.sshCronEntryPath)');
+      const cronPath = validateRemoteCronFilePath(cronEntryPath(), cronFileAllowPrefixes());
+      if (!cronPath) throw new Error('Cron entry path not configured or invalid (infra.sshCronEntryPath)');
       logger.info(`Reading cron entries from ${cronPath} on ${server.dns}`);
-      const cronRaw = await sshExec(conn, `cat '${cronPath.replace(/'/g, "'\\''")}'`);
+      const cronRaw = await sshExec(conn, `cat ${shellQuote(cronPath)}`);
       const cronEntries = parseCronEntries(cronRaw);
       discovered = cronEntries.length;
 
@@ -972,18 +802,45 @@ class SyncService extends EventEmitter {
     serverTz: string,
     serverDns: string,
   ): Promise<LogCheckResult> {
+    const safePath = validateRemoteLogPath(logPath, { allowedPrefixes: logPathAllowPrefixes() });
+    if (!safePath) {
+      logger.warn(`Blocked log check for ${job.name}: invalid log path "${logPath}"`);
+      return {
+        jobName: job.name,
+        logPath,
+        status: 'UNKNOWN',
+        exists: false,
+        hasFailure: false,
+        hasSuccess: false,
+        triggered: false,
+        isRunning: false,
+        lastModified: null,
+        expectedLastRun: job.cronExpression
+          ? computeLastRunTime(job.cronExpression, serverTz)
+          : null,
+        logFresh: false,
+        failureLines: [],
+        successLines: [],
+        cronExitCode: null,
+        sizeBytes: 0,
+        summary: 'Log path rejected — outside allowed prefix or contains unsafe characters',
+      };
+    }
+
+    const quotedPath = shellQuote(safePath);
+
     // 1. Compute expected last run time from the cron expression
     const expectedLastRun = job.cronExpression
       ? computeLastRunTime(job.cronExpression, serverTz)
       : null;
 
     // 2. Check log file existence + metadata
-    const statOutput = await sshExec(conn, `stat --format='%s %Y' '${logPath}' 2>/dev/null || echo 'NOTFOUND'`);
+    const statOutput = await sshExec(conn, `stat --format='%s %Y' ${quotedPath} 2>/dev/null || echo 'NOTFOUND'`);
 
     if (statOutput.trim() === 'NOTFOUND') {
       return {
         jobName: job.name,
-        logPath,
+        logPath: safePath,
         status: 'NOT_RUN',
         exists: false,
         hasFailure: false,
@@ -1022,7 +879,7 @@ class SyncService extends EventEmitter {
     }
 
     // 4. Read the last N lines and scan for failure + success patterns
-    const tailOutput = await sshExec(conn, `tail -300 '${logPath}'`);
+    const tailOutput = await sshExec(conn, `tail -300 ${quotedPath}`);
 
     const failureLines: string[] = [];
     const successLines: string[] = [];
@@ -1096,7 +953,7 @@ class SyncService extends EventEmitter {
 
     return {
       jobName: job.name,
-      logPath,
+      logPath: safePath,
       status,
       exists: true,
       hasFailure,
@@ -1123,10 +980,10 @@ class SyncService extends EventEmitter {
     try {
       // Extract the main script/binary from the command for matching
       const scriptMatch = command.match(/\/([^/\s>|]+\.\w+)/);
-      const searchTerm = scriptMatch ? scriptMatch[1] : null;
+      const searchTerm = sanitizePgrepSearchTerm(scriptMatch ? scriptMatch[1] : null);
       if (!searchTerm) return false;
 
-      const pgrepOut = await sshExec(conn, `pgrep -f '${searchTerm}' 2>/dev/null | head -5 || true`, 10);
+      const pgrepOut = await sshExec(conn, `pgrep -f ${shellQuote(searchTerm)} 2>/dev/null | head -5 || true`, 10);
       return pgrepOut.trim().length > 0;
     } catch {
       return false;
@@ -1147,15 +1004,19 @@ class SyncService extends EventEmitter {
     if (!command) return null;
 
     // Extract a unique substring from the command to grep for
-    const scriptMatch = command.match(/(\/mount\/RWS4\/[^\s>|]+)/);
-    const grepKey = scriptMatch ? scriptMatch[1] : null;
+    const wfmPrefix = wfmPathPrefix();
+    const prefixEscaped = wfmPrefix.trim().replace(/\/+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const scriptMatch = command.match(new RegExp(`(${prefixEscaped}/[^\\s>|]+)`));
+    const grepKey = sanitizeGrepKey(scriptMatch ? scriptMatch[1] : null, wfmPrefix);
     if (!grepKey) return null;
+
+    const quotedKey = shellQuote(grepKey);
 
     try {
       // Try journalctl first (systemd systems) — last 1h of cron entries
       const journalOut = await sshExec(
         conn,
-        `journalctl -u crond -u cron --since '1 hour ago' --no-pager 2>/dev/null | grep -i '${grepKey}' | tail -5 || true`,
+        `journalctl -u crond -u cron --since '1 hour ago' --no-pager 2>/dev/null | grep -i ${quotedKey} | tail -5 || true`,
         15,
       );
 
@@ -1165,7 +1026,7 @@ class SyncService extends EventEmitter {
       // Fallback: grep /var/log/cron or /var/log/syslog
       const cronLogOut = await sshExec(
         conn,
-        `(grep -i '${grepKey}' /var/log/cron 2>/dev/null || grep -i '${grepKey}' /var/log/syslog 2>/dev/null || true) | tail -5`,
+        `(grep -i ${quotedKey} /var/log/cron 2>/dev/null || grep -i ${quotedKey} /var/log/syslog 2>/dev/null || true) | tail -5`,
         15,
       );
 
@@ -1699,7 +1560,7 @@ export const syncService = new SyncService();
 /** True when SSH credentials include a TOTP secret (personal/2FA auth). Service accounts return false. */
 export function sshCredentialsUseTotp(): boolean {
   try {
-    return !!loadCredentials().totpSecret;
+    return credsUseTotp(loadCredentials());
   } catch {
     return false;
   }

@@ -140,7 +140,10 @@ class KeeperService {
         return null;
       }
 
-      this.fieldCache.set(cacheKey, { value, expiresAt: Date.now() + getCacheTtlMs() });
+      // Passwords are not cached — fetch on each use to shorten heap lifetime.
+      if (fieldType !== 'password') {
+        this.fieldCache.set(cacheKey, { value, expiresAt: Date.now() + getCacheTtlMs() });
+      }
       return value;
     } catch (err: any) {
       logger.error(`Keeper fetch error for "${recordTitle}.${fieldType}": ${err.message}`);
@@ -151,14 +154,18 @@ class KeeperService {
   /** Evict cached secrets (all entries, or one client when clientId is given) */
   clearCache(clientId?: string): void {
     if (!clientId) {
+      for (const entry of this.fieldCache.values()) {
+        entry.value = '';
+      }
       this.fieldCache.clear();
       logger.info('Keeper secret cache cleared');
       return;
     }
 
     const prefix = `${clientId}::`;
-    for (const key of this.fieldCache.keys()) {
+    for (const [key, entry] of this.fieldCache.entries()) {
       if (key.startsWith(prefix)) {
+        entry.value = '';
         this.fieldCache.delete(key);
       }
     }

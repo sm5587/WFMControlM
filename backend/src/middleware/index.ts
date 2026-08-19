@@ -3,10 +3,10 @@
 // ============================================================
 
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 import { FunctionId } from '../constants/functions';
+import { verifySessionToken } from '../utils/jwt-config';
 
 const logger = createServiceLogger('Middleware');
 
@@ -17,6 +17,15 @@ export interface JwtUser {
   displayName: string;
   /** Flattened permission map: functionId → { r, w } */
   permissions: Record<string, { r: boolean; w: boolean }>;
+}
+
+export interface JwtPayload extends JwtUser {
+  jti?: string;
+  tv?: number;
+  isMaster?: boolean;
+  timezone?: string;
+  exp?: number;
+  iat?: number;
 }
 
 // Legacy role type — kept for backward compat during transition
@@ -35,19 +44,42 @@ export function errorHandler(err: Error, req: Request, res: Response, next: Next
   });
 }
 
-// Auth middleware — validates JWT, attaches req.user
-export function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+export function extractTokenFromAuthHeader(authHeader?: string): string | null {
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  return authHeader.substring(7);
+}
+
+export function verifyJwtToken(token: string): JwtPayload {
+  return verifySessionToken(token, config.jwtSecret) as JwtPayload;
+}
+
+export function hasPermission(
+  user: JwtUser,
+  functionId: string,
+  mode: 'read' | 'write' = 'read',
+): boolean {
+  const perm = user.permissions?.[functionId];
+  return mode === 'read' ? !!perm?.r : !!perm?.w;
+}
+
+// Auth middleware — validates JWT, checks revocation, attaches req.user
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const { extractRequestToken } = await import('../utils/session-cookie');
+  const token = extractRequestToken(req);
+  if (!token) {
     return res.status(401).json({ success: false, error: 'No token provided' });
   }
 
-  const token = authHeader.substring(7);
   try {
-    const decoded = jwt.verify(token, config.jwtSecret);
+    const decoded = verifyJwtToken(token);
+    const { tokenRevocationService } = await import('../services/token-revocation-service');
+    const active = await tokenRevocationService.isSessionActive(decoded);
+    if (!active) {
+      return res.status(401).json({ success: false, error: 'Session revoked or expired — please log in again' });
+    }
     (req as any).user = decoded;
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ success: false, error: 'Invalid or expired token' });
   }
 }
@@ -63,9 +95,7 @@ export function requirePermission(functionId: FunctionId, mode: 'read' | 'write'
     if (!user) {
       return res.status(401).json({ success: false, error: 'Not authenticated' });
     }
-    const perm = user.permissions?.[functionId];
-    const allowed = mode === 'read' ? perm?.r : perm?.w;
-    if (!allowed) {
+    if (!hasPermission(user, functionId, mode)) {
       return res.status(403).json({
         success: false,
         error: `Access denied. Required permission: ${functionId} (${mode})`,

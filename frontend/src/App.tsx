@@ -1,9 +1,11 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { GlobalFilterProvider } from './context/GlobalFilterContext';
 import LoginPage from './components/Login/LoginPage';
+import AccessRequestPage, { SsoAccessStatus } from './components/Login/AccessRequestPage';
 import Layout from './components/Layout';
+import { authApi } from './services/api';
 import Dashboard from './components/Dashboard/Dashboard';
 import JobsList from './components/Jobs/JobsList';
 
@@ -67,6 +69,59 @@ function PermissionRoute({ permission, children }: { permission: string; childre
   return <>{children}</>;
 }
 
+function UnauthenticatedGate() {
+  const { ssoLogin, user } = useAuth();
+  const [ssoLoading, setSsoLoading] = useState(true);
+  const [ssoAttempting, setSsoAttempting] = useState(false);
+  const [ssoStatus, setSsoStatus] = useState<SsoAccessStatus | null>(null);
+  const [ssoLoginFailed, setSsoLoginFailed] = useState(false);
+
+  useEffect(() => {
+    authApi.ssoStatus()
+      .then(async (res) => {
+        const data = res.data!;
+        setSsoStatus(data);
+
+        if (data.canLogin && data.email) {
+          setSsoAttempting(true);
+          try {
+            await ssoLogin();
+          } catch {
+            setSsoLoginFailed(true);
+          } finally {
+            setSsoAttempting(false);
+          }
+        }
+      })
+      .catch(() => setSsoStatus({ ssoEnabled: false, email: null, status: null, canLogin: false }))
+      .finally(() => setSsoLoading(false));
+  }, [ssoLogin]);
+
+  if (user) return null;
+
+  if (ssoLoading || ssoAttempting) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-zebra-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (ssoStatus?.email && (ssoStatus.status === 'PENDING' || ssoStatus.status === 'REJECTED' || ssoStatus.status === 'DOMAIN_DENIED')) {
+    return <AccessRequestPage status={ssoStatus} />;
+  }
+
+  if (ssoStatus?.email && ssoStatus.status === 'ACTIVE' && !ssoStatus.canLogin) {
+    return <AccessRequestPage status={ssoStatus} />;
+  }
+
+  if (ssoLoginFailed && ssoStatus?.canLogin) {
+    return <LoginPage ssoEmail={ssoStatus.email} />;
+  }
+
+  return <LoginPage ssoEmail={ssoStatus?.email || undefined} />;
+}
+
 function AppRoutes() {
   const { user, isLoading } = useAuth();
 
@@ -79,7 +134,7 @@ function AppRoutes() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <UnauthenticatedGate />;
   }
 
   return (

@@ -1,7 +1,7 @@
 // ============================================================
 // Payroll Service
 // Queries TA_UNIT_PAY_STATUS from client DB2 databases
-// Uses db2DirectService (jjs/JDBC) — same approach as DB Monitor
+// Uses db2DirectService (Java JDBC) — same approach as DB Monitor
 // ============================================================
 
 import { logger } from '../utils/logger';

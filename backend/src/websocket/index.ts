@@ -6,9 +6,17 @@ import { Server as HttpServer } from 'http';
 import { Server as SocketServer, Socket } from 'socket.io';
 import { createServiceLogger } from '../utils/logger';
 import { configService } from '../services/config-service';
+import { hasPermission } from '../middleware';
 import { jobExecutor } from '../engine/executor';
 import { alertService } from '../services/alert-service';
 import { monitoringService } from '../services/monitoring-service';
+import {
+  getSocketUser,
+  isValidExecutionId,
+  joinPermissionStreams,
+  socketAuthMiddleware,
+  WS_STREAM_ROOMS,
+} from './auth';
 
 const logger = createServiceLogger('WebSocket');
 
@@ -29,37 +37,59 @@ export function initializeWebSocket(httpServer: HttpServer): SocketServer {
     pingInterval: 25000,
   });
 
-  io.on('connection', (socket: Socket) => {
-    logger.info(`Client connected: ${socket.id}`);
+  io.use(socketAuthMiddleware);
 
-    // Join rooms based on subscriptions
+  io.on('connection', (socket: Socket) => {
+    const user = getSocketUser(socket);
+    if (!user) {
+      socket.disconnect(true);
+      return;
+    }
+
+    joinPermissionStreams(socket, user);
+    logger.info(`Client connected: ${socket.id} (${user.username})`);
+
     socket.on('subscribe', (room: string) => {
+      if (typeof room !== 'string' || !room.startsWith('stream:')) {
+        logger.warn(`Client ${socket.id} rejected subscribe to room: ${room}`);
+        return;
+      }
+      if (room === WS_STREAM_ROOMS.execution && !hasPermission(user, 'MONITOR_VIEW', 'read')) return;
+      if (room === WS_STREAM_ROOMS.alerts && !hasPermission(user, 'ALERTS_VIEW', 'read')) return;
       socket.join(room);
       logger.debug(`Client ${socket.id} subscribed to: ${room}`);
     });
 
     socket.on('unsubscribe', (room: string) => {
+      if (typeof room !== 'string') return;
       socket.leave(room);
       logger.debug(`Client ${socket.id} unsubscribed from: ${room}`);
     });
 
-    // Handle dashboard data request
     socket.on('dashboard:refresh', async () => {
       try {
         const stats = await monitoringService.getDashboardStats();
-        socket.emit('dashboard:update', stats);
+        socket.emit('dashboard:update', wrapEvent('dashboard:update', stats));
       } catch (error: any) {
         logger.error(`Dashboard refresh error: ${error.message}`);
       }
     });
 
-    // Handle execution log streaming
     socket.on('execution:follow', (executionId: string) => {
+      if (!hasPermission(user, 'MONITOR_VIEW', 'read')) {
+        logger.warn(`Client ${socket.id} denied execution:follow — missing MONITOR_VIEW`);
+        return;
+      }
+      if (!isValidExecutionId(executionId)) {
+        logger.warn(`Client ${socket.id} rejected invalid execution id`);
+        return;
+      }
       socket.join(`execution:${executionId}`);
       logger.debug(`Client ${socket.id} following execution: ${executionId}`);
     });
 
     socket.on('execution:unfollow', (executionId: string) => {
+      if (!isValidExecutionId(executionId)) return;
       socket.leave(`execution:${executionId}`);
     });
 
@@ -70,9 +100,8 @@ export function initializeWebSocket(httpServer: HttpServer): SocketServer {
 
   // ---- Wire up event listeners ----
 
-  // Job execution events
   jobExecutor.on('execution:started', (data) => {
-    broadcast('execution:started', data);
+    broadcastToRoom(WS_STREAM_ROOMS.execution, 'execution:started', data);
     broadcastToRoom(`execution:${data.executionId}`, 'execution:started', data);
   });
 
@@ -81,37 +110,31 @@ export function initializeWebSocket(httpServer: HttpServer): SocketServer {
   });
 
   jobExecutor.on('execution:completed', (data) => {
-    broadcast('execution:completed', data);
+    broadcastToRoom(WS_STREAM_ROOMS.execution, 'execution:completed', data);
     broadcastToRoom(`execution:${data.executionId}`, 'execution:completed', data);
     broadcastDashboardUpdate();
   });
 
   jobExecutor.on('execution:failed', (data) => {
-    broadcast('execution:failed', data);
+    broadcastToRoom(WS_STREAM_ROOMS.execution, 'execution:failed', data);
     broadcastToRoom(`execution:${data.executionId}`, 'execution:failed', data);
     broadcastDashboardUpdate();
   });
 
-  // Alert events
   alertService.on('alert:new', (data) => {
-    broadcast('alert:triggered', data);
+    broadcastToRoom(WS_STREAM_ROOMS.alerts, 'alert:triggered', data);
   });
 
   logger.info('WebSocket server initialized');
   return io;
 }
 
-/**
- * Broadcast to all connected clients
- */
-function broadcast(event: string, data: any): void {
-  if (io) {
-    io.emit(event, {
-      type: event,
-      payload: data,
-      timestamp: new Date().toISOString(),
-    });
-  }
+function wrapEvent(event: string, data: any) {
+  return {
+    type: event,
+    payload: data,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 /**
@@ -119,11 +142,7 @@ function broadcast(event: string, data: any): void {
  */
 function broadcastToRoom(room: string, event: string, data: any): void {
   if (io) {
-    io.to(room).emit(event, {
-      type: event,
-      payload: data,
-      timestamp: new Date().toISOString(),
-    });
+    io.to(room).emit(event, wrapEvent(event, data));
   }
 }
 
@@ -132,14 +151,13 @@ function broadcastToRoom(room: string, event: string, data: any): void {
  */
 let dashboardUpdateTimeout: NodeJS.Timeout | null = null;
 async function broadcastDashboardUpdate(): Promise<void> {
-  // Debounce dashboard updates to avoid flooding
   if (dashboardUpdateTimeout) {
     clearTimeout(dashboardUpdateTimeout);
   }
   dashboardUpdateTimeout = setTimeout(async () => {
     try {
       const stats = await monitoringService.getDashboardStats();
-      broadcast('dashboard:update', stats);
+      broadcastToRoom(WS_STREAM_ROOMS.dashboard, 'dashboard:update', stats);
     } catch (error: any) {
       logger.error(`Dashboard broadcast error: ${error.message}`);
     }

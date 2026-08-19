@@ -26,6 +26,8 @@ export const config = {
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
     fromEmail: process.env.ALERT_FROM_EMAIL || '',
+    tlsEnabled: false,
+    tlsRejectUnauthorized: true,
   },
   
   // Slack
@@ -77,7 +79,20 @@ export const config = {
   // DB2 lib paths (externalize for Docker)
   db2Paths: {
     libDir: process.env.DB2_LIB_DIR || '',           // e.g. /config/lib
-    jjsPath: process.env.JJS_PATH || '',             // e.g. /usr/bin/jjs
+    javaPath: process.env.JAVA_PATH || '',           // e.g. /usr/bin/java
+  },
+
+  // App HTTPS (TLS terminates at nginx/load balancer; these flags enforce HTTPS usage)
+  https: {
+    trustProxy: false,
+    requireHttps: false,
+  },
+
+  // SSO / MFA via load balancer (email injected in trusted header)
+  sso: {
+    enabled: false,
+    emailHeader: 'X-Forwarded-Email',
+    allowedDomain: 'zebra.com',
   },
 
   // Logging
@@ -121,6 +136,8 @@ export function applyDbConfig(): void {
   config.smtp.user        = configService.getString('secrets.smtpUser');
   config.smtp.pass        = configService.getString('secrets.smtpPass');
   config.smtp.fromEmail   = configService.getString('secrets.smtpFromEmail');
+  config.smtp.tlsEnabled  = configService.getBool('secrets.smtpTlsEnabled');
+  config.smtp.tlsRejectUnauthorized = configService.getBool('secrets.smtpTlsRejectUnauthorized', true);
   config.ssh.username     = configService.getString('secrets.sshUsername');
   config.ssh.password     = configService.getString('secrets.sshPassword');
   config.ssh.totpSecret   = configService.getString('secrets.sshTotpSecret');
@@ -139,7 +156,12 @@ export function applyDbConfig(): void {
   config.ssh.cronEntryPath = configService.getString('infra.sshCronEntryPath');
   config.ssh.wfmPathPrefix = configService.getString('infra.sshWfmPathPrefix');
   config.db2Paths.libDir  = configService.getString('infra.db2LibDir');
-  config.db2Paths.jjsPath = configService.getString('infra.db2JjsPath');
+  config.db2Paths.javaPath = configService.getString('infra.db2JavaPath');
+  config.https.trustProxy = configService.getBool('infra.trustProxy');
+  config.https.requireHttps = configService.getBool('infra.requireHttps');
+  config.sso.enabled = configService.getBool('infra.ssoEnabled');
+  config.sso.emailHeader = configService.getString('infra.ssoEmailHeader') || 'X-Forwarded-Email';
+  config.sso.allowedDomain = (configService.getString('infra.ssoAllowedDomain') || 'zebra.com').trim().toLowerCase();
   config.db2Pool.maxConnections = configService.getInt('infra.db2PoolMax');
   config.db2Pool.idleTimeoutMs  = configService.getInt('infra.db2PoolIdleMs');
   config.db2Pool.acquireTimeoutMs = configService.getInt('infra.db2PoolAcquireMs');

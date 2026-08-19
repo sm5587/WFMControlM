@@ -6,7 +6,8 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi } from '../../services/api';
 import { useConfig } from '../../contexts/ConfigContext';
-import { Save, Eye, EyeOff, Search, RotateCcw, AlertTriangle, CheckCircle2, Lock } from 'lucide-react';
+import { Save, Eye, EyeOff, Search, RotateCcw, AlertTriangle, CheckCircle2, Lock, KeyRound, X } from 'lucide-react';
+import type { ReencryptPreflight, ReencryptResult } from '../../services/api';
 
 type ConfigRow = {
   key: string;
@@ -38,6 +39,15 @@ export default function AdminConfig() {
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; msg: string } | null>(null);
+  const [reencryptOpen, setReencryptOpen] = useState(false);
+
+  const { data: preflight, isLoading: preflightLoading, refetch: refetchPreflight } = useQuery<ReencryptPreflight>({
+    queryKey: ['config-reencrypt-preflight'],
+    queryFn: async () => {
+      const res = await configApi.reencryptPreflight();
+      return res.data;
+    },
+  });
 
   const { data: rows = [], isLoading } = useQuery<ConfigRow[]>({
     queryKey: ['admin-config'],
@@ -76,6 +86,32 @@ export default function AdminConfig() {
   const revealMutation = useMutation({
     mutationFn: (key: string) => configApi.reveal(key),
   });
+
+  const reencryptMutation = useMutation({
+    mutationFn: () => configApi.reencrypt(),
+    onSuccess: (res) => {
+      const data = res.data as ReencryptResult;
+      refetchPreflight();
+      queryClient.invalidateQueries({ queryKey: ['admin-config'] });
+      setReencryptOpen(false);
+      setToast({
+        type: data.failed > 0 ? 'warning' : 'success',
+        msg: data.failed > 0
+          ? `Re-encrypted ${data.updated} client(s)${data.appConfigUpdated ? ' + fallback DB2 password' : ''}. ${data.failed} failed.`
+          : `Re-encrypted ${data.updated} client(s)${data.appConfigUpdated ? ' + fallback DB2 password' : ''}. ${data.skipped} already current.`,
+      });
+      setTimeout(() => setToast(null), 8000);
+    },
+    onError: (err: any) => {
+      setToast({ type: 'error', msg: err?.response?.data?.error || 'Re-encryption failed' });
+      setTimeout(() => setToast(null), 8000);
+    },
+  });
+
+  const openReencryptModal = () => {
+    refetchPreflight();
+    setReencryptOpen(true);
+  };
 
   const isRevealed = (key: string) => revealedKeys.has(key);
 
@@ -184,6 +220,15 @@ export default function AdminConfig() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-800">Application Configuration</h1>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openReencryptModal}
+            disabled={!preflight?.encryptionConfigured}
+            title={preflight?.encryptionConfigured ? 'Re-encrypt client DB2 passwords with current key' : 'CONFIG_ENCRYPTION_KEY not configured on server'}
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-white text-zebra-700 hover:bg-zebra-50 text-sm border border-zebra-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <KeyRound size={14} /> Re-encrypt Secrets
+          </button>
           {dirtyCount > 0 && (
             <>
               <span className="text-sm text-amber-600 font-medium">{dirtyCount} unsaved change(s)</span>
@@ -208,6 +253,90 @@ export default function AdminConfig() {
         }`}>
           {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           {toast.msg}
+        </div>
+      )}
+
+      {preflight?.rotationInProgress && (
+        <div className="flex items-start gap-2 px-4 py-3 rounded text-sm border bg-amber-50 text-amber-800 border-amber-200">
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+          <div>
+            <div className="font-medium">Encryption key rotation in progress</div>
+            <div className="text-amber-700 mt-1">
+              CONFIG_ENCRYPTION_KEY_PREVIOUS is active on the server. Run Re-encrypt Secrets, verify pre-flight shows 0 pending,
+              then remove the previous key from .env and restart.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reencryptOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full border border-gray-200">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                <KeyRound size={16} /> Re-encrypt Secrets
+              </h2>
+              <button type="button" onClick={() => setReencryptOpen(false)} className="text-gray-400 hover:text-gray-700">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-4 py-4 space-y-3 text-sm text-gray-700">
+              {preflightLoading || !preflight ? (
+                <div className="py-6 text-center text-gray-400">Loading pre-flight scan...</div>
+              ) : (
+                <>
+                  <p>
+                    Re-encrypts client DB2 passwords and the fallback <code className="text-xs bg-gray-100 px-1 rounded">secrets.db2Password</code> using
+                    the current <code className="text-xs bg-gray-100 px-1 rounded">CONFIG_ENCRYPTION_KEY</code> from server .env.
+                  </p>
+                  <div className="bg-gray-50 border border-gray-200 rounded p-3 space-y-1 text-xs font-mono">
+                    <div>Clients total: {preflight.clients.total}</div>
+                    <div>Plaintext: {preflight.clients.plaintext}</div>
+                    <div>Encrypted (current key): {preflight.clients.encryptedCurrent}</div>
+                    <div>Encrypted (previous key): {preflight.clients.encryptedPrevious}</div>
+                    <div>Unreadable: {preflight.clients.unreadable}</div>
+                    <div>Empty: {preflight.clients.empty}</div>
+                    <div>Fallback DB2 password: {preflight.appConfigDb2Password.state}</div>
+                    <div className="pt-2 font-sans font-semibold text-gray-800">
+                      Pending re-encryption: {preflight.needsReencrypt}
+                    </div>
+                  </div>
+                  {preflight.clients.unreadable > 0 && (
+                    <p className="text-red-600 text-xs">
+                      Some values cannot be decrypted — fix or restore passwords before continuing.
+                    </p>
+                  )}
+                  {preflight.needsReencrypt === 0 && (
+                    <p className="text-green-700 text-xs">All secrets are already encrypted with the current key.</p>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 px-4 py-3 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+              <button
+                type="button"
+                onClick={() => setReencryptOpen(false)}
+                className="px-3 py-1.5 rounded text-sm border border-gray-200 bg-white text-gray-600 hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => reencryptMutation.mutate()}
+                disabled={
+                  preflightLoading ||
+                  !preflight ||
+                  !preflight.encryptionConfigured ||
+                  preflight.needsReencrypt === 0 ||
+                  preflight.clients.unreadable > 0 ||
+                  reencryptMutation.isPending
+                }
+                className="px-3 py-1.5 rounded text-sm bg-zebra-500 text-white hover:bg-zebra-600 disabled:opacity-40"
+              >
+                {reencryptMutation.isPending ? 'Re-encrypting...' : 'Re-encrypt Now'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -332,7 +461,7 @@ export default function AdminConfig() {
       </div>
 
       <div className="text-xs text-gray-400">
-        {rows.length} total entries · {(activeTab === 'all' ? visibleRows.length : hiddenRows.length)} shown · SECRETS are AES-256-GCM encrypted at rest · INFRA changes require server restart
+        {rows.length} total entries · {(activeTab === 'all' ? visibleRows.length : hiddenRows.length)} shown · SECRETS are AES-256-GCM encrypted at rest · Master key is CONFIG_ENCRYPTION_KEY in server .env · INFRA changes require server restart
       </div>
     </div>
   );

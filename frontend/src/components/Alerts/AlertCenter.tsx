@@ -1,36 +1,18 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bell, Database, Clock, AlertTriangle, CheckCircle, BellOff,
   Send, UserPlus, Trash2, X, Mail, Timer,
 } from 'lucide-react';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
-import { escalationsApi, unprocessedPunchApi } from '../../services/api';
+import { useEscalatedAlerts, type EscalatedAlert } from '../../hooks/useEscalatedAlerts';
+import { parseDb2Ts, useStalePunchRows } from '../../hooks/useStalePunchRows';
+import { escalationsApi } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useConfig } from '../../contexts/ConfigContext';
 import { isNotifyEligible, minutesUntilNotifyEligible } from '../../utils/notify';
-
-// ---- Types ----
-interface EscalatedAlert {
-  id: string;
-  clientId: string;
-  serverCode: string;
-  clientName: string;
-  cluster: string;
-  stalePendingCount: number;
-  totalPending: number;
-  status: string; // OPEN | ACKNOWLEDGED | SUPPRESSED
-  acknowledgedBy: string | null;
-  acknowledgedAt: string | null;
-  suppressedBy: string | null;
-  suppressUntil: string | null;
-  suppressReason: string | null;
-  emailSentAt: string | null;
-  firstSeenAt: string;
-  lastSeenAt: string;
-}
 
 interface Recipient {
   id: string;
@@ -39,21 +21,9 @@ interface Recipient {
   isActive: boolean;
 }
 
-// ---- Hook for escalated alerts ----
-export function useEscalatedAlerts() {
-  const { getInt } = useConfig();
-  return useQuery<EscalatedAlert[]>({
-    queryKey: ['escalated-alerts'],
-    queryFn: async () => {
-      const res = await escalationsApi.getAll();
-      return (res.data ?? []) as EscalatedAlert[];
-    },
-    staleTime: 30 * 60 * 1000,
-    refetchInterval: getInt('polling.escalatedRefreshSecs', 1800) * 1000,
-    refetchOnWindowFocus: false,
-  });
-}
-
+// Re-export for any legacy imports.
+export { useEscalatedAlerts } from '../../hooks/useEscalatedAlerts';
+export type { EscalatedAlert } from '../../hooks/useEscalatedAlerts';
 // ============================================================
 // Main AlertCenter Component
 // ============================================================
@@ -77,67 +47,7 @@ export default function AlertCenter() {
   }, []);
 
   // ---- Unproc punch stale data (from cache) ----
-  const { data: punchRes } = useQuery({
-    queryKey: ['unprocessed-punch-all'],
-    queryFn: () => unprocessedPunchApi.getAll(),
-    staleTime: getInt('polling.punchRefreshMins', 30) * 60 * 1000,
-    refetchInterval: getInt('polling.punchRefreshMins', 30) * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
-  const allPunchRows: any[] = (punchRes as any)?.data ?? [];
-
-  // Parse DB2 timestamp: "YYYY-MM-DD-HH.MM.SS.ffffff" or ISO
-  function parseDb2Ts(s: string | null): Date | null {
-    if (!s) return null;
-    // DB2 format: 2026-04-24-10.30.00.000000
-    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})\.(\d{2})\.(\d{2})/);
-    if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
-    return new Date(s);
-  }
-
-  // Track previous punch snapshot to detect movement (count decreasing or lastUpdateTime changing)
-  const prevPunchSnapshot = useRef<Map<string, { punchCount: number; lastUpdateTime: string | null }>>(new Map());
-
-  const stalePunchRows = useMemo(() => {
-    const prev = prevPunchSnapshot.current;
-    return allPunchRows
-      .filter(r => {
-        if (!r.punchCount || r.punchCount <= getInt('threshold.punchCountMin', 100) || r.error) return false;
-        const dbNow = parseDb2Ts(r.dbCurrentTime);
-        const last  = parseDb2Ts(r.lastUpdateTime);
-        if (!dbNow || !last) return false;
-        if ((dbNow.getTime() - last.getTime()) <= getInt('threshold.staleHoursMins', 60) * 60 * 1000) return false; // not stale
-
-        // If we have a previous snapshot, check whether the process is actively moving
-        const prevData = prev.get(r.clientId);
-        if (prevData) {
-          // Count is decreasing → process is actively draining
-          if (r.punchCount < prevData.punchCount) return false;
-          // lastUpdateTime changed → process is actively updating
-          if (r.lastUpdateTime !== prevData.lastUpdateTime) return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        const ageA = parseDb2Ts(a.dbCurrentTime)!.getTime() - parseDb2Ts(a.lastUpdateTime)!.getTime();
-        const ageB = parseDb2Ts(b.dbCurrentTime)!.getTime() - parseDb2Ts(b.lastUpdateTime)!.getTime();
-        return ageB - ageA; // oldest first
-      });
-  }, [allPunchRows]);
-
-  // Update the previous snapshot after each data refresh
-  useEffect(() => {
-    if (allPunchRows.length > 0) {
-      const snapshot = new Map<string, { punchCount: number; lastUpdateTime: string | null }>();
-      for (const r of allPunchRows) {
-        if (r.clientId && r.punchCount != null) {
-          snapshot.set(r.clientId, { punchCount: r.punchCount, lastUpdateTime: r.lastUpdateTime ?? null });
-        }
-      }
-      prevPunchSnapshot.current = snapshot;
-    }
-  }, [allPunchRows]);
+  const { stalePunchRows, punchLoaded } = useStalePunchRows();
 
   // ---- Punch alert statuses (Ack / Suppress) ----
   const { data: punchAlertStatuses = {} } = useQuery<Record<string, any>>({
@@ -946,7 +856,7 @@ export default function AlertCenter() {
             </div>
           )}
 
-          {allPunchRows.length === 0 ? (
+          {!punchLoaded ? (
             <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
               <Timer className="w-10 h-10 mx-auto mb-3 text-gray-300 animate-pulse" />
               <p>Punch data not loaded yet — visit the Unprocessed Punch page to fetch.</p>

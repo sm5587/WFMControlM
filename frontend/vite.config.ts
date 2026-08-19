@@ -20,6 +20,7 @@ export default defineConfig({
         target: 'http://localhost:4005',
         changeOrigin: true,
         timeout: 3600000,
+        cookieDomainRewrite: '',
       },
       '/dev': {
         target: 'http://localhost:4005',

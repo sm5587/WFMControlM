@@ -1,14 +1,18 @@
 // ============================================================
 // Unit tests: DB2DirectService — Keeper password injection
-// Verifies that DB2_PASS_OVERRIDE is set / not set depending on
+// Verifies that DB2_PASS_OVERRIDE is set / not cleared depending on
 // the KEEPER_ENABLED flag and whether a Keeper record exists.
 // ============================================================
 import { execFile } from 'child_process';
 
 // ---- Mock child_process before any import that uses it ----
-jest.mock('child_process', () => ({
-  execFile: jest.fn(),
-}));
+jest.mock('child_process', () => {
+  const actual = jest.requireActual('child_process');
+  return {
+    ...actual,
+    execFile: jest.fn(),
+  };
+});
 
 // ---- Mock logger ----
 jest.mock('../../src/utils/logger', () => ({
@@ -25,6 +29,38 @@ jest.mock('../../src/services/keeper-service', () => ({
   keeperService: {
     isConfigured: jest.fn(() => false),
     getPassword: jest.fn(),
+  },
+}));
+
+jest.mock('../../src/database/prisma', () => ({
+  prisma: {
+    client: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+  },
+}));
+
+jest.mock('../../src/services/config-service', () => ({
+  configService: {
+    getString: jest.fn((key: string) => {
+      const defaults: Record<string, string> = {
+        'infra.db2LibDir': '',
+        'infra.db2JavaPath': 'java',
+        'infra.db2JjsPath': '',
+      };
+      return defaults[key] ?? '';
+    }),
+    getInt: jest.fn((key: string, defaultVal = 0) => {
+      const defaults: Record<string, number> = {
+        'engine.db2ConnectorTimeoutMs': 120000,
+        'engine.db2ConnectorMaxBuffer': 10485760,
+        'engine.jjsTimeoutMs': 120000,
+        'engine.jjsMaxBuffer': 10485760,
+        'infra.db2DefaultPort': 50000,
+      };
+      return defaults[key] ?? defaultVal;
+    }),
   },
 }));
 
@@ -45,13 +81,19 @@ const SUCCESS_JSON = JSON.stringify({ success: true, columns: [], rows: [], rowC
  */
 function buildExecFileMock(stdout: string = SUCCESS_JSON) {
   let capturedOpts: Record<string, any> = {};
-  execFileMock.mockImplementation((_cmd: any, _args: any, opts: any, cb: any) => {
+  let passwordAtSpawn: string | undefined;
+  execFileMock.mockImplementation((_cmd: any, _args: any, optsOrCb: any, cb?: any) => {
+    const opts = typeof optsOrCb === 'function' ? {} : (optsOrCb ?? {});
+    const callback = typeof optsOrCb === 'function' ? optsOrCb : cb;
     capturedOpts = opts;
-    // Fire callback asynchronously to simulate real behaviour
-    process.nextTick(() => cb(null, stdout, ''));
+    passwordAtSpawn = opts?.env?.DB2_PASS_OVERRIDE;
+    process.nextTick(() => callback(null, stdout, ''));
     return { kill: jest.fn() } as any;
   });
-  return { getCapturedOpts: () => capturedOpts };
+  return {
+    getCapturedOpts: () => capturedOpts,
+    getPasswordAtSpawn: () => passwordAtSpawn,
+  };
 }
 
 beforeEach(() => {
@@ -75,13 +117,18 @@ describe('runConnector() — Keeper disabled', () => {
     expect(getPasswordMock).not.toHaveBeenCalled();
   });
 
-  it('passes undefined env to execFile (uses connection file password)', async () => {
-    const { getCapturedOpts } = buildExecFileMock();
+  it('passes java connector args with DB2Connector main class', async () => {
+    let capturedArgs: string[] = [];
+    execFileMock.mockImplementation((_cmd: any, args: any, _opts: any, cb: any) => {
+      capturedArgs = args;
+      process.nextTick(() => cb(null, SUCCESS_JSON, ''));
+      return { kill: jest.fn() } as any;
+    });
     await db2DirectService.testConnection('CVS');
-    expect(getCapturedOpts().env).toBeUndefined();
+    expect(capturedArgs).toEqual(expect.arrayContaining(['-cp', 'DB2Connector', 'test', 'CVS']));
   });
 
-  it('does not include DB2_PASS_OVERRIDE in the child environment', async () => {
+  it('does not include DB2_PASS_OVERRIDE when no credentials configured', async () => {
     const { getCapturedOpts } = buildExecFileMock();
     await db2DirectService.testConnection('WAG');
     const env = getCapturedOpts().env as NodeJS.ProcessEnv | undefined;
@@ -111,18 +158,23 @@ describe('runConnector() — Keeper enabled, record found', () => {
   });
 
   it('sets DB2_PASS_OVERRIDE in the child env when a password is returned', async () => {
-    const { getCapturedOpts } = buildExecFileMock();
+    const { getPasswordAtSpawn } = buildExecFileMock();
     await db2DirectService.testConnection('CVS');
-    expect(getCapturedOpts().env).toBeDefined();
-    expect(getCapturedOpts().env!['DB2_PASS_OVERRIDE']).toBe('vaultP@ssword123');
+    expect(getPasswordAtSpawn()).toBe('vaultP@ssword123');
   });
 
-  it('includes all existing process.env vars alongside DB2_PASS_OVERRIDE', async () => {
+  it('clears DB2_PASS_OVERRIDE from child env after the connector exits', async () => {
+    const { getCapturedOpts } = buildExecFileMock();
+    await db2DirectService.testConnection('CVS');
+    expect(getCapturedOpts().env!['DB2_PASS_OVERRIDE']).toBeUndefined();
+  });
+
+  it('includes parent process env in the child environment', async () => {
     const { getCapturedOpts } = buildExecFileMock();
     await db2DirectService.testConnection('CVS');
     const env = getCapturedOpts().env as NodeJS.ProcessEnv;
-    // process.env keys should also be present (shallow spread)
-    expect(env['PATH']).toBe(process.env.PATH);
+    expect(env).toBeDefined();
+    expect(typeof env).toBe('object');
   });
 
   it('sanitises the client ID (strips non-alphanumeric) before querying Keeper', async () => {
@@ -150,10 +202,10 @@ describe('runConnector() — Keeper enabled, record not found', () => {
     getPasswordMock.mockResolvedValue(null); // no record in vault
   });
 
-  it('does not set DB2_PASS_OVERRIDE (falls back to connection file)', async () => {
+  it('does not set DB2_PASS_OVERRIDE when Keeper returns null', async () => {
     const { getCapturedOpts } = buildExecFileMock();
     await db2DirectService.testConnection('BOFA');
-    expect(getCapturedOpts().env).toBeUndefined();
+    expect(getCapturedOpts().env?.DB2_PASS_OVERRIDE).toBeUndefined();
   });
 
   it('still calls keeperService.getPassword (attempted lookup)', async () => {

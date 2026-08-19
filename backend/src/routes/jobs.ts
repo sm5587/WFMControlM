@@ -9,11 +9,15 @@ import { jobExecutor } from '../engine/executor';
 import { createServiceLogger } from '../utils/logger';
 import { requirePermission } from '../middleware';
 import { z } from 'zod';
-import { Client as SSH2Client } from 'ssh2';
-import { generateSync } from 'otplib';
-import * as fs from 'fs';
-import * as path from 'path';
 import { config } from '../config';
+import {
+  validateRemoteLogPath,
+  shellQuote,
+  defaultLogPathAllowPrefixes,
+} from '../utils/remote-path';
+import { configService } from '../services/config-service';
+import { scrubRemoteLogLines } from '../utils/log-redaction';
+import { loadCredentials, sshConnect, sshExec } from '../utils/ssh-client';
 
 import cronParser from 'cron-parser';
 import dayjs from 'dayjs';
@@ -454,89 +458,6 @@ router.get('/executions/:id/logs', async (req: Request, res: Response) => {
   }
 });
 
-// ------------------------------------------------------------------ SSH helpers for log tail
-
-interface _SSHCreds { username: string; password: string; totpSecret: string; }
-
-function _loadSSHCreds(): _SSHCreds {
-  if (config.ssh.username && config.ssh.password) {
-    return { username: config.ssh.username, password: config.ssh.password, totpSecret: config.ssh.totpSecret || '' };
-  }
-  // Walk up from __dirname and cwd to find the credentials file
-  const findUp = (startDir: string): string | null => {
-    let dir = startDir;
-    while (true) {
-      const c = path.join(dir, '.saved_credentials.json');
-      if (fs.existsSync(c)) return c;
-      const parent = path.dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
-    }
-  };
-  const credPaths = [
-    config.ssh.credentialsFile,
-    findUp(__dirname),
-    findUp(process.cwd()),
-  ].filter(Boolean) as string[];
-  for (const p of credPaths) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      const mode = (raw.credential_mode || 'service').toLowerCase();
-      if (mode === 'personal' && raw.personal_username) {
-        return {
-          username: raw.personal_username,
-          password: raw.personal_password ? Buffer.from(raw.personal_password, 'base64').toString() : '',
-          totpSecret: raw.personal_totp_secret ? Buffer.from(raw.personal_totp_secret, 'base64').toString() : '',
-        };
-      }
-      return {
-        username: raw.username || '',
-        password: raw.password ? Buffer.from(raw.password, 'base64').toString() : '',
-        totpSecret: raw.totp_secret ? Buffer.from(raw.totp_secret, 'base64').toString() : '',
-      };
-    } catch { /* skip */ }
-  }
-  throw new Error('No SSH credentials configured');
-}
-
-function _sshConnect(hostname: string, creds: _SSHCreds): Promise<SSH2Client> {
-  return new Promise((resolve, reject) => {
-    const conn = new SSH2Client();
-    const ms = config.ssh.timeout || 15000;
-    const timer = setTimeout(() => { conn.end(); reject(new Error(`SSH timeout: ${hostname}`)); }, ms);
-    conn.on('ready', () => { clearTimeout(timer); resolve(conn); });
-    conn.on('error', (err) => { clearTimeout(timer); reject(err); });
-    conn.on('keyboard-interactive', (_n, _i, _l, prompts, finish) => {
-      const responses = prompts.map((pr: any) => {
-        const p = pr.prompt.toLowerCase();
-        if (p.includes('second') || p.includes('token') || p.includes('factor')) {
-          return creds.totpSecret ? generateSync({ secret: creds.totpSecret }) : '';
-        }
-        return creds.password;
-      });
-      finish(responses);
-    });
-    const opts: any = { host: hostname, port: config.ssh.port || 22, username: creds.username, tryKeyboard: true, readyTimeout: ms };
-    if (!creds.totpSecret) {
-      opts.password = creds.password;
-      opts.authHandler = ['password', 'keyboard-interactive'];
-    }
-    conn.connect(opts);
-  });
-}
-
-function _sshExec(conn: SSH2Client, cmd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    conn.exec(cmd, (err, stream) => {
-      if (err) return reject(err);
-      let out = '';
-      stream.on('data', (d: Buffer) => { out += d.toString(); });
-      stream.stderr.on('data', () => {});
-      stream.on('close', () => resolve(out));
-    });
-  });
-}
-
 // GET /api/jobs/:id/log-tail — fetch last N lines of the job's remote log via SSH
 router.get('/:id/log-tail', async (req: Request, res: Response) => {
   try {
@@ -550,21 +471,30 @@ router.get('/:id/log-tail', async (req: Request, res: Response) => {
     });
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
     if (!job.logPath) return res.status(400).json({ success: false, error: 'No log path configured for this job' });
+
+    const wfmPrefix = config.ssh.wfmPathPrefix || configService.getString('infra.sshWfmPathPrefix', '/mount/RWS4');
+    const safePath = validateRemoteLogPath(job.logPath, {
+      allowedPrefixes: defaultLogPathAllowPrefixes(wfmPrefix),
+    });
+    if (!safePath) {
+      return res.status(400).json({ success: false, error: 'Log path is invalid or outside allowed directories' });
+    }
+
     if (!job.client?.appServers?.length) return res.status(400).json({ success: false, error: 'No active Prod app server found for this client' });
 
     const hostname = job.client.appServers[0].dns;
-    const creds = _loadSSHCreds();
-    const conn = await _sshConnect(hostname, creds);
+    const creds = loadCredentials();
+    const conn = await sshConnect(hostname, creds);
     let output = '';
     try {
-      output = await _sshExec(conn, `tail -n ${lines} "${job.logPath}" 2>&1`);
+      output = await sshExec(conn, `tail -n ${lines} ${shellQuote(safePath)} 2>&1`);
     } finally {
       conn.end();
     }
-    const logLines = output.split('\n');
+    const logLines = scrubRemoteLogLines(output.split('\n'));
     res.json({
       success: true,
-      data: { lines: logLines, logPath: job.logPath, hostname, fetchedAt: new Date().toISOString() },
+      data: { lines: logLines, logPath: safePath, hostname, fetchedAt: new Date().toISOString() },
     });
   } catch (error: any) {
     logger.error(`Log tail error for job ${req.params.id}: ${error.message}`);

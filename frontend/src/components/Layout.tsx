@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
-import { useEscalatedAlerts } from './Alerts/AlertCenter';
+import { useAlertsMenuBadge } from '../hooks/useAlertsMenuBadge';
 import { useAuth, usePermission } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
 import { useAppName } from '../contexts/ConfigContext';
@@ -39,8 +39,7 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const { isConnected } = useWebSocket();
   useBackgroundPolling();
-  const { data: escalated = [] } = useEscalatedAlerts();
-  const openEscCount = escalated.filter(a => a.status === 'OPEN').length;
+  const { showBadge: showAlertsBadge } = useAlertsMenuBadge();
   const { user, logout } = useAuth();
   const canManageUsers = usePermission('USERS_VIEW', 'read');
   const { canRead } = useAuth();
@@ -76,7 +75,7 @@ export default function Layout() {
             // Hide nav item if user lacks the required read permission
             if (permission && !canRead(permission)) return null;
             const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
-            const showRedBadge = path === '/alerts' && openEscCount > 0;
+            const showRedBadge = path === '/alerts' && showAlertsBadge;
             return (
               <Link
                 key={path}

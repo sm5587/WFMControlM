@@ -673,7 +673,7 @@ function ExcelImportButton({ clients, onImported }: {
 
         if (entries.length === 0) throw new Error('No maintenance dates found in the file.');
 
-        const user = JSON.parse(localStorage.getItem('wfm_user') ?? '{}');
+        const user = JSON.parse(sessionStorage.getItem('wfm_user') ?? '{}');
         const res = await maintenanceCalendarApi.import({
           year: detectedYear,
           fileName: file.name,

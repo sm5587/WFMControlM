@@ -4,10 +4,11 @@
 
 import { Router, Request, Response } from 'express';
 import { applyDbConfig, config } from '../config';
-import { configService } from '../services/config-service';
+import { configService, ConfigValidationError } from '../services/config-service';
 import { alertService } from '../services/alert-service';
 import { requirePermission } from '../middleware';
 import { createServiceLogger } from '../utils/logger';
+import { getReencryptPreflight, reencryptSecrets } from '../services/reencrypt-secrets-service';
 import { z } from 'zod';
 
 const router = Router();
@@ -76,6 +77,9 @@ router.patch('/', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Re
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: 'Validation error', details: error.errors });
     }
+    if (error instanceof ConfigValidationError) {
+      return res.status(400).json({ success: false, error: error.message });
+    }
     logger.error(`Config update error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -84,6 +88,31 @@ router.patch('/', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Re
 // POST /api/config/reveal — Reveal a secret value (admin only)
 const revealSchema = z.object({
   key: z.string().min(1),
+});
+
+// GET /api/config/reencrypt/preflight — scan secrets before re-encryption (admin only)
+router.get('/reencrypt/preflight', requirePermission('PERMISSIONS_EDIT', 'read'), async (_req: Request, res: Response) => {
+  try {
+    const data = await getReencryptPreflight();
+    res.json({ success: true, data });
+  } catch (error: any) {
+    logger.error(`Re-encrypt preflight error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/config/reencrypt — re-encrypt client DB2 passwords with current key (admin only)
+router.post('/reencrypt', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const userId = user?.username || user?.userId || 'admin';
+    const data = await reencryptSecrets(userId);
+    logger.info(`Secret re-encryption triggered by ${userId}`);
+    res.json({ success: true, data });
+  } catch (error: any) {
+    logger.error(`Re-encrypt error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 router.post('/reveal', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Request, res: Response) => {

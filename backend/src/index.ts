@@ -22,6 +22,7 @@ import { errorHandler, requestLogger, authMiddleware, requireAdmin } from './mid
 import { createServiceLogger } from './utils/logger';
 import { APP_FUNCTIONS } from './constants/functions';
 import { prisma } from './database/prisma';
+import { hasPreviousEncryptionKey } from './utils/crypto';
 
 // Import routes
 import authRouter from './routes/auth';
@@ -72,8 +73,37 @@ async function bootstrap() {
   validateCriticalConfig();
   logger.info('AppConfig loaded from database');
 
+  if (hasPreviousEncryptionKey()) {
+    logger.warn(
+      'CONFIG_ENCRYPTION_KEY_PREVIOUS is set — encryption key rotation in progress. ' +
+      'Run Re-encrypt secrets from Admin → Config, then remove the previous key and restart.'
+    );
+  }
+
+  const trustProxy = configService.getBool('infra.trustProxy');
+  const requireHttps = configService.getBool('infra.requireHttps');
+  if (trustProxy) {
+    app.set('trust proxy', 1);
+    logger.info('Express trust proxy enabled (X-Forwarded-* from reverse proxy)');
+  }
+  if (requireHttps) {
+    logger.info('HTTPS enforcement enabled — HTTP requests will redirect to HTTPS');
+  }
+
   // ---- Middleware ----
-  app.use(helmet());
+  app.use(helmet(requireHttps ? {
+    hsts: { maxAge: 31_536_000, includeSubDomains: true },
+  } : undefined));
+  if (requireHttps) {
+    app.use((req, res, next) => {
+      if (req.path === '/health') return next();
+      const proto = req.headers['x-forwarded-proto'];
+      if (req.secure || proto === 'https') return next();
+      const host = req.headers.host;
+      if (!host) return res.status(400).send('HTTPS required');
+      return res.redirect(301, `https://${host}${req.originalUrl}`);
+    });
+  }
   app.use(cors({
     origin: (origin, callback) => {
       const origins = configService.getString('infra.corsOrigins')
@@ -162,6 +192,13 @@ async function bootstrap() {
 
   // ---- Initialize Keeper Secrets Manager (non-fatal) ----
   await keeperService.initialize();
+
+  const { tokenRevocationService } = await import('./services/token-revocation-service');
+  try {
+    await tokenRevocationService.purgeExpired();
+  } catch (err: any) {
+    logger.warn(`Revoked-token purge skipped: ${err.message}`);
+  }
 
   // ---- Wire up cross-service events ----
   const { jobExecutor } = require('./engine/executor');

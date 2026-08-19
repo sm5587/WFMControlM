@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { UserPlus, Shield, UserX, UserCheck, X, Pencil } from 'lucide-react';
-import { adminApi, authApi, AdminUser } from '../../services/api';
+import { UserPlus, Shield, UserX, UserCheck, X, Pencil, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { adminApi, authApi, AdminUser, AccessRequest } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
 
 export default function AdminUsers() {
@@ -17,9 +17,15 @@ export default function AdminUsers() {
     queryKey: ['admin-profiles'],
     queryFn: adminApi.getProfiles,
   });
+  const { data: accessRequestsData } = useQuery({
+    queryKey: ['admin-access-requests'],
+    queryFn: () => adminApi.getAccessRequests(),
+  });
 
   const users: AdminUser[] = usersData?.data ?? [];
   const profiles = profilesData?.data ?? [];
+  const accessRequests: AccessRequest[] = accessRequestsData?.data ?? [];
+  const pendingRequests = accessRequests.filter(r => r.status === 'PENDING');
 
   // ── New User dialog ──
   const [showNewUser, setShowNewUser] = useState(false);
@@ -84,13 +90,61 @@ export default function AdminUsers() {
     },
   });
 
+  // ── Access Request approve/reject ──
+  const [approveTarget, setApproveTarget] = useState<AccessRequest | null>(null);
+  const [approveProfileId, setApproveProfileId] = useState('');
+  const [approveDisplayName, setApproveDisplayName] = useState('');
+  const [rejectTarget, setRejectTarget] = useState<AccessRequest | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
+
+  const approveMut = useMutation({
+    mutationFn: () =>
+      adminApi.approveAccessRequest(approveTarget!.id, {
+        profileId: approveProfileId,
+        displayName: approveDisplayName || undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-access-requests'] });
+      qc.invalidateQueries({ queryKey: ['admin-users'] });
+      setApproveTarget(null);
+      setApproveProfileId('');
+      setApproveDisplayName('');
+    },
+  });
+
+  const rejectMut = useMutation({
+    mutationFn: () => adminApi.rejectAccessRequest(rejectTarget!.id, rejectNote || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-access-requests'] });
+      setRejectTarget(null);
+      setRejectNote('');
+    },
+  });
+
+  const openApprove = (req: AccessRequest) => {
+    setApproveTarget(req);
+    setApproveProfileId('');
+    setApproveDisplayName(req.displayName || req.email.split('@')[0]);
+  };
+
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-          <p className="text-sm text-gray-500 mt-1">{users.length} registered users</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {users.length} registered users
+            {pendingRequests.length > 0 && (
+              <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium">
+                <Clock className="w-3 h-3" />
+                {pendingRequests.length} pending request{pendingRequests.length !== 1 ? 's' : ''}
+              </span>
+            )}
+          </p>
         </div>
         {canManage && (
           <button
@@ -102,6 +156,62 @@ export default function AdminUsers() {
           </button>
         )}
       </div>
+
+      {/* Pending Access Requests */}
+      {pendingRequests.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-amber-200 bg-amber-100/60">
+            <h2 className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+              <Clock className="w-4 h-4" />
+              Pending Access Requests
+            </h2>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Users who signed in via SSO/MFA and are awaiting administrator approval
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-amber-50/80 border-b border-amber-200">
+              <tr>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Email</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Requested</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Source IP</th>
+                {canManage && (
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Actions</th>
+                )}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-amber-100">
+              {pendingRequests.map(req => (
+                <tr key={req.id} className="bg-white/60 hover:bg-white">
+                  <td className="px-4 py-3 font-medium text-gray-900">{req.email}</td>
+                  <td className="px-4 py-3 text-gray-600">{formatDate(req.requestedAt)}</td>
+                  <td className="px-4 py-3 text-xs text-gray-500 font-mono">{req.sourceIp || '—'}</td>
+                  {canManage && (
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => openApprove(req)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => { setRejectTarget(req); setRejectNote(''); }}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-white text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Reject
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Users Table */}
       {isLoading ? (
@@ -293,6 +403,108 @@ export default function AdminUsers() {
                 className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
               >
                 Assign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Approve Access Request Dialog */}
+      {approveTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">Approve Access Request</h2>
+              <button onClick={() => setApproveTarget(null)}>
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600">
+              Grant access to <strong>{approveTarget.email}</strong> and assign a profile.
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Display Name</label>
+              <input
+                type="text"
+                value={approveDisplayName}
+                onChange={e => setApproveDisplayName(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Profile <span className="text-red-500">*</span></label>
+              <select
+                value={approveProfileId}
+                onChange={e => setApproveProfileId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+              >
+                <option value="">Select profile…</option>
+                {profiles.map((p: any) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            {approveMut.isError && (
+              <p className="text-sm text-red-600">{(approveMut.error as Error).message}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setApproveTarget(null)}
+                className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => approveMut.mutate()}
+                disabled={!approveProfileId || approveMut.isPending}
+                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                {approveMut.isPending ? 'Approving…' : 'Approve & Create User'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject Access Request Dialog */}
+      {rejectTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">Reject Access Request</h2>
+              <button onClick={() => setRejectTarget(null)}>
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600">
+              Reject access for <strong>{rejectTarget.email}</strong>?
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Note (optional)</label>
+              <textarea
+                value={rejectNote}
+                onChange={e => setRejectNote(e.target.value)}
+                rows={3}
+                placeholder="Reason for rejection…"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none"
+              />
+            </div>
+            {rejectMut.isError && (
+              <p className="text-sm text-red-600">{(rejectMut.error as Error).message}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setRejectTarget(null)}
+                className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => rejectMut.mutate()}
+                disabled={rejectMut.isPending}
+                className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {rejectMut.isPending ? 'Rejecting…' : 'Reject Request'}
               </button>
             </div>
           </div>

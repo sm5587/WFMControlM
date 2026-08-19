@@ -6,12 +6,12 @@ WORKDIR /app
 # - tini: proper PID 1 / signal handling
 # - libc6-compat: compatibility layer for some native modules
 # - openssl: required by Prisma migrate/query engine on Alpine
-# - openjdk8: Nashorn jjs for DB2 JDBC bridge (DB Monitor / DB Jobs)
-RUN apk add --no-cache tini libc6-compat openssl openjdk8
+# - openjdk17-jre: Java 17 for DB2 JDBC bridge (DB Monitor / DB Jobs)
+RUN apk add --no-cache tini libc6-compat openssl openjdk17-jre
 
 FROM base AS deps
 COPY package*.json ./
-# ibm_db is unused (DB2 uses Java/jjs bridge) — skip native compile on Alpine
+# ibm_db is unused (DB2 uses Java JDBC bridge) — skip native compile on Alpine
 RUN npm ci --ignore-scripts
 
 FROM deps AS build
@@ -23,7 +23,7 @@ RUN npx prisma generate && npm run build
 FROM base AS runtime
 ENV NODE_ENV=production
 ENV PORT=4005
-ENV JJS_PATH=/usr/bin/jjs
+ENV JAVA_PATH=/usr/bin/java
 
 WORKDIR /app
 

@@ -163,17 +163,15 @@ function buildFileMonitorResult(
   };
 }
 
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/** SSH exec that aborts promptly when the scan is cancelled (destroys conn + rejects). */
+import { validateRemoteCommand } from '../utils/ssh-client';
+import { shellQuote } from '../utils/remote-path';
 function sshExecCancellable(
   conn: SSH2Client,
   command: string,
   timeoutSec: number,
   isCancelled?: () => boolean,
 ): Promise<string> {
+  validateRemoteCommand(command);
   if (isCancelled?.()) {
     return Promise.reject(new Error(SCAN_CANCELLED));
   }

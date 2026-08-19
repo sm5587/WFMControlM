@@ -1114,7 +1114,7 @@ export default function MaintenanceCalendarTab() {
 
   const handleConfirmImport = () => {
     if (!parseResult || parseResult.entries.length === 0) return;
-    const user = JSON.parse(localStorage.getItem('wfm_user') ?? '{}');
+    const user = JSON.parse(sessionStorage.getItem('wfm_user') ?? '{}');
     importMut.mutate({
       year: parseResult.year,
       fileName: parseResult.fileName,

@@ -16,91 +16,110 @@ interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
   sessionExpired: boolean;
-  /** Check if user can read a specific function */
   canRead: (functionId: string) => boolean;
-  /** Check if user can write a specific function */
   canWrite: (functionId: string) => boolean;
   login: (username: string, password: string) => Promise<void>;
+  ssoLogin: () => Promise<void>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const TOKEN_KEY = 'wfm_token';
-const USER_KEY  = 'wfm_user';
+/** Non-sensitive profile cache for legacy components (not the session token). */
+const USER_KEY = 'wfm_user';
+
+function mapMeToAuthUser(data: {
+  id: string;
+  username: string;
+  displayName: string;
+  email?: string;
+  timezone?: string;
+  permissions?: Record<string, { r: boolean; w: boolean }>;
+}): AuthUser {
+  return {
+    id: data.id,
+    username: data.username,
+    displayName: data.displayName,
+    email: data.email,
+    timezone: data.timezone || 'Asia/Kolkata',
+    permissions: data.permissions ?? {},
+  };
+}
+
+function persistUserProfile(user: AuthUser | null): void {
+  if (user) {
+    sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+  } else {
+    sessionStorage.removeItem(USER_KEY);
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser]         = useState<AuthUser | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(false);
 
-  // Rehydrate from localStorage on mount (permissions always taken from JWT, not stale cached user)
+  // Restore session from HttpOnly cookie via /me (JWT not accessible to JavaScript)
   useEffect(() => {
-    const stored = localStorage.getItem(USER_KEY);
-    const token  = localStorage.getItem(TOKEN_KEY);
-    if (stored && token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        if (payload.exp && payload.exp * 1000 < Date.now()) {
-          localStorage.removeItem(TOKEN_KEY);
-          localStorage.removeItem(USER_KEY);
-          setSessionExpired(true);
-        } else {
-          const cached = JSON.parse(stored) as AuthUser;
-          const authUser: AuthUser = {
-            ...cached,
-            timezone: payload.timezone || cached.timezone || 'Asia/Kolkata',
-            permissions: payload.permissions ?? cached.permissions ?? {},
-          };
-          localStorage.setItem(USER_KEY, JSON.stringify(authUser));
-          setUser(authUser);
-        }
-      } catch { /* ignore malformed */ }
-    }
-    setLoading(false);
+    localStorage.removeItem('wfm_token');
+
+    authApi.me()
+      .then((res) => {
+        const authUser = mapMeToAuthUser(res.data!);
+        persistUserProfile(authUser);
+        setUser(authUser);
+      })
+      .catch(() => {
+        sessionStorage.removeItem(USER_KEY);
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    const res = await authApi.login(username, password);
-    const { token, user: u } = res.data as { token: string; user: { id: string; username: string; displayName: string; email: string } };
-    // Decode permissions from JWT (they're embedded in the payload)
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    const authUser: AuthUser = {
-      id: u.id,
-      username: u.username,
-      displayName: u.displayName,
-      email: u.email,
-      timezone: payload.timezone || 'Asia/Kolkata',
-      permissions: payload.permissions ?? {},
-    };
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(USER_KEY, JSON.stringify(authUser));
+    await authApi.login(username, password);
+    const me = await authApi.me();
+    const authUser = mapMeToAuthUser(me.data!);
+    persistUserProfile(authUser);
     setUser(authUser);
     setSessionExpired(false);
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+  const ssoLogin = useCallback(async () => {
+    await authApi.ssoLogin();
+    const me = await authApi.me();
+    const authUser = mapMeToAuthUser(me.data!);
+    persistUserProfile(authUser);
+    setUser(authUser);
+    setSessionExpired(false);
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // Clear local state even if server logout fails
+    }
+    sessionStorage.removeItem(USER_KEY);
+    localStorage.removeItem('wfm_token');
     setUser(null);
     setSessionExpired(false);
   }, []);
 
-  // Wire up the 401 interceptor to auto-logout
   useEffect(() => {
     setOnUnauthorized(() => {
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(USER_KEY);
+      sessionStorage.removeItem(USER_KEY);
+      localStorage.removeItem('wfm_token');
       setUser(null);
       setSessionExpired(true);
     });
   }, []);
 
-  const canRead  = useCallback((fn: string) => !!user?.permissions?.[fn]?.r, [user]);
+  const canRead = useCallback((fn: string) => !!user?.permissions?.[fn]?.r, [user]);
   const canWrite = useCallback((fn: string) => !!user?.permissions?.[fn]?.w, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, sessionExpired, canRead, canWrite, login, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, sessionExpired, canRead, canWrite, login, ssoLogin, logout }}>
       {children}
     </AuthContext.Provider>
   );
@@ -112,7 +131,6 @@ export function useAuth(): AuthContextValue {
   return ctx;
 }
 
-/** Convenience hook: usePermission('JOBS_CREATE', 'write') → boolean */
 export function usePermission(functionId: string, mode: 'read' | 'write' = 'read'): boolean {
   const { canRead, canWrite } = useAuth();
   return mode === 'write' ? canWrite(functionId) : canRead(functionId);

@@ -8,6 +8,13 @@ import { prisma } from '../database/prisma';
 import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME } from '../constants/app-display';
 import { encryptSecret, decryptSecret, isEncryptionConfigured } from '../utils/crypto';
 import { createServiceLogger } from '../utils/logger';
+import {
+  clampConfigInt,
+  ConfigValidationError,
+  validateConfigValue,
+} from '../utils/config-limits';
+
+export { ConfigValidationError };
 
 const logger = createServiceLogger('ConfigService');
 
@@ -61,6 +68,9 @@ class ConfigService {
     await this.ensureMaintenanceAdHocWindowsConfig();
     await this.ensureMasterAccountConfig();
     await this.ensureFileMonitorConfig();
+    await this.ensureTlsConfig();
+    await this.ensureSsoConfig();
+    await this.ensureAuthTokenRevocationConfig();
 
     this.loaded = true;
     logger.info(`Loaded ${rows.length} config entries from DB`);
@@ -226,6 +236,91 @@ class ConfigService {
     }
   }
 
+  /** TLS/SMTP and app HTTPS flags — added when upgrading older databases. */
+  private async ensureTlsConfig(): Promise<void> {
+    const defaults = [
+      ['secrets.smtpTlsEnabled', 'false', 'SECRETS', 'SMTP TLS Enabled', 'Require TLS/STARTTLS for SMTP (ignored for local Mailpit on 127.0.0.1:1025)', false] as const,
+      ['secrets.smtpTlsRejectUnauthorized', 'true', 'SECRETS', 'SMTP TLS Verify Certs', 'Validate SMTP server certificate when SMTP TLS Enabled is true', false] as const,
+      ['infra.trustProxy', 'false', 'INFRA', 'Trust Proxy', 'Trust X-Forwarded-* headers from nginx/load balancer (enable in production behind TLS terminator)', false] as const,
+      ['infra.requireHttps', 'false', 'INFRA', 'Require HTTPS', 'Redirect HTTP to HTTPS when behind a TLS-terminating reverse proxy', false] as const,
+    ];
+
+    for (const [key, value, category, label, description, isSecret] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: {
+          key,
+          value,
+          category,
+          label,
+          description,
+          isSecret,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(key, {
+        key,
+        value,
+        category,
+        label,
+        description,
+        isSecret,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
+  }
+
+  /** SSO / MFA via load balancer — email header capture for access requests. */
+  private async ensureSsoConfig(): Promise<void> {
+    const defaults = [
+      ['infra.ssoEnabled', 'false', 'INFRA', 'SSO/LDAP Login Enabled', 'Enable corporate SSO/LDAP login via load-balancer email header. When false, only username/password login is available.', false] as const,
+      ['infra.ssoEmailHeader', 'X-Forwarded-Email', 'INFRA', 'SSO Email Header', 'HTTP header name the load balancer sets with the authenticated user email', false] as const,
+      ['infra.ssoAllowedDomain', 'zebra.com', 'INFRA', 'SSO Allowed Email Domain', 'Only @zebra.com (or configured domain) emails may register or sign in via SSO', false] as const,
+    ];
+
+    for (const [key, value, category, label, description, isSecret] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: { key, value, category, label, description, isSecret, updatedBy: 'system' },
+      });
+      this.cache.set(key, {
+        key, value, category, label, description, isSecret,
+        updatedBy: 'system', updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
+  }
+
+  /** Master break-glass session invalidation counter — added when upgrading older databases. */
+  private async ensureAuthTokenRevocationConfig(): Promise<void> {
+    const key = 'auth.masterTokenVersion';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: '0',
+        category: 'AUTH',
+        label: 'Master Token Version',
+        description: 'Incremented to invalidate all master-account JWT sessions',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: '0',
+      category: 'AUTH',
+      label: 'Master Token Version',
+      description: 'Incremented to invalidate all master-account JWT sessions',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
   /**
    * Get a string config value. Returns defaultVal if not found.
    */
@@ -238,9 +333,10 @@ class ConfigService {
    */
   getInt(key: string, defaultVal: number = 0): number {
     const v = this.cache.get(key)?.value;
-    if (v === undefined || v === '') return defaultVal;
+    if (v === undefined || v === '') return clampConfigInt(key, defaultVal);
     const parsed = parseInt(v, 10);
-    return Number.isFinite(parsed) ? parsed : defaultVal;
+    if (!Number.isFinite(parsed)) return clampConfigInt(key, defaultVal);
+    return clampConfigInt(key, parsed);
   }
 
   /**
@@ -317,6 +413,8 @@ class ConfigService {
       throw new Error(`Config key "${key}" not found`);
     }
 
+    validateConfigValue(key, value);
+
     let storedValue = value;
     // Only require encryption for secrets.db2Password
     if (
@@ -361,6 +459,10 @@ class ConfigService {
     requiresRestart: boolean;
     categories: string[];
   }> {
+    for (const { key, value } of updates) {
+      validateConfigValue(key, value);
+    }
+
     const categories = new Set<string>();
     let requiresRestart = false;
 

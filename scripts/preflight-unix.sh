@@ -379,7 +379,7 @@ fi
 
 section "AppConfig Unix Infra Paths"
 if [[ "$CHECK_RUNTIME" == "true" && -n "${DB_PATH:-}" && -f "${DB_PATH:-}" ]] && cmd_exists sqlite3; then
-  for key in infra.db2JjsPath infra.db2LibDir infra.db2ConnDir; do
+  for key in infra.db2JavaPath infra.db2LibDir infra.db2ConnDir; do
     VAL="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='${key}';" 2>/dev/null || true)"
     if [[ -z "$VAL" ]]; then
       warn "$key is empty (configure via Admin → Config or setup-db.sh)"
@@ -387,7 +387,7 @@ if [[ "$CHECK_RUNTIME" == "true" && -n "${DB_PATH:-}" && -f "${DB_PATH:-}" ]] &&
     fi
     if [[ "$VAL" == *'\'* || "$VAL" =~ ^[A-Za-z]: ]]; then
       fail "$key contains a Windows path ($VAL) — use Unix paths on WSL/Linux"
-    elif [[ "$key" == "infra.db2JjsPath" && ! -x "$VAL" && "$VAL" != "jjs" ]]; then
+    elif [[ "$key" == "infra.db2JavaPath" && ! -x "$VAL" && "$VAL" != "java" ]]; then
       warn "$key points to missing/non-executable path: $VAL"
     elif [[ "$key" == "infra.db2LibDir" && ! -d "$VAL" ]]; then
       warn "$key directory not found: $VAL"
@@ -424,25 +424,25 @@ if [[ "$CHECK_DB2" == "true" ]]; then
   if cmd_exists java; then
     JAVA_VER="$(java -version 2>&1 | head -n1)"
     echo "java: $JAVA_VER"
-    if echo "$JAVA_VER" | grep -E '1\.8|\"8' >/dev/null 2>&1; then
-      pass "Java 8 detected"
+    if echo "$JAVA_VER" | grep -E 'version \"(1[7-9]|[2-9][0-9])|\"17|\"21|\"25' >/dev/null 2>&1; then
+      pass "Java 17+ detected"
     else
-      warn "Java 8 not detected (DB2 bridge expects Java 8/jjs)"
+      warn "Java 17+ recommended for DB2 JDBC connector (found: $JAVA_VER)"
     fi
   else
     fail "java not found (required for DB2 features)"
   fi
 
-  if cmd_exists jjs; then
-    pass "jjs found"
+  if [[ -f "$APP_DIR/lib/DB2Connector.class" ]]; then
+    pass "lib/DB2Connector.class found"
+  elif [[ -f "$APP_DIR/lib/DB2Connector.java" ]] && cmd_exists javac; then
+    if javac -cp "$APP_DIR/lib/db2jcc4.jar" -d "$APP_DIR/lib" "$APP_DIR/lib/DB2Connector.java" 2>/dev/null; then
+      pass "lib/DB2Connector.class compiled from source"
+    else
+      fail "lib/DB2Connector.class missing and compile failed"
+    fi
   else
-    fail "jjs not found (required for DB2 features)"
-  fi
-
-  if [[ -f "$APP_DIR/lib/DB2Connector.js" ]]; then
-    pass "lib/DB2Connector.js found"
-  else
-    fail "lib/DB2Connector.js missing"
+    fail "lib/DB2Connector.class missing (run scripts/compile-db2-connector.sh)"
   fi
 
   if [[ -f "$APP_DIR/lib/db2jcc4.jar" ]]; then
@@ -458,11 +458,14 @@ if [[ "$CHECK_DB2" == "true" ]]; then
   fi
 
   if [[ -n "${DB_PATH:-}" && -f "${DB_PATH:-}" ]] && cmd_exists sqlite3; then
-    CFG_JJS="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='infra.db2JjsPath';" 2>/dev/null || true)"
-    if [[ -n "$CFG_JJS" && ( -x "$CFG_JJS" || "$CFG_JJS" == "jjs" ) ]]; then
-      pass "AppConfig infra.db2JjsPath resolves for DB2 ($CFG_JJS)"
-    elif [[ -n "$CFG_JJS" ]]; then
-      fail "AppConfig infra.db2JjsPath not executable: $CFG_JJS (cron/DB2 will fail — set to: $(command -v jjs 2>/dev/null || echo /usr/bin/jjs))"
+    CFG_JAVA="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='infra.db2JavaPath';" 2>/dev/null || true)"
+    if [[ -z "$CFG_JAVA" ]]; then
+      CFG_JAVA="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='infra.db2JjsPath';" 2>/dev/null || true)"
+    fi
+    if [[ -n "$CFG_JAVA" && ( -x "$CFG_JAVA" || "$CFG_JAVA" == "java" ) ]]; then
+      pass "AppConfig infra.db2JavaPath resolves for DB2 ($CFG_JAVA)"
+    elif [[ -n "$CFG_JAVA" ]]; then
+      fail "AppConfig infra.db2JavaPath not executable: $CFG_JAVA (cron/DB2 will fail — set to: $(command -v java 2>/dev/null || echo /usr/bin/java))"
     fi
   fi
 fi

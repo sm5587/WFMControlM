@@ -1,22 +1,22 @@
-import java.io.*;
 import java.sql.*;
 
 /**
- * DB2 Connector — LEGACY reference only (not used at runtime).
- * The actual connector used is DB2Connector.js (Nashorn/jjs).
+ * DB2 Connector — compiled Java JDBC bridge (Java 17+).
  * Connection credentials are passed via environment variables from the backend.
- * 
+ *
  * Usage:
- *   java -cp "lib/db2jcc4.jar;lib" DB2Connector <action> <client> [sql]
- * 
+ *   java -cp "lib/db2jcc4.jar:lib" DB2Connector <action> <client> [sql]
+ *
  * Actions:
  *   test   — test connectivity, print server info as JSON
  *   query  — execute a SELECT query, return results as JSON
  *   tables — list WFM-related tables as JSON
- * 
+ *
  * Output: JSON to stdout (parseable by Node.js)
  */
 public class DB2Connector {
+
+    private static final String DEFAULT_DRIVER = "com.ibm.db2.jcc.DB2Driver";
 
     public static void main(String[] args) {
         if (args.length < 2) {
@@ -28,20 +28,22 @@ public class DB2Connector {
         String client = args[1].toUpperCase();
         String sql = args.length > 2 ? args[2] : null;
 
+        String jdbcUrl = System.getenv("DB2_URL_OVERRIDE");
+        String username = System.getenv("DB2_USER_OVERRIDE");
+        String password = System.getenv("DB2_PASS_OVERRIDE");
+
+        if (jdbcUrl == null || jdbcUrl.isBlank()
+            || username == null || username.isBlank()
+            || password == null || password.isBlank()) {
+            printError("Missing connection details for " + client
+                + ". Ensure DB2 credentials are configured in the database for this client.");
+            System.exit(1);
+        }
+
         Connection conn = null;
         try {
-            // Read connection file
-            String connFile = "dbconnections/Production/" + client + "_DBString.txt";
-            String[] connInfo = readConnectionFile(connFile);
-            String jdbcUrl = connInfo[0];
-            String username = connInfo[1];
-            String password = connInfo[2];
-            String driver = connInfo[3];
+            Class.forName(DEFAULT_DRIVER);
 
-            // Load driver
-            Class.forName(driver);
-
-            // Connect
             long startMs = System.currentTimeMillis();
             conn = DriverManager.getConnection(jdbcUrl, username, password);
             long connMs = System.currentTimeMillis() - startMs;
@@ -51,8 +53,8 @@ public class DB2Connector {
                     doTest(conn, client, jdbcUrl, connMs);
                     break;
                 case "query":
-                    if (sql == null || sql.trim().isEmpty()) {
-                        printError("SQL query required for 'query' action");
+                    if (sql == null || sql.isBlank()) {
+                        printError("SQL required for 'query' action");
                         System.exit(1);
                     }
                     doQuery(conn, sql);
@@ -64,9 +66,8 @@ public class DB2Connector {
                     printError("Unknown action: " + action);
                     System.exit(1);
             }
-
         } catch (Exception e) {
-            printError(e.getMessage());
+            printError(e.getMessage() != null ? e.getMessage() : String.valueOf(e));
             System.exit(1);
         } finally {
             if (conn != null) {
@@ -75,12 +76,9 @@ public class DB2Connector {
         }
     }
 
-    // ---- Actions ----
-
     private static void doTest(Connection conn, String client, String url, long connMs) throws SQLException {
         DatabaseMetaData meta = conn.getMetaData();
 
-        // Get server time
         String serverTime = "";
         try {
             Statement stmt = conn.createStatement();
@@ -102,7 +100,7 @@ public class DB2Connector {
         sb.append("\"serverTime\":\"").append(escJson(serverTime)).append("\",");
         sb.append("\"connectionMs\":").append(connMs);
         sb.append("}");
-        System.out.println(sb.toString());
+        System.out.println(sb);
     }
 
     private static void doQuery(Connection conn, String sql) throws SQLException {
@@ -112,7 +110,6 @@ public class DB2Connector {
         ResultSetMetaData meta = rs.getMetaData();
         int colCount = meta.getColumnCount();
 
-        // Columns
         StringBuilder sb = new StringBuilder();
         sb.append("{\"success\":true,\"columns\":[");
         for (int i = 1; i <= colCount; i++) {
@@ -121,7 +118,6 @@ public class DB2Connector {
         }
         sb.append("],\"rows\":[");
 
-        // Rows
         int rowCount = 0;
         while (rs.next()) {
             if (rowCount > 0) sb.append(",");
@@ -147,37 +143,19 @@ public class DB2Connector {
         sb.append(",\"query\":\"").append(escJson(sql)).append("\"");
         sb.append("}");
 
-        System.out.println(sb.toString());
+        System.out.println(sb);
         rs.close();
         stmt.close();
     }
 
     private static void doTables(Connection conn) throws SQLException {
-        // Find WFM-related tables across all schemas
-        String sql = "SELECT TABSCHEMA, TABNAME, CARD AS ROW_COUNT " +
-                     "FROM SYSCAT.TABLES WHERE TYPE = 'T' " +
-                     "AND (TABNAME LIKE '%JOB%' OR TABNAME LIKE '%BATCH%' " +
-                     "OR TABNAME LIKE '%SCHEDULE%' OR TABNAME LIKE '%TASK%' " +
-                     "OR TABNAME LIKE '%WFM%' OR TABNAME LIKE '%CRON%') " +
-                     "ORDER BY TABSCHEMA, TABNAME FETCH FIRST 100 ROWS ONLY";
+        String sql = "SELECT TABSCHEMA, TABNAME, CARD AS ROW_COUNT "
+            + "FROM SYSCAT.TABLES WHERE TYPE = 'T' "
+            + "AND (TABNAME LIKE '%JOB%' OR TABNAME LIKE '%BATCH%' "
+            + "OR TABNAME LIKE '%SCHEDULE%' OR TABNAME LIKE '%TASK%' "
+            + "OR TABNAME LIKE '%WFM%' OR TABNAME LIKE '%CRON%') "
+            + "ORDER BY TABSCHEMA, TABNAME FETCH FIRST 100 ROWS ONLY";
         doQuery(conn, sql);
-    }
-
-    // ---- Helpers ----
-
-    private static String[] readConnectionFile(String path) throws IOException {
-        BufferedReader br = new BufferedReader(new FileReader(path));
-        String[] lines = new String[4];
-        for (int i = 0; i < 4; i++) {
-            String line = br.readLine();
-            if (line == null) {
-                br.close();
-                throw new IOException("Connection file incomplete: " + path);
-            }
-            lines[i] = line.trim();
-        }
-        br.close();
-        return lines;
     }
 
     private static void printError(String message) {
@@ -187,9 +165,9 @@ public class DB2Connector {
     private static String escJson(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t");
     }
 }

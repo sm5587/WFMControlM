@@ -10,9 +10,11 @@
 import { Client as SSH2Client } from 'ssh2';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
-import { generateSync } from 'otplib';
+import { loadCredentials, sshConnect, sshExec } from '../utils/ssh-client';
 
 const logger = createServiceLogger('DB2Pool');
+
+export { sshExec };
 
 // ============================================================
 // Types
@@ -41,93 +43,6 @@ interface DB2ConnectParams {
   schema: string | null;
   db2Username: string;
   db2Password: string;
-}
-
-interface SSHCredentials {
-  username: string;
-  password: string;
-  totpSecret: string;
-}
-
-// ============================================================
-// SSH Helper (shared)
-// ============================================================
-
-function sshConnect(hostname: string, creds: SSHCredentials): Promise<SSH2Client> {
-  return new Promise((resolve, reject) => {
-    const conn = new SSH2Client();
-    const timeoutMs = config.ssh.timeout || 15000;
-
-    const timer = setTimeout(() => {
-      conn.end();
-      reject(new Error(`SSH connection to ${hostname} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    conn.on('ready', () => {
-      clearTimeout(timer);
-      resolve(conn);
-    });
-
-    conn.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new Error(`SSH error connecting to ${hostname}: ${err.message}`));
-    });
-
-    conn.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
-      const responses: string[] = [];
-      for (const prompt of prompts) {
-        const p = prompt.prompt.toLowerCase();
-        if (p.includes('first') || p.includes('password')) {
-          responses.push(creds.password);
-        } else if (p.includes('second') || p.includes('token') || p.includes('factor')) {
-          if (creds.totpSecret) {
-            const token = generateSync({ secret: creds.totpSecret });
-            responses.push(token);
-          } else {
-            responses.push('');
-          }
-        } else {
-          responses.push(creds.password);
-        }
-      }
-      finish(responses);
-    });
-
-    const connectOpts: any = {
-      host: hostname,
-      port: config.ssh.port,
-      username: creds.username,
-      tryKeyboard: true,
-      readyTimeout: timeoutMs,
-    };
-    if (!creds.totpSecret) {
-      connectOpts.password = creds.password;
-      connectOpts.authHandler = ['password', 'keyboard-interactive'];
-    }
-    conn.connect(connectOpts);
-  });
-}
-
-export function sshExec(conn: SSH2Client, command: string, timeoutSec = 60): Promise<string> {
-  return new Promise((resolve, reject) => {
-    conn.exec(command, (err, stream) => {
-      if (err) return reject(err);
-
-      let stdout = '';
-      let stderr = '';
-      const timer = setTimeout(() => {
-        stream.close();
-        reject(new Error(`Command timed out after ${timeoutSec}s`));
-      }, timeoutSec * 1000);
-
-      stream.on('data', (data: Buffer) => { stdout += data.toString(); });
-      stream.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-      stream.on('close', () => {
-        clearTimeout(timer);
-        resolve(stdout);
-      });
-    });
-  });
 }
 
 // ============================================================
@@ -298,11 +213,7 @@ class DB2ConnectionPool {
   // ============================================================
 
   private async createConnection(clientId: string, params: DB2ConnectParams): Promise<DB2PooledConnection> {
-    const sshCreds: SSHCredentials = {
-      username: config.ssh.username,
-      password: config.ssh.password,
-      totpSecret: config.ssh.totpSecret,
-    };
+    const sshCreds = loadCredentials();
 
     logger.info(`Opening new DB2 connection for ${clientId} via ${params.hostname} (${this.activeCount + 1}/${this.maxConnections})`);
 

@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useAppName } from '../../contexts/ConfigContext';
 import { instanceUrlHint } from '../DeploymentBadge';
 
-export default function LoginPage() {
+export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
   const appName = useAppName();
   const { login, sessionExpired } = useAuth();
   const [username, setUsername] = useState('');
@@ -43,6 +43,13 @@ export default function LoginPage() {
         {/* Card */}
         <div className="bg-slate-800 rounded-xl shadow-2xl p-8 border border-slate-700">
           <h2 className="text-lg font-semibold text-white mb-6">Sign in</h2>
+
+          {ssoEmail && (
+            <div className="mb-4 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-300 text-sm">
+              <User className="w-4 h-4 flex-shrink-0 text-slate-400" />
+              Corporate SSO: {ssoEmail}
+            </div>
+          )}
 
           {sessionExpired && (
             <div className="mb-4 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-amber-900/40 border border-amber-700/50 text-amber-300 text-sm">

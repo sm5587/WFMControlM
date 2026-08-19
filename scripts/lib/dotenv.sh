@@ -141,7 +141,7 @@ apply_clients_dml_sql() {
 configure_unix_infra_paths() {
   local app_dir="$1"
   local db_path="$2"
-  local lib_dir jjs_path conn_dir
+  local lib_dir java_path conn_dir
 
   lib_dir="$app_dir/lib"
   if [[ -d "$lib_dir" ]]; then
@@ -153,11 +153,17 @@ configure_unix_infra_paths() {
     sqlite3 "$db_path" "UPDATE AppConfig SET value='${conn_dir}', updatedAt=CURRENT_TIMESTAMP WHERE key='infra.db2ConnDir' AND (COALESCE(value,'')='' OR value LIKE 'C:%' OR value LIKE 'c:%' OR value LIKE '%\\\\%');"
   fi
 
-  if command -v jjs >/dev/null 2>&1; then
-    jjs_path="$(command -v jjs)"
-    sqlite3 "$db_path" "UPDATE AppConfig SET value='${jjs_path}', updatedAt=CURRENT_TIMESTAMP WHERE key='infra.db2JjsPath' AND (COALESCE(value,'')='' OR value LIKE 'C:%' OR value LIKE 'c:%' OR value LIKE '%\\\\%');"
-    printf '[db-bootstrap] Set infra.db2JjsPath=%s\n' "$jjs_path"
+  if command -v java >/dev/null 2>&1; then
+    java_path="$(command -v java)"
+    sqlite3 "$db_path" "UPDATE AppConfig SET value='${java_path}', updatedAt=CURRENT_TIMESTAMP WHERE key='infra.db2JavaPath' AND (COALESCE(value,'')='' OR value LIKE 'C:%' OR value LIKE 'c:%' OR value LIKE '%\\\\%');"
+    printf '[db-bootstrap] Set infra.db2JavaPath=%s\n' "$java_path"
   else
-    printf '[db-bootstrap] WARNING: jjs not found on PATH — install Java 8 OpenJDK (DB2 bridge requires jjs)\n' >&2
+    printf '[db-bootstrap] WARNING: java not found on PATH — install JDK 17+ (DB2 bridge requires java)\n' >&2
+  fi
+
+  if [[ -f "$lib_dir/DB2Connector.java" && ! -f "$lib_dir/DB2Connector.class" ]] && command -v javac >/dev/null 2>&1; then
+    if javac --release 17 -cp "$lib_dir/db2jcc4.jar" -d "$lib_dir" "$lib_dir/DB2Connector.java" 2>/dev/null; then
+      printf '[db-bootstrap] Compiled lib/DB2Connector.class\n'
+    fi
   fi
 }

@@ -2,11 +2,31 @@ node_modules/
 dist/
 build/
 .env
+.env.local
+backend/.env
+
+# Logs and diagnostic output
 *.log
+combined*.log
+error.log
 hs_err_pid*.log
-.DS_Store
+logs/
+
+# Test coverage output
 coverage/
+backend/coverage/
 .nyc_output/
+
+# Temp / generated build artifacts
+*.tmp
+*.tmp.*
+*.class
+
+# Regenerated analysis outputs (see scripts/)
+/Watcher_Analysis.xlsx
+reports/
+
+.DS_Store
 prisma/migrations/
 deprecated/
 .saved_credentials.json

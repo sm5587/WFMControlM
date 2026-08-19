@@ -39,6 +39,21 @@ jest.mock('../../src/database/prisma', () => ({
   },
 }));
 
+jest.mock('../../src/services/config-service', () => ({
+  configService: {
+    getBool: jest.fn(() => false),
+    getString: jest.fn(() => '0'),
+  },
+}));
+
+jest.mock('../../src/services/token-revocation-service', () => ({
+  tokenRevocationService: {
+    createSessionToken: jest.fn(async (payload: Record<string, unknown>) =>
+      jwt.sign({ ...payload, tv: 0 }, 'test-jwt-secret', { expiresIn: '1h', jwtid: 'test-jti' }),
+    ),
+  },
+}));
+
 // ---- Mock middleware (not needed for login route) ----
 jest.mock('../../src/middleware', () => ({
   authMiddleware: jest.fn((_req: any, _res: any, next: any) => next()),
@@ -51,8 +66,17 @@ jest.mock('../../src/middleware', () => ({
 import bcrypt from 'bcryptjs';
 import authRouter from '../../src/routes/auth';
 import { APP_FUNCTIONS } from '../../src/constants/functions';
+import { SESSION_COOKIE_NAME } from '../../src/utils/session-cookie';
 
 // Helpers
+function sessionTokenFromResponse(res: { headers: Record<string, unknown> }): string {
+  const setCookie = res.headers['set-cookie'];
+  const cookies = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
+  const line = cookies.find(c => c.startsWith(`${SESSION_COOKIE_NAME}=`));
+  expect(line).toBeDefined();
+  const raw = line!.split(';')[0].slice(SESSION_COOKIE_NAME.length + 1);
+  return decodeURIComponent(raw);
+}
 const { config: mockConfig } = jest.requireMock('../../src/config') as {
   config: { master: { username: string; passwordHash: string }; jwtSecret: string; jwtExpiresIn: string };
 };
@@ -145,7 +169,7 @@ describe('POST /api/auth/login — master account success', () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
   });
 
-  it('returns 200 with a JWT token on successful master login', async () => {
+  it('returns 200 and sets HttpOnly session cookie on successful master login', async () => {
     const app = buildApp();
     const res = await request(app)
       .post('/api/auth/login')
@@ -153,8 +177,9 @@ describe('POST /api/auth/login — master account success', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.token).toBeDefined();
-    expect(typeof res.body.data.token).toBe('string');
+    expect(res.body.data.token).toBeUndefined();
+    const token = sessionTokenFromResponse(res);
+    expect(typeof token).toBe('string');
   });
 
   it('returns user object with master identity (no DB id)', async () => {
@@ -165,7 +190,7 @@ describe('POST /api/auth/login — master account success', () => {
 
     expect(res.body.data.user.id).toBe('master');
     expect(res.body.data.user.username).toBe(MASTER_USER);
-    expect(res.body.data.user.displayName).toBe('Master Admin');
+    expect(res.body.data.user.displayName).toBe('WFM Admin');
   });
 
   it('JWT contains isMaster: true', async () => {
@@ -174,7 +199,8 @@ describe('POST /api/auth/login — master account success', () => {
       .post('/api/auth/login')
       .send({ username: MASTER_USER, password: MASTER_PASS });
 
-    const payload = jwt.decode(res.body.data.token) as Record<string, any>;
+    const token = sessionTokenFromResponse(res);
+    const payload = jwt.decode(token) as Record<string, any>;
     expect(payload.isMaster).toBe(true);
   });
 
@@ -184,7 +210,8 @@ describe('POST /api/auth/login — master account success', () => {
       .post('/api/auth/login')
       .send({ username: MASTER_USER, password: MASTER_PASS });
 
-    const payload = jwt.decode(res.body.data.token) as Record<string, any>;
+    const token = sessionTokenFromResponse(res);
+    const payload = jwt.decode(token) as Record<string, any>;
     const permissions: Record<string, { r: boolean; w: boolean }> = payload.permissions;
 
     const allFunctionIds = Object.values(APP_FUNCTIONS).map(f => f.id);
@@ -204,7 +231,8 @@ describe('POST /api/auth/login — master account success', () => {
       .post('/api/auth/login')
       .send({ username: MASTER_USER, password: MASTER_PASS });
 
-    const payload = jwt.decode(res.body.data.token) as Record<string, any>;
+    const token = sessionTokenFromResponse(res);
+    const payload = jwt.decode(token) as Record<string, any>;
     const permCount = Object.keys(payload.permissions).length;
     const fnCount = Object.keys(APP_FUNCTIONS).length;
 

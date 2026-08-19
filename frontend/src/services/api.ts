@@ -8,17 +8,11 @@ import { ApiResponse, Job, JobExecution, DashboardStats, AlertEvent, Client, App
 const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Request interceptor for auth token
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('wfm_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+// Session JWT is sent automatically via HttpOnly cookie (withCredentials)
 
 // Callback set by AuthContext so the interceptor can trigger logout
 let _onUnauthorized: (() => void) | null = null;
@@ -78,12 +72,11 @@ async function postNdjsonStream<
   onEvent: (event: TEvent) => void,
   labels: { failed: string; incomplete: string; timeout: string },
 ): Promise<TComplete> {
-  const token = localStorage.getItem('wfm_token');
   const resp = await fetch(`/api${path}`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body ?? {}),
   });
@@ -232,14 +225,30 @@ export const alertsApi = {
 
 // ---- Auth ----
 export const authApi = {
-  login: (username: string, password: string): Promise<ApiResponse<{ token: string; user: { id: string; username: string; displayName: string; email: string } }>> =>
+  login: (username: string, password: string): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string } }>> =>
     api.post('/auth/login', { username, password }),
 
-  me: (): Promise<ApiResponse<{ id: string; username: string; displayName: string; email: string }>> =>
+  logout: (): Promise<ApiResponse<{ message: string }>> =>
+    api.post('/auth/logout'),
+
+  me: (): Promise<ApiResponse<{ id: string; username: string; displayName: string; email: string; timezone: string; permissions: Record<string, { r: boolean; w: boolean }> }>> =>
     api.get('/auth/me'),
 
   register: (data: { username: string; email: string; displayName: string; password: string }): Promise<ApiResponse<any>> =>
     api.post('/auth/register', data),
+
+  ssoStatus: (): Promise<ApiResponse<{
+    ssoEnabled: boolean;
+    email: string | null;
+    status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'ACTIVE' | 'DOMAIN_DENIED' | null;
+    canLogin: boolean;
+    displayName?: string | null;
+    message?: string;
+  }>> =>
+    api.get('/auth/sso-status'),
+
+  ssoLogin: (): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string } }>> =>
+    api.post('/auth/sso-login'),
 };
 
 // ---- Admin types ----
@@ -252,6 +261,26 @@ export interface AdminUser {
   isActive: boolean;
   createdAt: string;
   profiles: { userId: string; profileId: string; profile: { id: string; name: string } }[];
+}
+
+export interface AccessRequest {
+  id: string;
+  email: string;
+  displayName?: string | null;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requestedAt: string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewNote?: string | null;
+  sourceIp?: string | null;
+  userId?: string | null;
+  user?: {
+    id: string;
+    username: string;
+    displayName: string;
+    isActive: boolean;
+    profiles: { profile: { id: string; name: string } }[];
+  } | null;
 }
 
 export interface AdminProfile {
@@ -291,6 +320,18 @@ export interface PurgeConfig {
 export const adminApi = {
   getUsers: (): Promise<ApiResponse<AdminUser[]>> =>
     api.get('/admin/users'),
+
+  getAccessRequests: (status?: string): Promise<ApiResponse<AccessRequest[]>> =>
+    api.get('/admin/access-requests', { params: status ? { status } : undefined }),
+
+  approveAccessRequest: (
+    id: string,
+    data: { profileId: string; displayName?: string; username?: string },
+  ): Promise<ApiResponse<{ userId: string; username: string }>> =>
+    api.post(`/admin/access-requests/${id}/approve`, data),
+
+  rejectAccessRequest: (id: string, note?: string): Promise<ApiResponse<any>> =>
+    api.post(`/admin/access-requests/${id}/reject`, { note }),
 
   updateUser: (id: string, data: { displayName?: string; email?: string; timezone?: string; isActive?: boolean; password?: string }): Promise<ApiResponse<any>> =>
     api.patch(`/admin/users/${id}`, data),
@@ -681,6 +722,38 @@ export const configApi = {
 
   reveal: (key: string): Promise<ApiResponse<{ value: string }>> =>
     api.post('/config/reveal', { key }),
+
+  reencryptPreflight: (): Promise<ApiResponse<ReencryptPreflight>> =>
+    api.get('/config/reencrypt/preflight'),
+
+  reencrypt: (): Promise<ApiResponse<ReencryptResult>> =>
+    api.post('/config/reencrypt'),
 };
+
+export interface ReencryptClientCounts {
+  total: number;
+  empty: number;
+  plaintext: number;
+  encryptedCurrent: number;
+  encryptedPrevious: number;
+  unreadable: number;
+}
+
+export interface ReencryptPreflight {
+  encryptionConfigured: boolean;
+  previousKeyConfigured: boolean;
+  rotationInProgress: boolean;
+  clients: ReencryptClientCounts;
+  appConfigDb2Password: { state: string };
+  needsReencrypt: number;
+}
+
+export interface ReencryptResult {
+  updated: number;
+  skipped: number;
+  failed: number;
+  failedClients: string[];
+  appConfigUpdated: boolean;
+}
 
 export default api;

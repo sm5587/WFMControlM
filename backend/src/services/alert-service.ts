@@ -64,6 +64,40 @@ export class AlertService extends EventEmitter {
   }
 
   /**
+   * Build nodemailer transport options from current config.
+   * When secrets.smtpTlsEnabled=false (default), legacy plaintext-friendly behavior is used.
+   * Local Mailpit (127.0.0.1:1025) always uses dev settings regardless of the flag.
+   */
+  private buildSmtpTransportOptions(host: string, port: number): SMTPTransport.Options {
+    const isLocalMailpit = host === '127.0.0.1' && port === 1025;
+    const tlsEnabled = !isLocalMailpit && config.smtp.tlsEnabled;
+    const hasAuth = !!(config.smtp.user);
+
+    if (!tlsEnabled) {
+      return {
+        host,
+        port,
+        secure: port === 465,
+        family: 4,
+        ...(hasAuth
+          ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
+          : { ignoreTLS: true }),
+        tls: { rejectUnauthorized: false },
+      } as unknown as SMTPTransport.Options;
+    }
+
+    return {
+      host,
+      port,
+      secure: port === 465,
+      requireTLS: port !== 465,
+      family: 4,
+      ...(hasAuth ? { auth: { user: config.smtp.user, pass: config.smtp.pass } } : {}),
+      tls: { rejectUnauthorized: config.smtp.tlsRejectUnauthorized },
+    } as unknown as SMTPTransport.Options;
+  }
+
+  /**
    * Initialize email transporter
    */
   private initializeEmailTransporter(): void {
@@ -75,18 +109,13 @@ export class AlertService extends EventEmitter {
     }
 
     const { host, port } = endpoint;
+    const isLocalMailpit = host === '127.0.0.1' && port === 1025;
+    const tlsEnabled = !isLocalMailpit && config.smtp.tlsEnabled;
     const hasAuth = !!(config.smtp.user);
-    this.emailTransporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      family: 4, // prefer IPv4 (avoids ECONNREFUSED on ::1)
-      ...(hasAuth
-        ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
-        : { ignoreTLS: true }),
-      tls: { rejectUnauthorized: false },
-    } as unknown as SMTPTransport.Options);
-    logger.info(`Email transporter initialized (host=${host}:${port}, auth=${hasAuth ? 'yes' : 'none'})`);
+    this.emailTransporter = nodemailer.createTransport(this.buildSmtpTransportOptions(host, port));
+    logger.info(
+      `Email transporter initialized (host=${host}:${port}, auth=${hasAuth ? 'yes' : 'none'}, tls=${tlsEnabled ? 'required' : 'legacy'})`
+    );
   }
 
   /**

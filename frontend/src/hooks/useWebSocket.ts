@@ -1,10 +1,11 @@
 // ============================================================
-// WebSocket Hook - Real-time updates
+// WebSocket Hook - Real-time updates (cookie-authenticated)
 // ============================================================
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useConfig } from '../contexts/ConfigContext';
+import { useAuth } from '../context/AuthContext';
 
 interface WSEvent {
   type: string;
@@ -18,9 +19,18 @@ export function useWebSocket() {
   const [lastEvent, setLastEvent] = useState<WSEvent | null>(null);
   const listenersRef = useRef<Map<string, Set<(data: any) => void>>>(new Map());
   const { getInt } = useConfig();
+  const { user } = useAuth();
 
   useEffect(() => {
+    if (!user) {
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+      setIsConnected(false);
+      return;
+    }
+
     const socket = io(window.location.origin, {
+      withCredentials: true,
       transports: ['websocket', 'polling'],
       reconnectionAttempts: getInt('display.wsReconnectAttempts', 10),
       reconnectionDelay: getInt('display.wsReconnectDelayMs', 1000),
@@ -30,15 +40,23 @@ export function useWebSocket() {
 
     socket.on('connect', () => {
       setIsConnected(true);
-      console.log('WebSocket connected');
     });
 
     socket.on('disconnect', () => {
       setIsConnected(false);
-      console.log('WebSocket disconnected');
     });
 
-    // Forward all events to registered listeners
+    socket.on('connect_error', (err) => {
+      setIsConnected(false);
+      if (
+        err.message === 'Authentication required'
+        || err.message === 'Invalid or expired token'
+        || err.message === 'Session revoked'
+      ) {
+        socket.disconnect();
+      }
+    });
+
     const eventTypes = [
       'execution:started', 'execution:progress', 'execution:completed', 'execution:failed',
       'alert:triggered', 'dashboard:update',
@@ -56,8 +74,9 @@ export function useWebSocket() {
 
     return () => {
       socket.disconnect();
+      socketRef.current = null;
     };
-  }, []);
+  }, [user, getInt]);
 
   const subscribe = useCallback((event: string, callback: (data: any) => void) => {
     if (!listenersRef.current.has(event)) {

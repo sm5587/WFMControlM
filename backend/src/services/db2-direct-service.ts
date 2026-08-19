@@ -16,66 +16,85 @@ import { createServiceLogger } from '../utils/logger';
 import { keeperService } from './keeper-service';
 import { configService } from './config-service';
 import { decryptClientDb2Password } from '../utils/client-db2-password';
+import { clearSensitiveEnvVars } from '../utils/secure-memory';
 import { prisma } from '../database/prisma';
 
 const execFileAsync = promisify(execFile);
 const logger = createServiceLogger('DB2Direct');
 
-/** Resolve jjs binary — never use a Windows path on Linux/WSL. */
-function resolveJjsPath(configured: string): string {
+/** True when the path points at Java 8 / Nashorn jjs — not usable for DB2Connector.class. */
+function isLegacyJava8Path(javaPath: string): boolean {
+  const lower = javaPath.toLowerCase().replace(/\\/g, '/');
+  return lower.includes('jjs')
+    || /jre1\.8|jdk1\.8|java-1\.8|java-8-openjdk|\/1\.8\.0/.test(lower);
+}
+
+function isExistingJavaBinary(javaPath: string): boolean {
+  return javaPath === 'java'
+    || javaPath === 'java.exe'
+    || fs.existsSync(javaPath);
+}
+
+/** Resolve java binary (JDK 17+). Skips legacy Java 8 / jjs installs. */
+function resolveJavaPath(configured: string): string {
   const trimmed = configured?.trim();
   if (trimmed) {
     const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed) || trimmed.includes('\\');
     if (process.platform !== 'win32' && isWindowsPath) {
-      logger.warn(`[DB2_INIT] Ignoring Windows jjs path on ${process.platform}: ${trimmed}`);
-    } else if (fs.existsSync(trimmed)) {
-      return trimmed;
-    } else if (trimmed === 'jjs' || trimmed === 'jjs.exe') {
+      logger.warn(`[DB2_INIT] Ignoring Windows java path on ${process.platform}: ${trimmed}`);
+    } else if (isLegacyJava8Path(trimmed)) {
+      logger.warn(`[DB2_INIT] Ignoring legacy Java 8/jjs path: ${trimmed}`);
+    } else if (isExistingJavaBinary(trimmed)) {
       return trimmed;
     } else {
-      logger.warn(`[DB2_INIT] Configured jjs path not found (${trimmed}); auto-detecting`);
+      logger.warn(`[DB2_INIT] Configured java path not found (${trimmed}); auto-detecting`);
     }
   }
-  if (process.env.JJS_PATH?.trim()) {
-    const fromEnv = process.env.JJS_PATH.trim();
-    if (fs.existsSync(fromEnv) || fromEnv === 'jjs' || fromEnv === 'jjs.exe') return fromEnv;
+  if (process.env.JAVA_PATH?.trim()) {
+    const fromEnv = process.env.JAVA_PATH.trim();
+    if (!isLegacyJava8Path(fromEnv) && isExistingJavaBinary(fromEnv)) return fromEnv;
+  }
+  if (process.env.JAVA_HOME?.trim()) {
+    const fromHome = path.join(process.env.JAVA_HOME.trim(), 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    if (!isLegacyJava8Path(fromHome) && fs.existsSync(fromHome)) return fromHome;
   }
 
   const candidates: string[] = [];
   if (process.platform === 'win32') {
-    candidates.push(
-      'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\jjs.exe',
-      'C:\\Program Files (x86)\\Java\\jre1.8.0_491\\bin\\jjs.exe',
-    );
-    for (const root of ['C:\\Program Files\\Java', 'C:\\Program Files (x86)\\Java']) {
+    // Prefer modern JDK installs before legacy Oracle Java 8 folders.
+    for (const root of [
+      'C:\\Program Files\\Eclipse Adoptium',
+      'C:\\Program Files\\Microsoft',
+      'C:\\Program Files\\Java',
+      'C:\\Program Files (x86)\\Java',
+    ]) {
       try {
         if (!fs.existsSync(root)) continue;
         for (const entry of fs.readdirSync(root)) {
-          const exe = path.join(root, entry, 'bin', 'jjs.exe');
-          if (fs.existsSync(exe)) candidates.push(exe);
+          const exe = path.join(root, entry, 'bin', 'java.exe');
+          if (fs.existsSync(exe) && !isLegacyJava8Path(exe)) candidates.push(exe);
         }
       } catch { /* ignore unreadable dirs */ }
     }
-    candidates.push('jjs.exe', 'jjs');
   } else {
     candidates.push(
-      '/usr/bin/jjs',
-      '/usr/lib/jvm/java-1.8-openjdk/jre/bin/jjs',
-      '/usr/lib/jvm/java-1.8-openjdk/bin/jjs',
+      '/usr/lib/jvm/java-21-openjdk/bin/java',
+      '/usr/lib/jvm/java-17-openjdk/bin/java',
+      '/usr/lib/jvm/default-jvm/bin/java',
+      '/usr/bin/java',
     );
-    candidates.push('jjs');
   }
 
   for (const candidate of candidates) {
-    if (candidate === 'jjs' || candidate === 'jjs.exe') continue;
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate) && !isLegacyJava8Path(candidate)) return candidate;
   }
 
-  return process.platform === 'win32' ? 'jjs.exe' : 'jjs';
+  // Fall back to java on PATH (avoids picking up stale Java 8 from Program Files).
+  return process.platform === 'win32' ? 'java.exe' : 'java';
 }
 
 function hasDb2LibArtifacts(dir: string): boolean {
-  return fs.existsSync(path.join(dir, 'DB2Connector.js'))
+  return fs.existsSync(path.join(dir, 'DB2Connector.class'))
     && fs.existsSync(path.join(dir, 'db2jcc4.jar'));
 }
 
@@ -101,7 +120,7 @@ function resolveLibDir(configured: string, root: string): string {
     } else if (hasDb2LibArtifacts(trimmed)) {
       return trimmed;
     } else if (fs.existsSync(trimmed)) {
-      logger.warn(`[DB2_INIT] Configured lib dir exists but missing DB2Connector.js/db2jcc4.jar (${trimmed}); using ${defaultDir}`);
+      logger.warn(`[DB2_INIT] Configured lib dir exists but missing DB2Connector.class/db2jcc4.jar (${trimmed}); using ${defaultDir}`);
     } else {
       logger.warn(`[DB2_INIT] Configured lib dir not found (${trimmed}); using ${defaultDir}`);
     }
@@ -192,14 +211,13 @@ class DB2DirectService {
   }
 
   /** Resolve paths at call time — AppConfig is loaded after module import. */
-  private resolveRuntimePaths(): { jjsPath: string; connectorScript: string; db2Jar: string } {
+  private resolveRuntimePaths(): { javaPath: string; libDir: string; db2Jar: string; classpath: string } {
     const libDir = resolveLibDir(configService.getString('infra.db2LibDir'), this.root);
-    const jjsPath = resolveJjsPath(configService.getString('infra.db2JjsPath'));
-    return {
-      jjsPath,
-      connectorScript: path.join(libDir, 'DB2Connector.js'),
-      db2Jar: path.join(libDir, 'db2jcc4.jar'),
-    };
+    const javaPath = resolveJavaPath(configService.getString('infra.db2JavaPath'));
+    const db2Jar = path.join(libDir, 'db2jcc4.jar');
+    const cpSep = process.platform === 'win32' ? ';' : ':';
+    const classpath = `${db2Jar}${cpSep}${libDir}`;
+    return { javaPath, libDir, db2Jar, classpath };
   }
 
   /**
@@ -518,7 +536,7 @@ class DB2DirectService {
   // ============================================================
 
   /**
-   * Run the Java/Nashorn DB2Connector script via jjs.
+   * Run the compiled Java DB2Connector via JDBC.
    * Tracks child processes for graceful shutdown.
    * @param caller Optional label identifying the calling feature (for log tracing)
    */
@@ -528,8 +546,8 @@ class DB2DirectService {
     }
 
     const safeClient = clientId.replace(/[^a-zA-Z0-9_]/g, '');
-    const { jjsPath, connectorScript, db2Jar } = this.resolveRuntimePaths();
-    const args = ['-cp', db2Jar, connectorScript, '--', action, safeClient];
+    const { javaPath, classpath } = this.resolveRuntimePaths();
+    const args = ['-cp', classpath, 'DB2Connector', action, safeClient];
     if (sql) args.push(sql);
 
     // Build child env: start with Prisma-sourced connection details,
@@ -537,37 +555,44 @@ class DB2DirectService {
     const childEnv = await this.buildConnEnv(safeClient, caller);
 
     return new Promise((resolve) => {
-      const child = execFile(jjsPath, args, {
+      const child = execFile(javaPath, args, {
         cwd: this.root,
-        timeout: configService.getInt('engine.jjsTimeoutMs'),
-        maxBuffer: configService.getInt('engine.jjsMaxBuffer'),
+        timeout: configService.getInt('engine.db2ConnectorTimeoutMs')
+          || configService.getInt('engine.jjsTimeoutMs'),
+        maxBuffer: configService.getInt('engine.db2ConnectorMaxBuffer')
+          || configService.getInt('engine.jjsMaxBuffer'),
         env: childEnv,
       }, (err, stdout, stderr) => {
-        this.activeProcesses.delete(child);
-
-        if (err) {
-          // Try to parse JSON error from stdout
-          if (stdout) {
-            try {
-              resolve(JSON.parse(stdout.trim()));
-              return;
-            } catch { /* fall through */ }
-          }
-          logger.error(`DB2 connector error for ${safeClient}: ${err.message}`);
-          resolve({ success: false, error: err.message });
-          return;
-        }
-
-        const output = (stdout || '').trim();
-        if (!output) {
-          resolve({ success: false, error: stderr || 'No output from DB2 connector' });
-          return;
-        }
-
         try {
-          resolve(JSON.parse(output));
-        } catch {
-          resolve({ success: false, error: 'Invalid JSON response from DB2 connector' });
+          this.activeProcesses.delete(child);
+
+          if (err) {
+            // Try to parse JSON error from stdout
+            if (stdout?.trim()) {
+              try {
+                resolve(JSON.parse(stdout.trim()));
+                return;
+              } catch { /* fall through */ }
+            }
+            const detail = (stderr || err.message || 'DB2 connector failed').trim();
+            logger.error(`DB2 connector error for ${safeClient}: ${detail}`);
+            resolve({ success: false, error: detail });
+            return;
+          }
+
+          const output = (stdout || '').trim();
+          if (!output) {
+            resolve({ success: false, error: stderr || 'No output from DB2 connector' });
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(output));
+          } catch {
+            resolve({ success: false, error: 'Invalid JSON response from DB2 connector' });
+          }
+        } finally {
+          clearSensitiveEnvVars(childEnv);
         }
       });
 
@@ -576,7 +601,7 @@ class DB2DirectService {
   }
 
   /**
-   * Shutdown: kill all in-flight jjs child processes.
+   * Shutdown: kill all in-flight DB2 connector child processes.
    */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;

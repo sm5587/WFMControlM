@@ -1,7 +1,7 @@
 // ============================================================
 // Payroll Routes
 // Endpoints for querying TA_UNIT_PAY_STATUS per client
-// Uses db2DirectService (jjs/JDBC) — same as DB Monitor
+// Uses db2DirectService (Java JDBC) — same as DB Monitor
 // ============================================================
 
 import { Router, Request, Response } from 'express';

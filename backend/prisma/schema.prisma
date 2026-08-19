@@ -551,12 +551,44 @@ model User {
   passwordHash String
   timezone     String        @default("Asia/Kolkata")
   isActive     Boolean       @default(true)
+  tokenVersion Int           @default(0)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   profiles     UserProfile[]
+  accessRequest AccessRequest?
 
   @@index([username])
   @@index([isActive])
+}
+
+// SSO/MFA access requests — email captured from load balancer, pending admin approval
+model AccessRequest {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  displayName String?
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedAt DateTime  @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  String?
+  reviewNote  String?
+  sourceIp    String?
+  userId      String?   @unique
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([requestedAt])
+}
+
+// Revoked JWT IDs — server-side session invalidation before natural expiry
+model RevokedToken {
+  jti       String   @id
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime @default(now())
+  reason    String?
+
+  @@index([expiresAt])
+  @@index([userId])
 }
 
 model Profile {

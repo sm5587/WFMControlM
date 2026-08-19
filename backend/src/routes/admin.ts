@@ -7,9 +7,14 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../database/prisma';
 import { requirePermission } from '../middleware';
 import { APP_FUNCTIONS } from '../constants/functions';
-import { signToken } from './auth';
+import { tokenRevocationService } from '../services/token-revocation-service';
 import { purgeService } from '../services/purge-service';
 import { exportSql, writeSqlFiles, SqlExportType } from '../services/sql-export-service';
+
+import {
+  approveAccessRequest,
+  rejectAccessRequest,
+} from '../services/access-request-service';
 
 const router = Router();
 
@@ -43,7 +48,13 @@ router.patch('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (re
     if (email !== undefined) data.email = email;
     if (timezone !== undefined) data.timezone = timezone;
     if (isActive !== undefined) data.isActive = isActive;
-    if (password) data.passwordHash = await bcrypt.hash(password, 10);
+    if (password) {
+      data.passwordHash = await bcrypt.hash(password, 10);
+      await tokenRevocationService.revokeAllUserTokens(req.params.id, 'password_change');
+    }
+    if (isActive === false) {
+      await tokenRevocationService.revokeAllUserTokens(req.params.id, 'deactivated');
+    }
 
     const user = await prisma.user.update({ where: { id: req.params.id }, data });
     res.json({ success: true, data: { id: user.id, username: user.username, displayName: user.displayName, isActive: user.isActive } });
@@ -55,10 +66,87 @@ router.patch('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (re
 // DELETE /api/admin/users/:id — deactivate (soft delete)
 router.delete('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
   try {
+    await tokenRevocationService.revokeAllUserTokens(req.params.id, 'deactivated');
     await prisma.user.update({ where: { id: req.params.id }, data: { isActive: false } });
     res.json({ success: true, message: 'User deactivated' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/users/:id/revoke-sessions — invalidate all JWTs for a user
+router.post('/users/:id/revoke-sessions', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+  try {
+    const actor = (req as any).user?.username || 'unknown';
+    const tv = await tokenRevocationService.revokeAllUserTokens(req.params.id, `admin_revoke_by_${actor}`);
+    res.json({ success: true, data: { tokenVersion: tv }, message: 'All sessions revoked for user' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/revoke-master-sessions — invalidate all master-account JWTs
+router.post('/revoke-master-sessions', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Request, res: Response) => {
+  try {
+    const actor = (req as any).user?.username || 'unknown';
+    const tv = await tokenRevocationService.revokeMasterTokens(`admin_revoke_by_${actor}`, actor);
+    res.json({ success: true, data: { masterTokenVersion: tv }, message: 'All master sessions revoked' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// ACCESS REQUESTS (SSO / MFA registration queue)
+// ────────────────────────────────────────────────────────────
+
+// GET /api/admin/access-requests
+router.get('/access-requests', requirePermission('USERS_VIEW', 'read'), async (req: Request, res: Response) => {
+  try {
+    const status = (req.query.status as string) || undefined;
+    const where = status ? { status } : {};
+    const requests = await prisma.accessRequest.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            id: true, username: true, displayName: true, isActive: true,
+            profiles: { include: { profile: { select: { id: true, name: true } } } },
+          },
+        },
+      },
+      orderBy: [{ status: 'asc' }, { requestedAt: 'desc' }],
+    });
+    res.json({ success: true, data: requests });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/access-requests/:id/approve
+router.post('/access-requests/:id/approve', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+  try {
+    const { profileId, displayName, username } = req.body || {};
+    if (!profileId) {
+      return res.status(400).json({ success: false, error: 'profileId is required' });
+    }
+    const reviewer = (req as any).user?.username || 'unknown';
+    const result = await approveAccessRequest(req.params.id, profileId, reviewer, { displayName, username });
+    res.json({ success: true, data: result, message: 'Access request approved and user created' });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/access-requests/:id/reject
+router.post('/access-requests/:id/reject', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+  try {
+    const reviewer = (req as any).user?.username || 'unknown';
+    const { note } = req.body || {};
+    await rejectAccessRequest(req.params.id, reviewer, note);
+    res.json({ success: true, message: 'Access request rejected' });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

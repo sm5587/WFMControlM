@@ -119,7 +119,7 @@ else
   log "SQL bootstrap via sqlite3 fallback succeeded"
 fi
 
-log "Configuring Unix infra paths (jjs, lib, dbconnections) when AppConfig is empty"
+log "Configuring Unix infra paths (java, lib, dbconnections) when AppConfig is empty"
 configure_unix_infra_paths "$APP_DIR" "$DB_PATH"
 
 log "Verifying DB file"
