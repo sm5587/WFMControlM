@@ -18,7 +18,33 @@ export interface UnprocessedPunchResult {
   error?: string;
 }
 
+export interface PunchAllCacheEntry {
+  clientId: string;
+  name: string;
+  cluster: string;
+  punchCount: number | null;
+  lastUpdateTime: string | null;
+  dbCurrentTime: string | null;
+  executionTimeMs: number | null;
+  error: string | null;
+}
+
+export interface PunchAllCache {
+  data: PunchAllCacheEntry[];
+  fetchedAt: string;
+  updatedAtMs: number;
+}
+
 class UnprocessedPunchService {
+  private punchAllCache: PunchAllCache | null = null;
+
+  getPunchAllCache(): PunchAllCache | null {
+    return this.punchAllCache;
+  }
+
+  setPunchAllCache(entry: PunchAllCache): void {
+    this.punchAllCache = entry;
+  }
 
   /**
    * Fetch count of unprocessed punches (PROCESS_FLAG = 'N') for the past 2 days.

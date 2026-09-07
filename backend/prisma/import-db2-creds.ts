@@ -17,7 +17,16 @@ import path from 'path';
 import { encryptClientDb2Password } from '../src/utils/client-db2-password';
 
 const prisma = new PrismaClient();
-const connDir = path.resolve(__dirname, '../../dbconnections/Production');
+
+async function resolveConnDir(): Promise<string> {
+  const fromEnv = process.env.DB2_CONN_DIR?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+
+  const row = await prisma.appConfig.findUnique({ where: { key: 'infra.db2ConnDir' } });
+  if (row?.value?.trim()) return path.resolve(row.value.trim());
+
+  return path.resolve(__dirname, '../../dbconnections/Production');
+}
 
 interface ConnInfo {
   clientId: string;
@@ -67,6 +76,7 @@ function parseConnFile(filePath: string, fileClientId: string): ConnInfo | null 
 }
 
 async function main() {
+  const connDir = await resolveConnDir();
   console.log(`\nDB2 Credentials Import\n${'='.repeat(50)}`);
   console.log(`Connection files: ${connDir}\n`);
 

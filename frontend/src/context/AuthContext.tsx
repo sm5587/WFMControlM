@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { authApi, setOnUnauthorized } from '../services/api';
+import { authApi, clearCsrfToken, setCsrfToken, setOnUnauthorized } from '../services/api';
 
 /** Matches the JWT payload from the backend */
 export interface AuthUser {
@@ -66,10 +66,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authApi.me()
       .then((res) => {
         const authUser = mapMeToAuthUser(res.data!);
+        setCsrfToken(res.data?.csrfToken);
         persistUserProfile(authUser);
         setUser(authUser);
       })
       .catch(() => {
+        clearCsrfToken();
         sessionStorage.removeItem(USER_KEY);
         setUser(null);
       })
@@ -77,8 +79,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    await authApi.login(username, password);
+    const loginRes = await authApi.login(username, password);
+    setCsrfToken(loginRes.data?.csrfToken);
     const me = await authApi.me();
+    setCsrfToken(me.data?.csrfToken);
     const authUser = mapMeToAuthUser(me.data!);
     persistUserProfile(authUser);
     setUser(authUser);
@@ -86,8 +90,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const ssoLogin = useCallback(async () => {
-    await authApi.ssoLogin();
+    const loginRes = await authApi.ssoLogin();
+    setCsrfToken(loginRes.data?.csrfToken);
     const me = await authApi.me();
+    setCsrfToken(me.data?.csrfToken);
     const authUser = mapMeToAuthUser(me.data!);
     persistUserProfile(authUser);
     setUser(authUser);
@@ -100,6 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Clear local state even if server logout fails
     }
+    clearCsrfToken();
     sessionStorage.removeItem(USER_KEY);
     localStorage.removeItem('wfm_token');
     setUser(null);
@@ -108,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setOnUnauthorized(() => {
+      clearCsrfToken();
       sessionStorage.removeItem(USER_KEY);
       localStorage.removeItem('wfm_token');
       setUser(null);

@@ -10,6 +10,13 @@ import { z } from 'zod';
 
 const router = Router();
 
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('ALERTS_VIEW', 'read')(req, res, next);
+  }
+  return next();
+});
+
 const createAlertRuleSchema = z.object({
   name: z.string().min(1),
   jobId: z.string().uuid().optional(),

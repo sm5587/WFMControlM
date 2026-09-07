@@ -552,15 +552,18 @@ class DB2DirectService {
 
     // Build child env: start with Prisma-sourced connection details,
     // then overlay Keeper password if configured.
-    const childEnv = await this.buildConnEnv(safeClient, caller);
+    let childEnv: NodeJS.ProcessEnv;
+    try {
+      childEnv = await this.buildConnEnv(safeClient, caller);
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to build DB2 connection environment' };
+    }
 
     return new Promise((resolve) => {
       const child = execFile(javaPath, args, {
         cwd: this.root,
-        timeout: configService.getInt('engine.db2ConnectorTimeoutMs')
-          || configService.getInt('engine.jjsTimeoutMs'),
-        maxBuffer: configService.getInt('engine.db2ConnectorMaxBuffer')
-          || configService.getInt('engine.jjsMaxBuffer'),
+        timeout: configService.getInt('engine.db2ConnectorTimeoutMs', 120000),
+        maxBuffer: configService.getInt('engine.db2ConnectorMaxBuffer', 10485760),
         env: childEnv,
       }, (err, stdout, stderr) => {
         try {
@@ -622,32 +625,49 @@ class DB2DirectService {
    * @param caller Optional label identifying the calling feature (for log tracing)
    */
   private async buildConnEnv(clientId: string, caller?: string): Promise<NodeJS.ProcessEnv> {
-    let env = { ...process.env };
+    const env = { ...process.env };
+    // Never inherit SSL settings from the parent process — only apply per-client flags below.
+    delete env.DB2_SSL_ENABLED;
+    delete env.DB2_TRUSTSTORE_PATH;
+    delete env.DB2_TRUSTSTORE_PASSWORD;
 
-    try {
-      const rec = await prisma.client.findFirst({
-        where: { clientId },
-        select: {
-          db2Host: true,
-          db2Port: true,
-          db2Database: true,
-          db2Username: true,
-          db2Password: true,
-        },
-      });
+    const rec = await prisma.client.findFirst({
+      where: { clientId },
+      select: {
+        db2Host: true,
+        db2Port: true,
+        db2Database: true,
+        db2Username: true,
+        db2Password: true,
+        db2SslEnabled: true,
+      },
+    });
 
-      if (rec?.db2Host && rec.db2Database) {
-        const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
-        env.DB2_URL_OVERRIDE = jdbcUrl;
-        if (rec.db2Username) env.DB2_USER_OVERRIDE = rec.db2Username;
-        const password = decryptClientDb2Password(rec.db2Password);
-        if (password) env.DB2_PASS_OVERRIDE = password;
-        logger.debug(`Using Prisma connection for ${clientId}${caller ? ` [caller: ${caller}]` : ''}: ${jdbcUrl}`);
+    if (rec?.db2Host && rec.db2Database) {
+      const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
+      env.DB2_URL_OVERRIDE = jdbcUrl;
+      if (rec.db2Username) env.DB2_USER_OVERRIDE = rec.db2Username;
+      const password = decryptClientDb2Password(rec.db2Password);
+      if (password) env.DB2_PASS_OVERRIDE = password;
+
+      if (rec.db2SslEnabled && configService.getBool('infra.db2SslEnabled', false)) {
+        const trustStorePath = configService.getString('infra.db2TrustStorePath').trim();
+        if (!trustStorePath) {
+          throw new Error(
+            `DB2 SSL is enabled for ${clientId} but infra.db2TrustStorePath is not configured. `
+            + 'Set the truststore path in Admin → Config.',
+          );
+        }
+        env.DB2_SSL_ENABLED = 'true';
+        env.DB2_TRUSTSTORE_PATH = trustStorePath;
+        const trustStorePassword = configService.getString('infra.db2TrustStorePassword');
+        if (trustStorePassword) env.DB2_TRUSTSTORE_PASSWORD = trustStorePassword;
+        logger.debug(`JDBC SSL enabled for ${clientId}${caller ? ` [caller: ${caller}]` : ''}: ${jdbcUrl}`);
       } else {
-        logger.warn(`No DB2 connection configured in database for ${clientId}`);
+        logger.debug(`Using Prisma connection for ${clientId}${caller ? ` [caller: ${caller}]` : ''}: ${jdbcUrl}`);
       }
-    } catch (err: any) {
-      logger.warn(`Prisma lookup failed for ${clientId}: ${err.message}`);
+    } else {
+      logger.warn(`No DB2 connection configured in database for ${clientId}`);
     }
 
     // Keeper password always wins over everything else (when configured)

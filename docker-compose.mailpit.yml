@@ -1,13 +1,13 @@
 # Optional local SMTP catcher — NOT for production (use real relay via Admin → Config).
 #
-# Usage:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml up -d
-#   docker compose -f docker-compose.yml -f docker-compose.mailpit.yml up -d
+# Usage (Windows smoke test):
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml -f docker-compose.smoke.override.yml up -d
+#   npm run docker:up
 #
-# Web UI: http://localhost:8025   SMTP: localhost:1025
+# Web UI: http://localhost:8025   SMTP (from backend container): mailpit:1025
 #
-# Point AppConfig secrets.smtpHost to host.docker.internal (Docker Desktop / WSL)
-# or your Docker host IP on Linux. Port secrets.smtpPort = 1025.
+# Backend auto-rewrites loopback SMTP (127.0.0.1/localhost) to hostname "mailpit"
+# when DEPLOYMENT_LABEL=Docker — no Admin → Config change required.
 
 services:
   mailpit:
@@ -17,3 +17,16 @@ services:
     ports:
       - "1025:1025"
       - "8025:8025"
+    networks:
+      - app_net
+
+  backend:
+    depends_on:
+      mailpit:
+        condition: service_started
+    networks:
+      - app_net
+
+networks:
+  app_net:
+    driver: bridge

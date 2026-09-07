@@ -9,6 +9,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { unprocessedPunchApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../constants/app-config-keys';
 
 export interface PunchRow {
   clientId: string;
@@ -42,9 +43,10 @@ const CACHE_KEY = ['unprocessed-punch-all'];
 // reset every time the user leaves and returns to this page.
 let punchLastStartedMs = 0;
 
-export function useProgressivePunchData(): ProgressivePunchState {
+export function useProgressivePunchData(canRefreshAll = false): ProgressivePunchState {
   const queryClient = useQueryClient();
-  const { getInt } = useConfig();
+  const { getInt, getBool } = useConfig();
+  const punchSyncEnabled = getBool(APP_CONFIG_KEYS.punchSyncEnabled, true);
   const THIRTY_MINUTES = getInt('polling.punchRefreshMins', 30) * 60 * 1000;
   const CONCURRENCY = getInt('engine.db2QueryConcurrency', 5);
   const abortRef = useRef<AbortController | null>(null);
@@ -66,6 +68,16 @@ export function useProgressivePunchData(): ProgressivePunchState {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const start = useCallback(() => {
+    if (!canRefreshAll) {
+      setErrorMessage('You do not have permission to refresh all clients.');
+      setStatus('error');
+      return;
+    }
+    if (!getBool(APP_CONFIG_KEYS.punchSyncEnabled, true)) {
+      setErrorMessage(`Punch sync is disabled — set ${APP_CONFIG_KEYS.punchSyncEnabled}=true in Admin → Config.`);
+      setStatus('error');
+      return;
+    }
     // Stamp trigger time so the module-level timer is not reset by navigation
     punchLastStartedMs = Date.now();
     // Cancel any in-flight work
@@ -122,7 +134,7 @@ export function useProgressivePunchData(): ProgressivePunchState {
             const c = clients[i];
             let row: PunchRow;
             try {
-              const resp = await unprocessedPunchApi.getPunchCount(c.clientId);
+              const resp = await unprocessedPunchApi.getPunchCount(c.clientId, 'all');
               const d = (resp as any)?.data;
               row = {
                 clientId: c.clientId,
@@ -190,7 +202,7 @@ export function useProgressivePunchData(): ProgressivePunchState {
         setStatus('error');
       }
     })();
-  }, [queryClient]);
+  }, [queryClient, getBool, CONCURRENCY, canRefreshAll]);
 
   // Auto-start on mount; use cache if fresh
   useEffect(() => {
@@ -202,8 +214,25 @@ export function useProgressivePunchData(): ProgressivePunchState {
       setLoaded(cached.data.length);
       setFetchedAt(cached.fetchedAt ?? null);
       setStatus('done');
-    } else {
+    } else if (punchSyncEnabled && canRefreshAll) {
       start();
+    } else if (cached?.data?.length) {
+      setRows(cached.data);
+      setTotal(cached.data.length);
+      setLoaded(cached.data.length);
+      setFetchedAt(cached.fetchedAt ?? null);
+      setStatus('done');
+      if (!punchSyncEnabled) {
+        setErrorMessage('Punch sync is disabled — showing cached data only.');
+      } else {
+        setErrorMessage('You do not have permission to refresh all clients — showing cached data only.');
+      }
+    } else if (punchSyncEnabled && !canRefreshAll) {
+      setErrorMessage('You do not have permission to refresh all clients.');
+      setStatus('error');
+    } else {
+      setErrorMessage('Punch sync is disabled and no cached data is available.');
+      setStatus('error');
     }
 
     // Subscribe to cache changes (e.g. from updateCachedRow in component)
@@ -227,16 +256,18 @@ export function useProgressivePunchData(): ProgressivePunchState {
     // elapsed since the last start. The module-level punchLastStartedMs
     // survives navigation so the timer is not reset when the user leaves
     // and returns to this page.
-    const interval = setInterval(() => {
-      if (Date.now() - punchLastStartedMs >= THIRTY_MINUTES) start();
-    }, 60_000);
+    const interval = punchSyncEnabled && canRefreshAll
+      ? setInterval(() => {
+          if (Date.now() - punchLastStartedMs >= THIRTY_MINUTES) start();
+        }, 60_000)
+      : null;
 
     return () => {
       unsub();
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       abortRef.current?.abort();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [punchSyncEnabled, canRefreshAll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { rows, total, loaded, status, fetchedAt, errorMessage, start };
 }

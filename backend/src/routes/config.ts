@@ -44,7 +44,10 @@ router.get('/public', async (_req: Request, res: Response) => {
 const updateSchema = z.object({
   updates: z.array(z.object({
     key: z.string().min(1),
-    value: z.string(),
+    value: z.string().optional(),
+    description: z.string().max(500).optional(),
+  }).refine(u => u.value !== undefined || u.description !== undefined, {
+    message: 'Each update must include value and/or description',
   })).min(1).max(100),
 });
 

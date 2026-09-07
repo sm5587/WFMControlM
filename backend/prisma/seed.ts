@@ -155,7 +155,6 @@ async function main() {
         id: uuidv4(),
         clientId: sd.cid,
         name: `${sd.cid} Client`,
-        description: `WFM client ${sd.cid} — ${sd.prodDns ? 'Production' : 'Pre-Production only'}`,
         isActive: true,
         cluster: sd.cluster,
         timezone: 'America/Chicago',
@@ -232,7 +231,8 @@ async function main() {
   // 4. Permissions for Monitor — read all + write only ALERTS_NOTIFY and JOBS_TRIGGER
   const monitorWriteFns = new Set(['ALERTS_NOTIFY', 'JOBS_TRIGGER']);
   const monitorReadFns = new Set(Object.keys(APP_FUNCTIONS).filter(k =>
-    !['USERS_MANAGE', 'PROFILES_MANAGE', 'PERMISSIONS_EDIT', 'USER_PROFILE_ASSIGN'].includes(k)
+    !['USERS_MANAGE', 'PROFILES_MANAGE', 'PERMISSIONS_EDIT', 'USER_PROFILE_ASSIGN', 'JOBS_LOG_TAIL', 'JOBS_DELETE',
+      'UNPROC_PUNCH_REFRESH_ALL', 'UNPROC_PUNCH_REFRESH_HIGH', 'UNPROC_PUNCH_REFRESH_ROW'].includes(k)
   ));
   for (const fnId of monitorReadFns) {
     await prisma.permission.create({
@@ -240,9 +240,14 @@ async function main() {
     });
   }
 
-  // 5. Permissions for Read Only — read everything except ADMIN module
+  // 5. Permissions for Read Only — read everything except ADMIN module, remote log tail, cron delete, punch refresh
   for (const fn of Object.values(APP_FUNCTIONS)) {
-    if (fn.module !== 'ADMIN') {
+    if (fn.module !== 'ADMIN'
+      && fn.id !== 'JOBS_LOG_TAIL'
+      && fn.id !== 'JOBS_DELETE'
+      && fn.id !== 'UNPROC_PUNCH_REFRESH_ALL'
+      && fn.id !== 'UNPROC_PUNCH_REFRESH_HIGH'
+      && fn.id !== 'UNPROC_PUNCH_REFRESH_ROW') {
       await prisma.permission.create({
         data: { profileId: readonlyProfileId, functionId: fn.id, canRead: true, canWrite: false },
       });
@@ -301,6 +306,9 @@ async function main() {
     { key: 'secrets.db2Username',      value: '',                              category: 'SECRETS', label: 'DB2 Username',          description: 'Fallback DB2 username', isSecret: true },
     { key: 'secrets.db2Password',      value: '',                              category: 'SECRETS', label: 'DB2 Password',          description: 'Fallback DB2 password', isSecret: true },
 
+    // ---- AUTH ----
+    { key: 'auth.masterTokenVersion', value: '0', category: 'AUTH', label: 'Master Token Version', description: 'Incremented to invalidate all master-account JWT sessions' },
+
     // ---- INFRA ----
     { key: 'infra.port',              value: '4005',                                   category: 'INFRA', label: 'HTTP Port',              description: 'HTTP server listen port' },
     { key: 'infra.nodeEnv',           value: 'development',                        category: 'INFRA', label: 'Node Environment',       description: 'development or production' },
@@ -314,9 +322,12 @@ async function main() {
     { key: 'infra.sshRejectedUploadRoot', value: '/mount/RWS4/appuploads/upload', category: 'INFRA', label: 'Rejected Upload Root', description: 'Root path for rejected DTS file scan' },
     { key: 'infra.sshCommandTimeoutSec', value: '30', category: 'INFRA', label: 'SSH Command Timeout (sec)', description: 'Timeout for pending IN folder find (maxdepth 1)' },
     { key: 'infra.sshRejectedFindTimeoutSec', value: '120', category: 'INFRA', label: 'Rejected Find Timeout (sec)', description: 'Timeout for recursive rejected DTS find under upload root' },
-    { key: 'infra.db2ConnDir',        value: '',                               category: 'INFRA', label: 'DB2 Conn Dir',           description: 'Path to DB2 connection .txt files' },
+    { key: 'infra.db2ConnDir',        value: '',                               category: 'INFRA', label: 'DB2 Conn Dir',           description: 'Path to legacy DB2 connection .txt files (bootstrap/import-db2-creds only; runtime uses Client table)' },
     { key: 'infra.db2LibDir',         value: '',                                category: 'INFRA', label: 'DB2 Lib Dir',            description: 'Path to DB2Connector.class & db2jcc4.jar' },
     { key: 'infra.db2JavaPath',       value: '',                                category: 'INFRA', label: 'Java Path',              description: 'Path to java binary for DB2 JDBC connector (JDK 17+)' },
+    { key: 'infra.db2SslEnabled',     value: 'false',                           category: 'INFRA', label: 'DB2 SSL Enabled',        description: 'Global master switch for JDBC sslConnection. Requires true here AND per-client JDBC SSL enabled, plus infra.db2TrustStorePath.' },
+    { key: 'infra.db2TrustStorePath', value: '',                                category: 'INFRA', label: 'DB2 Truststore Path',    description: 'JKS truststore path for JDBC sslConnection (e.g. /app/certs/db2-truststore.jks)' },
+    { key: 'infra.db2TrustStorePassword', value: '',                            category: 'INFRA', label: 'DB2 Truststore Password', description: 'Password for the DB2 JDBC truststore JKS file', isSecret: true },
     { key: 'infra.db2PoolMax',        value: '10',                 category: 'INFRA', label: 'DB2 Pool Max',           description: 'Max concurrent DB2 pool connections' },
     { key: 'infra.db2PoolIdleMs',     value: '300000',             category: 'INFRA', label: 'DB2 Pool Idle (ms)',     description: 'Evict idle pool connections after this' },
     { key: 'infra.db2PoolAcquireMs',  value: '30000',           category: 'INFRA', label: 'DB2 Pool Acquire (ms)',  description: 'Max wait for a DB2 pool slot' },
@@ -324,9 +335,26 @@ async function main() {
     { key: 'infra.db2DefaultPort',    value: '50000',                                                      category: 'INFRA', label: 'DB2 Default Port',       description: 'Default DB2 port fallback' },
     { key: 'infra.trustProxy',        value: 'false',                                                      category: 'INFRA', label: 'Trust Proxy',            description: 'Trust X-Forwarded-* headers from nginx/load balancer (enable in production behind TLS terminator)' },
     { key: 'infra.requireHttps',      value: 'false',                                                      category: 'INFRA', label: 'Require HTTPS',          description: 'Redirect HTTP to HTTPS when behind a TLS-terminating reverse proxy' },
-    { key: 'infra.ssoEnabled',        value: 'false',                                                      category: 'INFRA', label: 'SSO/LDAP Login Enabled', description: 'Enable corporate SSO/LDAP login via load-balancer email header. When false, only username/password login is available.' },
+    { key: 'infra.ssoEnabled',        value: 'false',                                                      category: 'INFRA', label: 'SSO Header Login Enabled', description: 'Enable SSO via load-balancer email header (X-Forwarded-Email). Separate from direct LDAP — use LDAP Enabled for in-app AD bind.' },
     { key: 'infra.ssoEmailHeader',    value: 'X-Forwarded-Email',                                          category: 'INFRA', label: 'SSO Email Header',       description: 'HTTP header name the load balancer sets with the authenticated user email' },
     { key: 'infra.ssoAllowedDomain',  value: 'zebra.com',                                                  category: 'INFRA', label: 'SSO Allowed Email Domain', description: 'Only @zebra.com (or configured domain) emails may register or sign in via SSO' },
+    { key: 'infra.ldapEnabled',       value: 'false',                                                      category: 'INFRA', label: 'LDAP Enabled',             description: 'Authenticate login against corporate LDAP/AD (in-app bind). Requires user record + profile in WFM Watch.' },
+    { key: 'infra.ldapUrl',           value: 'ldap://usc1.rfx.zebra.com:389',                              category: 'INFRA', label: 'LDAP URL',                 description: 'LDAP server URL (e.g. ldap://usc1.rfx.zebra.com:389 or ldaps://host:636)' },
+    { key: 'infra.ldapBaseDn',        value: 'dc=rfx,dc=zebra,dc=com',                                     category: 'INFRA', label: 'LDAP Base DN',             description: 'Base DN (e.g. dc=rfx,dc=zebra,dc=com)' },
+    { key: 'infra.ldapBindDn',        value: 'uid=svc_wfmwatch,cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com', category: 'INFRA', label: 'LDAP Bind DN',           description: 'Service account DN for user search (ldap.manager.dn)' },
+    { key: 'infra.ldapBindPassword',  value: '',                                                           category: 'INFRA', label: 'LDAP Bind Password',       description: 'Password for LDAP service account (ldap.manager.password)', isSecret: true },
+    { key: 'infra.ldapUserSearchBase', value: 'dc=rfx,dc=zebra,dc=com',                                    category: 'INFRA', label: 'LDAP User Search Base',    description: 'Base DN for user search (ldap.userSearch.base)' },
+    { key: 'infra.ldapUserFilter',    value: '(uid={{username}})',                                         category: 'INFRA', label: 'LDAP User Filter',         description: 'Search filter; use {{username}} or {0} placeholder (e.g. (uid={{username}}))' },
+    { key: 'infra.ldapUserDnPattern', value: 'uid={{username}},cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com', category: 'INFRA', label: 'LDAP User DN Pattern',  description: 'Direct bind DN pattern when search is not used (ldap.userDn.pattern)' },
+    { key: 'infra.ldapGroupSearchBase', value: 'dc=rfx,dc=zebra,dc=com',                                 category: 'INFRA', label: 'LDAP Group Search Base',   description: 'Base DN for group search (ldap.groupSearch.base)' },
+    { key: 'infra.ldapDomain',        value: '',                                                           category: 'INFRA', label: 'LDAP Domain',              description: 'UPN suffix for direct bind (user@domain) when Bind DN is empty' },
+    { key: 'infra.ldapEmailAttribute', value: 'mail',                                                      category: 'INFRA', label: 'LDAP Email Attribute',     description: 'LDAP attribute for user email (default: mail)' },
+    { key: 'infra.ldapDisplayNameAttribute', value: 'cn',                                                  category: 'INFRA', label: 'LDAP Display Name Attribute', description: 'LDAP attribute for display name (default: cn)' },
+    { key: 'infra.ldapUseStartTls',   value: 'false',                                                      category: 'INFRA', label: 'LDAP StartTLS',            description: 'Use STARTTLS on ldap:// connections (not needed for ldaps://)' },
+    { key: 'infra.ldapTlsRejectUnauthorized', value: 'true',                                               category: 'INFRA', label: 'LDAP TLS Verify Certs',    description: 'Validate LDAP server certificate when using TLS/StartTLS' },
+    { key: 'infra.ldapAllowLocalFallback', value: 'true',                                                  category: 'INFRA', label: 'LDAP Allow Local Fallback', description: 'If LDAP bind fails, fall back to local password in User table (non-master accounts)' },
+    { key: 'infra.ldapDevMock',          value: 'false',                                                 category: 'INFRA', label: 'LDAP Dev Mock (non-production)', description: 'Simulate successful LDAP login without contacting a server. Blocked in production; prefer LDAP_DEV_MOCK env var locally.' },
+    { key: 'infra.ldapTimeoutMs',     value: '10000',                                                      category: 'INFRA', label: 'LDAP Timeout (ms)',        description: 'LDAP connection and bind timeout in milliseconds' },
 
     // ---- POLLING ----
     { key: 'polling.batchRefreshMins',       value: '30',  category: 'POLLING', label: 'Batch Refresh (min)',        description: 'Batch data refresh interval in minutes' },
@@ -357,10 +385,6 @@ async function main() {
 
     // ---- ENGINE ----
     { key: 'engine.pollIntervalMs',       value: '5000',    category: 'ENGINE', label: 'Poll Interval (ms)',       description: 'Pending job check interval' },
-    { key: 'engine.maxConcurrentJobs',    value: '50',      category: 'ENGINE', label: 'Max Concurrent Jobs',     description: 'Global max concurrent job executions' },
-    { key: 'engine.heartbeatIntervalMs',  value: '10000',   category: 'ENGINE', label: 'Heartbeat Interval (ms)', description: 'Agent heartbeat interval' },
-    { key: 'engine.executionHistoryDays', value: '90',      category: 'ENGINE', label: 'Execution History (days)', description: 'Retain execution history for this many days' },
-    { key: 'engine.logRetentionDays',     value: '30',      category: 'ENGINE', label: 'Log Retention (days)',     description: 'Retain execution logs for this many days' },
     { key: 'engine.maxBatchDetailRows',   value: '500',     category: 'ENGINE', label: 'Max Batch Detail Rows',   description: 'FETCH FIRST X ROWS in batch detail DB2 query' },
     { key: 'engine.db2QueryConcurrency',  value: '5',       category: 'ENGINE', label: 'DB2 Query Concurrency',   description: 'Concurrent per-client DB2 queries' },
     { key: 'engine.batchQueryDays',       value: '7',       category: 'ENGINE', label: 'Batch Query Days',         description: 'Default batch status query window in days' },
@@ -375,16 +399,22 @@ async function main() {
     { key: 'engine.upcomingScanIntervalMins', value: '60',  category: 'ENGINE', label: 'Upcoming Scan Interval (min)', description: 'Upcoming job scanner interval' },
     { key: 'engine.postRunCheckDelayMins', value: '30',     category: 'ENGINE', label: 'Post-Run Check Delay (min)', description: 'Delay before post-run log status check' },
     { key: 'engine.dbMonitorBatchDays',   value: '2',       category: 'ENGINE', label: 'DB Monitor Batch Days',   description: 'Default batch summary window at startup' },
+    { key: 'engine.syncEnabled',          value: 'true',    category: 'ENGINE', label: 'SSH Sync Enabled',        description: 'Master switch for cron discovery, log checks, and timezone detection via SSH. Set false during production incidents.' },
+    { key: 'engine.dbJobsSyncEnabled',    value: 'true',    category: 'ENGINE', label: 'DB Jobs Sync Enabled',    description: 'Master switch for DB2 RFX_QUEUE fetches (Fetch All, per-client refresh, background polling). Set false during production incidents.' },
+    { key: 'engine.punchSyncEnabled',     value: 'true',    category: 'ENGINE', label: 'Punch Sync Enabled',      description: 'Master switch for unprocessed punch DB2 queries (Refresh, progressive load, background polling). Set false during production incidents.' },
+    { key: 'engine.cronSyncSchedule',     value: '0 3 * * *', category: 'ENGINE', label: 'Daily Cron Sync Schedule', description: 'Cron expression for automatic nightly cron discovery from all appservers (server local time). Requires restart to change.' },
+    { key: 'engine.autoEscalationNotifyEnabled', value: 'true', category: 'ENGINE', label: 'Auto Escalation Email', description: 'When true, automatically email notification recipients and system-acknowledge escalated alerts for Default Suppress (min) after they cross the escalation threshold.' },
 
     // ---- DISPLAY ----
     { key: 'display.appName',                value: 'WFM Watch',    category: 'DISPLAY', label: 'Application Name',       description: 'Product name shown in UI, emails, and API health' },
     { key: 'display.defaultTimezone',        value: 'Asia/Kolkata', category: 'DISPLAY', label: 'Default Timezone',      description: 'Default timezone when user has none set' },
-    { key: 'display.defaultBatchDays',       value: '2',            category: 'DISPLAY', label: 'Default Batch Days',     description: 'Default batch days shown on pages' },
     { key: 'display.panelMinWidth',          value: '160',          category: 'DISPLAY', label: 'Panel Min Width (px)',   description: 'Resizable panel min width in pixels' },
     { key: 'display.panelMaxWidth',          value: '700',          category: 'DISPLAY', label: 'Panel Max Width (px)',   description: 'Resizable panel max width in pixels' },
     { key: 'display.wsReconnectAttempts',    value: '10',           category: 'DISPLAY', label: 'WS Reconnect Attempts', description: 'WebSocket max reconnection attempts' },
     { key: 'display.wsReconnectDelayMs',     value: '1000',         category: 'DISPLAY', label: 'WS Reconnect Delay (ms)', description: 'WebSocket reconnect delay in ms' },
     { key: 'display.maintenanceAdHocWindows', value: 'false',        category: 'DISPLAY', label: 'Maintenance Ad-hoc Windows Tab', description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)' },
+    { key: 'display.payrollEnabled',          value: 'false',        category: 'DISPLAY', label: 'Payroll Jobs Menu',              description: 'Show Payroll Jobs screen and API (true/false)' },
+    { key: 'display.showUnprocPunchTab',      value: 'false',        category: 'DISPLAY', label: 'Unprocessed Punch Alerts Tab',   description: 'Show Unprocessed Punch tab on Alerts page (true/false)' },
   ];
 
   for (const c of configDefaults) {

@@ -1,4 +1,5 @@
 import java.sql.*;
+import java.util.Properties;
 
 /**
  * DB2 Connector — compiled Java JDBC bridge (Java 17+).
@@ -44,13 +45,16 @@ public class DB2Connector {
         try {
             Class.forName(DEFAULT_DRIVER);
 
+            boolean sslEnabled = isTruthyEnv("DB2_SSL_ENABLED");
+            Properties props = buildConnectionProperties(username, password, sslEnabled);
+
             long startMs = System.currentTimeMillis();
-            conn = DriverManager.getConnection(jdbcUrl, username, password);
+            conn = DriverManager.getConnection(jdbcUrl, props);
             long connMs = System.currentTimeMillis() - startMs;
 
             switch (action) {
                 case "test":
-                    doTest(conn, client, jdbcUrl, connMs);
+                    doTest(conn, client, jdbcUrl, connMs, sslEnabled);
                     break;
                 case "query":
                     if (sql == null || sql.isBlank()) {
@@ -76,7 +80,7 @@ public class DB2Connector {
         }
     }
 
-    private static void doTest(Connection conn, String client, String url, long connMs) throws SQLException {
+    private static void doTest(Connection conn, String client, String url, long connMs, boolean sslEnabled) throws SQLException {
         DatabaseMetaData meta = conn.getMetaData();
 
         String serverTime = "";
@@ -93,6 +97,7 @@ public class DB2Connector {
         sb.append("\"success\":true,");
         sb.append("\"client\":\"").append(escJson(client)).append("\",");
         sb.append("\"url\":\"").append(escJson(url)).append("\",");
+        sb.append("\"sslEnabled\":").append(sslEnabled).append(",");
         sb.append("\"dbProduct\":\"").append(escJson(meta.getDatabaseProductName())).append("\",");
         sb.append("\"dbVersion\":\"").append(escJson(meta.getDatabaseProductVersion())).append("\",");
         sb.append("\"driverName\":\"").append(escJson(meta.getDriverName())).append("\",");
@@ -101,6 +106,40 @@ public class DB2Connector {
         sb.append("\"connectionMs\":").append(connMs);
         sb.append("}");
         System.out.println(sb);
+    }
+
+    private static boolean isTruthyEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null) return false;
+        value = value.trim();
+        return "true".equalsIgnoreCase(value) || "1".equals(value) || "yes".equalsIgnoreCase(value);
+    }
+
+    private static Properties buildConnectionProperties(String username, String password, boolean sslEnabled) {
+        Properties props = new Properties();
+        props.setProperty("user", username);
+        props.setProperty("password", password);
+
+        if (!sslEnabled) {
+            return props;
+        }
+
+        props.setProperty("sslConnection", "true");
+
+        String trustStore = System.getenv("DB2_TRUSTSTORE_PATH");
+        if (trustStore == null || trustStore.isBlank()) {
+            throw new IllegalStateException(
+                "DB2 SSL is enabled but DB2_TRUSTSTORE_PATH is not configured. "
+                + "Set infra.db2TrustStorePath in Admin → Config.");
+        }
+        props.setProperty("sslTrustStoreLocation", trustStore.trim());
+
+        String trustStorePass = System.getenv("DB2_TRUSTSTORE_PASSWORD");
+        if (trustStorePass != null && !trustStorePass.isBlank()) {
+            props.setProperty("sslTrustStorePassword", trustStorePass);
+        }
+
+        return props;
     }
 
     private static void doQuery(Connection conn, String sql) throws SQLException {

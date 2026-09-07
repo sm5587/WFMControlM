@@ -20,6 +20,11 @@ dayjs.extend(tzPlugin);
 
 const logger = createServiceLogger('AlertService');
 
+/** Mailpit dev catcher — loopback (native) or Docker service name. */
+function isMailpitEndpoint(host: string, port: number): boolean {
+  return (host === '127.0.0.1' || host === 'mailpit') && port === 1025;
+}
+
 interface AlertPayload {
   triggerType: AlertTriggerType;
   severity: AlertSeverity;
@@ -53,8 +58,8 @@ export class AlertService extends EventEmitter {
 
     let port = config.smtp.port;
     if (!Number.isFinite(port) || port <= 0) {
-      port = host === '127.0.0.1' ? 1025 : 587;
-    } else if (host === '127.0.0.1' && port === 587) {
+      port = host === '127.0.0.1' || host === 'mailpit' ? 1025 : 587;
+    } else if ((host === '127.0.0.1' || host === 'mailpit') && port === 587) {
       // AppConfig still on corporate default — prefer Mailpit when targeting loopback
       port = 1025;
       logger.warn('SMTP port 587 with localhost — using 1025 (Mailpit). Update secrets.smtpPort in Admin > Config.');
@@ -69,7 +74,7 @@ export class AlertService extends EventEmitter {
    * Local Mailpit (127.0.0.1:1025) always uses dev settings regardless of the flag.
    */
   private buildSmtpTransportOptions(host: string, port: number): SMTPTransport.Options {
-    const isLocalMailpit = host === '127.0.0.1' && port === 1025;
+    const isLocalMailpit = isMailpitEndpoint(host, port);
     const tlsEnabled = !isLocalMailpit && config.smtp.tlsEnabled;
     const hasAuth = !!(config.smtp.user);
 
@@ -78,7 +83,7 @@ export class AlertService extends EventEmitter {
         host,
         port,
         secure: port === 465,
-        family: 4,
+        family: host === 'mailpit' ? undefined : 4,
         ...(hasAuth
           ? { auth: { user: config.smtp.user, pass: config.smtp.pass } }
           : { ignoreTLS: true }),
@@ -109,7 +114,7 @@ export class AlertService extends EventEmitter {
     }
 
     const { host, port } = endpoint;
-    const isLocalMailpit = host === '127.0.0.1' && port === 1025;
+    const isLocalMailpit = isMailpitEndpoint(host, port);
     const tlsEnabled = !isLocalMailpit && config.smtp.tlsEnabled;
     const hasAuth = !!(config.smtp.user);
     this.emailTransporter = nodemailer.createTransport(this.buildSmtpTransportOptions(host, port));

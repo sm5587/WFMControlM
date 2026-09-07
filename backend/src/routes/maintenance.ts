@@ -15,6 +15,13 @@ import cronParser from 'cron-parser';
 const router = Router();
 const logger = createServiceLogger('MaintenanceAPI');
 
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('MAINTENANCE_VIEW', 'read')(req, res, next);
+  }
+  return next();
+});
+
 // ------------------------------------------------------------------ Timezone utils
 
 /** Map of shorthand TZ labels → IANA names (for display) and UTC offset minutes */

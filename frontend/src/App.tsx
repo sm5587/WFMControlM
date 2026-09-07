@@ -42,7 +42,8 @@ class RouteErrorBoundary extends React.Component<
   }
 }
 import UnprocessedPunch from './components/UnprocessedPunch/UnprocessedPunch';
-import { ConfigProvider } from './contexts/ConfigContext';
+import { ConfigProvider, useConfig } from './contexts/ConfigContext';
+import { PAYROLL_ENABLED_KEY } from './constants/app-display';
 
 /** Allowed routes (must be accessed through menu only) */
 const ALLOWED_ROUTES = [
@@ -71,7 +72,8 @@ function PermissionRoute({ permission, children }: { permission: string; childre
 
 function UnauthenticatedGate() {
   const { ssoLogin, user } = useAuth();
-  const [ssoLoading, setSsoLoading] = useState(true);
+  const [ssoChecked, setSsoChecked] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
   const [ssoAttempting, setSsoAttempting] = useState(false);
   const [ssoStatus, setSsoStatus] = useState<SsoAccessStatus | null>(null);
   const [ssoLoginFailed, setSsoLoginFailed] = useState(false);
@@ -81,6 +83,9 @@ function UnauthenticatedGate() {
       .then(async (res) => {
         const data = res.data!;
         setSsoStatus(data);
+        setSsoEnabled(!!data.ssoEnabled);
+
+        if (!data.ssoEnabled) return;
 
         if (data.canLogin && data.email) {
           setSsoAttempting(true);
@@ -93,18 +98,26 @@ function UnauthenticatedGate() {
           }
         }
       })
-      .catch(() => setSsoStatus({ ssoEnabled: false, email: null, status: null, canLogin: false }))
-      .finally(() => setSsoLoading(false));
+      .catch(() => {
+        setSsoEnabled(false);
+        setSsoStatus({ ssoEnabled: false, email: null, status: null, canLogin: false });
+      })
+      .finally(() => setSsoChecked(true));
   }, [ssoLogin]);
 
   if (user) return null;
 
-  if (ssoLoading || ssoAttempting) {
+  if (!ssoChecked || (ssoEnabled && ssoAttempting)) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-zebra-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
+  }
+
+  // SSO not integrated — go straight to username/password login
+  if (!ssoEnabled) {
+    return <LoginPage />;
   }
 
   if (ssoStatus?.email && (ssoStatus.status === 'PENDING' || ssoStatus.status === 'REJECTED' || ssoStatus.status === 'DOMAIN_DENIED')) {
@@ -116,10 +129,29 @@ function UnauthenticatedGate() {
   }
 
   if (ssoLoginFailed && ssoStatus?.canLogin) {
-    return <LoginPage ssoEmail={ssoStatus.email} />;
+    return <LoginPage ssoEmail={ssoStatus.email ?? undefined} />;
   }
 
   return <LoginPage ssoEmail={ssoStatus?.email || undefined} />;
+}
+
+function PayrollRoute() {
+  const { getBool, loaded } = useConfig();
+  if (!loaded) {
+    return (
+      <div className="flex items-center justify-center h-40">
+        <div className="w-8 h-8 border-4 border-zebra-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (!getBool(PAYROLL_ENABLED_KEY, false)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return (
+    <PermissionRoute permission="PAYROLL_VIEW">
+      <PayrollJobs />
+    </PermissionRoute>
+  );
 }
 
 function AppRoutes() {
@@ -179,11 +211,11 @@ function AppRoutes() {
               </RouteErrorBoundary>
             </PermissionRoute>
           } />
-          <Route path="payroll" element={<PermissionRoute permission="PAYROLL_VIEW"><PayrollJobs /></PermissionRoute>} />
+          <Route path="payroll" element={<PayrollRoute />} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />
           <Route path="alerts" element={<PermissionRoute permission="ALERTS_VIEW"><AlertCenter /></PermissionRoute>} />
           <Route path="admin/users" element={<PermissionRoute permission="USERS_VIEW"><AdminUsers /></PermissionRoute>} />
-          <Route path="admin/profiles" element={<PermissionRoute permission="USERS_VIEW"><AdminProfiles /></PermissionRoute>} />
+          <Route path="admin/profiles" element={<PermissionRoute permission="PROFILES_VIEW"><AdminProfiles /></PermissionRoute>} />
           <Route path="admin/purge" element={<PermissionRoute permission="DATA_PURGE_VIEW"><AdminPurge /></PermissionRoute>} />
           <Route path="admin/config" element={<PermissionRoute permission="PERMISSIONS_EDIT"><AdminConfig /></PermissionRoute>} />
           

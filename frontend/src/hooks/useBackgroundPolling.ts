@@ -15,6 +15,8 @@ import { useEffect } from 'react';
 import { QueryClient, useQueryClient } from '@tanstack/react-query';
 import { dbJobsApi, unprocessedPunchApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../constants/app-config-keys';
+import { usePermission } from '../context/AuthContext';
 
 // ---- Module-level punch refresh coordinator ----
 // Persists across hook re-mounts (navigation between pages).
@@ -29,8 +31,10 @@ let punchInFlight: Promise<void> | null = null;
  */
 export async function triggerPunchRefresh(
   queryClient: QueryClient,
-  stallMs: number
+  stallMs: number,
+  enabled = true,
 ): Promise<void> {
+  if (!enabled) return;
   // Guard: already triggered recently
   if (Date.now() - punchLastTriggeredMs < stallMs) return;
   // Guard: already in-flight
@@ -58,12 +62,15 @@ export async function triggerPunchRefresh(
 
 export function useBackgroundPolling() {
   const queryClient = useQueryClient();
-  const { getInt } = useConfig();
+  const { getInt, getBool } = useConfig();
+  const canRefreshAll = usePermission('UNPROC_PUNCH_REFRESH_ALL', 'write');
   const THIRTY_MINUTES = getInt('polling.backgroundPollingMins', 30) * 60 * 1000;
+  const dbJobsSyncEnabled = getBool(APP_CONFIG_KEYS.dbJobsSyncEnabled, true);
+  const punchSyncEnabled = getBool(APP_CONFIG_KEYS.punchSyncEnabled, true);
 
   useEffect(() => {
-    // ---- DB Jobs background refresh ----
     const refreshDbJobs = async () => {
+      if (!getBool(APP_CONFIG_KEYS.dbJobsSyncEnabled, true)) return;
       try {
         const res = await dbJobsApi.fetchAll();
         queryClient.setQueryData(['db-jobs-queue-all'], res);
@@ -72,23 +79,23 @@ export function useBackgroundPolling() {
       }
     };
 
-    // Fire on mount only if cache is stale/empty
     const dbJobsAge = queryClient.getQueryState(['db-jobs-queue-all'])?.dataUpdatedAt;
-    if (!dbJobsAge || Date.now() - dbJobsAge >= THIRTY_MINUTES) {
+    if (dbJobsSyncEnabled && (!dbJobsAge || Date.now() - dbJobsAge >= THIRTY_MINUTES)) {
       refreshDbJobs();
     }
 
-    // Punch: use the coordinator — skips if already triggered recently
-    triggerPunchRefresh(queryClient, THIRTY_MINUTES);
+    triggerPunchRefresh(queryClient, THIRTY_MINUTES, punchSyncEnabled && canRefreshAll);
 
-    // Recurring intervals
-    const dbJobsInterval = setInterval(refreshDbJobs, THIRTY_MINUTES);
-    // Check every minute; coordinator itself enforces the 30-min window
-    const punchInterval  = setInterval(() => triggerPunchRefresh(queryClient, THIRTY_MINUTES), 60_000);
+    const dbJobsInterval = dbJobsSyncEnabled
+      ? setInterval(refreshDbJobs, THIRTY_MINUTES)
+      : null;
+    const punchInterval = punchSyncEnabled && canRefreshAll
+      ? setInterval(() => triggerPunchRefresh(queryClient, THIRTY_MINUTES, true), 60_000)
+      : null;
 
     return () => {
-      clearInterval(dbJobsInterval);
-      clearInterval(punchInterval);
+      if (dbJobsInterval) clearInterval(dbJobsInterval);
+      if (punchInterval) clearInterval(punchInterval);
     };
-  }, [queryClient]);
+  }, [queryClient, dbJobsSyncEnabled, punchSyncEnabled, canRefreshAll, THIRTY_MINUTES, getBool]);
 }

@@ -199,7 +199,7 @@ export default function UploadFileMonitor() {
   const [allClientsSelected, setAllClientsSelected] = useState(true);
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [checkPending, setCheckPending] = useState(true);
-  const [checkRejected, setCheckRejected] = useState(true);
+  const [checkRejected, setCheckRejected] = useState(false);
   const [showAlertsOnly, setShowAlertsOnly] = useState(false);
   const [result, setResult] = useState<FileMonitorFetchResult | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -251,15 +251,46 @@ export default function UploadFileMonitor() {
     }
   };
 
+  const handleScan = () => {
+    if (allClustersSelected) {
+      const count = clients.length;
+      const scanLabel = checkPending ? 'pending IN folder' : 'rejected DTS (today)';
+      if (!window.confirm(
+        `Scan all clusters (${count} client${count === 1 ? '' : 's'}) for ${scanLabel}?\n\n` +
+        'This connects to each Prod app server sequentially and may take several minutes.',
+      )) {
+        return;
+      }
+    }
+    fetchMutation.mutate();
+  };
+
+  const selectCluster = (cl: string) => {
+    setAllClustersSelected(false);
+    setSelectedClusters([cl]);
+    setAllClientsSelected(true);
+    setSelectedClientIds([]);
+  };
+
+  const selectClient = (clientId: string) => {
+    setAllClientsSelected(false);
+    setSelectedClientIds([clientId]);
+  };
+
+  const setScanType = (type: 'pending' | 'rejected') => {
+    setCheckPending(type === 'pending');
+    setCheckRejected(type === 'rejected');
+  };
+
   const displayRows = useMemo(() => {
     if (!result?.rows) return [];
     if (!showAlertsOnly) return result.rows;
     return result.rows.filter(r => r.status === 'ALERT' || r.status === 'ERROR');
   }, [result, showAlertsOnly]);
 
-  const canSubmit = (checkPending || checkRejected) && !fetchMutation.isPending
-    && (allClustersSelected || selectedClusters.length > 0)
-    && (allClientsSelected || selectedClientIds.length > 0);
+  const canSubmit = (checkPending !== checkRejected) && !fetchMutation.isPending
+    && (allClustersSelected || selectedClusters.length === 1)
+    && (allClientsSelected || selectedClientIds.length === 1);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl">
@@ -288,12 +319,15 @@ export default function UploadFileMonitor() {
           {!allClustersSelected && (
             <div className="flex flex-wrap gap-2">
               {allClusters.map(cl => (
-                <button key={cl} type="button" onClick={() => setSelectedClusters(p => p.includes(cl) ? p.filter(c => c !== cl) : [...p, cl])}
+                <button key={cl} type="button" onClick={() => selectCluster(cl)}
                   className={`px-3 py-1 rounded-full text-xs font-medium border ${selectedClusters.includes(cl) ? 'bg-zebra-100 border-zebra-400 text-zebra-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
                   {cl}
                 </button>
               ))}
             </div>
+          )}
+          {!allClustersSelected && selectedClusters.length === 0 && (
+            <p className="text-xs text-amber-700 mt-1">Select one cluster to scan.</p>
           )}
         </div>
 
@@ -305,22 +339,25 @@ export default function UploadFileMonitor() {
           {!allClientsSelected && (
             <div className="max-h-32 overflow-y-auto border rounded-lg p-2 flex flex-wrap gap-1">
               {scopeClients.map(c => (
-                <button key={c.id} type="button" onClick={() => setSelectedClientIds(p => p.includes(c.clientId) ? p.filter(x => x !== c.clientId) : [...p, c.clientId])}
+                <button key={c.id} type="button" onClick={() => selectClient(c.clientId)}
                   className={`px-2 py-0.5 rounded text-xs border ${selectedClientIds.includes(c.clientId) ? 'bg-zebra-100 border-zebra-400' : 'border-slate-200'}`}>
                   {c.clientId}
                 </button>
               ))}
             </div>
           )}
+          {!allClientsSelected && selectedClientIds.length === 0 && (
+            <p className="text-xs text-amber-700 mt-1">Select one client box to scan.</p>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-4 text-sm">
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={checkPending} onChange={e => setCheckPending(e.target.checked)} className="rounded" />
+            <input type="radio" name="scanType" checked={checkPending} onChange={() => setScanType('pending')} />
             Pending IN folder
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={checkRejected} onChange={e => setCheckRejected(e.target.checked)} className="rounded" />
+            <input type="radio" name="scanType" checked={checkRejected} onChange={() => setScanType('rejected')} />
             Rejected DTS (today)
           </label>
         </div>
@@ -333,7 +370,7 @@ export default function UploadFileMonitor() {
         )}
 
         <div className="flex flex-wrap gap-3">
-          <button type="button" disabled={!canSubmit} onClick={() => fetchMutation.mutate()}
+          <button type="button" disabled={!canSubmit} onClick={handleScan}
             className="flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50">
             {fetchMutation.isPending && scanProgress
               ? <>

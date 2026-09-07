@@ -4,6 +4,9 @@
 
 import axios from 'axios';
 import { ApiResponse, Job, JobExecution, DashboardStats, AlertEvent, Client, AppServer, SyncHistory, CronSyncBatchStatus } from '../types';
+import { clearCsrfToken, getCsrfHeaders, getCsrfToken, isMutatingMethod, setCsrfToken } from './csrf';
+
+export { setCsrfToken, clearCsrfToken, getCsrfToken };
 
 const api = axios.create({
   baseURL: '/api',
@@ -13,6 +16,17 @@ const api = axios.create({
 });
 
 // Session JWT is sent automatically via HttpOnly cookie (withCredentials)
+
+api.interceptors.request.use((config) => {
+  if (isMutatingMethod(config.method)) {
+    const token = getCsrfToken();
+    if (token) {
+      config.headers = config.headers ?? {};
+      config.headers['X-CSRF-Token'] = token;
+    }
+  }
+  return config;
+});
 
 // Callback set by AuthContext so the interceptor can trigger logout
 let _onUnauthorized: (() => void) | null = null;
@@ -32,6 +46,15 @@ api.interceptors.response.use(
 
     const data = error.response?.data;
     const status = error.response?.status;
+
+    // Preserve access-request payload from LDAP/SSO login flows
+    if (data?.data?.accessStatus) {
+      const accessErr = new Error(
+        typeof data.error === 'string' ? data.error : formatHttpErrorMessage(error),
+      ) as Error & { accessStatus?: unknown };
+      accessErr.accessStatus = data.data.accessStatus;
+      throw accessErr;
+    }
 
     // Preserve partial scan payload when proxy/backend included it
     if (data?.data?.rows) {
@@ -77,6 +100,7 @@ async function postNdjsonStream<
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...getCsrfHeaders(),
     },
     body: JSON.stringify(body ?? {}),
   });
@@ -225,13 +249,13 @@ export const alertsApi = {
 
 // ---- Auth ----
 export const authApi = {
-  login: (username: string, password: string): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string } }>> =>
+  login: (username: string, password: string): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string }; csrfToken?: string }>> =>
     api.post('/auth/login', { username, password }),
 
   logout: (): Promise<ApiResponse<{ message: string }>> =>
     api.post('/auth/logout'),
 
-  me: (): Promise<ApiResponse<{ id: string; username: string; displayName: string; email: string; timezone: string; permissions: Record<string, { r: boolean; w: boolean }> }>> =>
+  me: (): Promise<ApiResponse<{ id: string; username: string; displayName: string; email: string; timezone: string; permissions: Record<string, { r: boolean; w: boolean }>; csrfToken?: string }>> =>
     api.get('/auth/me'),
 
   register: (data: { username: string; email: string; displayName: string; password: string }): Promise<ApiResponse<any>> =>
@@ -247,7 +271,7 @@ export const authApi = {
   }>> =>
     api.get('/auth/sso-status'),
 
-  ssoLogin: (): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string } }>> =>
+  ssoLogin: (): Promise<ApiResponse<{ user: { id: string; username: string; displayName: string; email: string }; csrfToken?: string }>> =>
     api.post('/auth/sso-login'),
 };
 
@@ -267,6 +291,7 @@ export interface AccessRequest {
   id: string;
   email: string;
   displayName?: string | null;
+  requestedUsername?: string | null;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   requestedAt: string;
   reviewedAt?: string | null;
@@ -390,6 +415,8 @@ export const clientsApi = {
     db2Port?: number;
     db2Database?: string;
     db2Schema?: string;
+    db2SslEnabled?: boolean;
+    remoteLogTailEnabled?: boolean;
     appServers?: { environment: 'Prod' | 'PP'; serverNum?: string; dns: string; sshPort?: number }[];
   }): Promise<ApiResponse<Client>> =>
     api.post('/clients', data),
@@ -407,6 +434,8 @@ export const clientsApi = {
     db2Schema?: string;
     db2Username?: string;
     db2Password?: string;
+    db2SslEnabled?: boolean;
+    remoteLogTailEnabled?: boolean;
   }): Promise<ApiResponse<Client>> =>
     api.patch(`/clients/${id}`, data),
 
@@ -536,6 +565,9 @@ export const dbJobsApi = {
 export const escalationsApi = {
   getAll: (): Promise<ApiResponse<any[]>> =>
     api.get('/escalations'),
+
+  getReport: (params: { year: number; month: number; cluster?: string; clientId?: string }): Promise<ApiResponse<any>> =>
+    api.get('/escalations/report', { params }),
 
   acknowledge: (id: string, userId?: string): Promise<ApiResponse> =>
     api.post(`/escalations/${id}/acknowledge`, { userId }),
@@ -699,8 +731,8 @@ export const unprocessedPunchApi = {
   getClients: (): Promise<ApiResponse<any>> =>
     api.get('/unprocessed-punch/clients', { timeout: 60000 }),
 
-  getPunchCount: (clientId: string): Promise<ApiResponse<any>> =>
-    api.get(`/unprocessed-punch/${clientId}`, { timeout: 120000 }),
+  getPunchCount: (clientId: string, scope: 'all' | 'high' | 'row' = 'row'): Promise<ApiResponse<any>> =>
+    api.get(`/unprocessed-punch/${clientId}`, { params: { scope }, timeout: 120000 }),
 
   /** SSE stream — returns an EventSource connected to the /stream endpoint */
   openStream: (): EventSource =>
@@ -717,7 +749,7 @@ export const configApi = {
   getAll: (): Promise<ApiResponse<Record<string, any>[]>> =>
     api.get('/config'),
 
-  update: (updates: Array<{ key: string; value: string }>): Promise<ApiResponse<any>> =>
+  update: (updates: Array<{ key: string; value?: string; description?: string }>): Promise<ApiResponse<any>> =>
     api.patch('/config', { updates }),
 
   reveal: (key: string): Promise<ApiResponse<{ value: string }>> =>

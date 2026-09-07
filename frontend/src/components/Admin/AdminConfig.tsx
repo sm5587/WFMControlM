@@ -6,8 +6,9 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi } from '../../services/api';
 import { useConfig } from '../../contexts/ConfigContext';
-import { Save, Eye, EyeOff, Search, RotateCcw, AlertTriangle, CheckCircle2, Lock, KeyRound, X } from 'lucide-react';
+import { Save, Eye, EyeOff, Search, RotateCcw, AlertTriangle, CheckCircle2, Lock, KeyRound, X, ToggleLeft, ToggleRight } from 'lucide-react';
 import type { ReencryptPreflight, ReencryptResult } from '../../services/api';
+import { isBooleanAppConfigKey } from '../../constants/app-config-keys';
 
 type ConfigRow = {
   key: string;
@@ -35,6 +36,7 @@ export default function AdminConfig() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [descriptionEdits, setDescriptionEdits] = useState<Record<string, string>>({});
   /** Keys whose secret values are currently visible (separate from value — empty secrets are valid). */
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
@@ -45,6 +47,7 @@ export default function AdminConfig() {
     queryKey: ['config-reencrypt-preflight'],
     queryFn: async () => {
       const res = await configApi.reencryptPreflight();
+      if (!res.data) throw new Error('Reencrypt preflight unavailable');
       return res.data;
     },
   });
@@ -63,11 +66,12 @@ export default function AdminConfig() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: (updates: Array<{ key: string; value: string }>) => configApi.update(updates),
+    mutationFn: (updates: Array<{ key: string; value?: string; description?: string }>) => configApi.update(updates),
     onSuccess: (res: any) => {
       queryClient.invalidateQueries({ queryKey: ['admin-config'] });
-      reloadConfig(); // refresh global config context so other pages see new values
+      reloadConfig();
       setEdits({});
+      setDescriptionEdits({});
       const restart = res?.data?.requiresRestart;
       setToast({
         type: restart ? 'warning' : 'success',
@@ -185,17 +189,28 @@ export default function AdminConfig() {
     });
   };
 
-  const dirtyCount = Object.keys(edits).length;
+  const dirtyCount = Object.keys(edits).length + Object.keys(descriptionEdits).length;
 
   const handleSave = () => {
-    const updates = Object.entries(edits).map(([key, value]) => ({ key, value }));
+    const keys = new Set([...Object.keys(edits), ...Object.keys(descriptionEdits)]);
+    const updates = Array.from(keys).map(key => ({
+      key,
+      ...(edits[key] !== undefined ? { value: edits[key] } : {}),
+      ...(descriptionEdits[key] !== undefined ? { description: descriptionEdits[key] } : {}),
+    }));
     if (updates.length > 0) saveMutation.mutate(updates);
   };
 
   const handleDiscard = () => {
     setEdits({});
+    setDescriptionEdits({});
     setRevealedKeys(new Set());
     setRevealedValues({});
+  };
+
+  const getDisplayDescription = (row: ConfigRow): string => {
+    if (descriptionEdits[row.key] !== undefined) return descriptionEdits[row.key];
+    return row.description ?? '';
   };
 
   const getDisplayValue = (row: ConfigRow): string => {
@@ -204,6 +219,11 @@ export default function AdminConfig() {
       return revealedValues[row.key] ?? '';
     }
     return row.value;
+  };
+
+  const getBoolDisplayValue = (row: ConfigRow): boolean => {
+    const v = getDisplayValue(row);
+    return v === 'true' || v === '1';
   };
 
   if (isLoading) {
@@ -217,9 +237,9 @@ export default function AdminConfig() {
   return (
     <div className="p-6 space-y-4 max-w-full">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <h1 className="text-xl font-bold text-gray-800">Application Configuration</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={openReencryptModal}
@@ -383,7 +403,8 @@ export default function AdminConfig() {
             <thead className="sticky top-0 z-10 bg-gray-50">
               <tr className="border-b border-gray-200 text-gray-500 text-xs uppercase">
                 <th className="text-left px-3 py-2.5 w-12">Cat</th>
-                <th className="text-left px-3 py-2.5 w-56">Label</th>
+                <th className="text-left px-3 py-2.5 w-44">Label</th>
+                <th className="text-left px-3 py-2.5 w-56">Description</th>
                 <th className="text-left px-3 py-2.5">Value</th>
                 <th className="text-left px-3 py-2.5 w-48">Key</th>
                 <th className="text-left px-3 py-2.5 w-36">Updated By</th>
@@ -394,8 +415,9 @@ export default function AdminConfig() {
             <tbody>
               {(activeTab === 'all' ? visibleRows : hiddenRows).map(row => {
                 const isDirty = edits[row.key] !== undefined;
+                const isDescDirty = descriptionEdits[row.key] !== undefined;
                 return (
-                  <tr key={row.key} className={`border-b border-gray-100 hover:bg-gray-50 ${isDirty ? 'bg-amber-50/50' : ''}`}>
+                  <tr key={row.key} className={`border-b border-gray-100 hover:bg-gray-50 ${isDirty || isDescDirty ? 'bg-amber-50/50' : ''}`}>
                     <td className="px-3 py-2">
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${CATEGORY_COLORS[row.category] || 'bg-gray-100 text-gray-600'}`}>
                         {row.category.slice(0, 4)}
@@ -404,13 +426,41 @@ export default function AdminConfig() {
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
                         {row.isSecret && <Lock size={12} className="text-red-500 shrink-0" />}
-                        <div>
-                          <div className="text-gray-800 font-medium text-xs">{row.label}</div>
-                          {row.description && <div className="text-gray-400 text-[10px] leading-tight">{row.description}</div>}
-                        </div>
+                        <div className="text-gray-800 font-medium text-xs">{row.label}</div>
                       </div>
                     </td>
                     <td className="px-3 py-2">
+                      <input
+                        type="text"
+                        value={getDisplayDescription(row)}
+                        onChange={e => setDescriptionEdits(prev => ({ ...prev, [row.key]: e.target.value }))}
+                        placeholder="Short help text for admins…"
+                        className={`w-full bg-gray-50 border rounded px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-zebra-400 ${isDescDirty ? 'border-amber-400 text-amber-800 bg-amber-50' : 'border-gray-200 text-gray-600'}`}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      {isBooleanAppConfigKey(row.key) && !row.isSecret ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEdits(prev => ({
+                              ...prev,
+                              [row.key]: getBoolDisplayValue(row) ? 'false' : 'true',
+                            }))
+                          }
+                          className={`flex items-center gap-2 px-2 py-1 rounded border text-xs font-medium transition-colors ${
+                            getBoolDisplayValue(row)
+                              ? 'bg-green-50 border-green-200 text-green-800'
+                              : 'bg-red-50 border-red-200 text-red-800'
+                          } ${isDirty ? 'ring-2 ring-amber-400' : ''}`}
+                          title={`Set ${row.key} to ${getBoolDisplayValue(row) ? 'false' : 'true'}`}
+                        >
+                          {getBoolDisplayValue(row)
+                            ? <ToggleRight className="w-4 h-4 text-green-600" />
+                            : <ToggleLeft className="w-4 h-4 text-red-500" />}
+                          {getBoolDisplayValue(row) ? 'true' : 'false'}
+                        </button>
+                      ) : (
                       <div className="flex items-center gap-1">
                         <input
                           type={row.isSecret && !isRevealed(row.key) && edits[row.key] === undefined ? 'password' : 'text'}
@@ -430,6 +480,7 @@ export default function AdminConfig() {
                           </button>
                         )}
                       </div>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-gray-400 font-mono text-[10px]">{row.key}</td>
                     <td className="px-3 py-2 text-gray-600 text-xs font-medium">{row.updatedBy || '—'}</td>
@@ -453,7 +504,7 @@ export default function AdminConfig() {
                 );
               })}
               {(activeTab === 'all' ? visibleRows : hiddenRows).length === 0 && (
-                <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">No config entries found</td></tr>
+                <tr><td colSpan={8} className="px-3 py-8 text-center text-gray-400">No config entries found</td></tr>
               )}
             </tbody>
           </table>
@@ -461,7 +512,7 @@ export default function AdminConfig() {
       </div>
 
       <div className="text-xs text-gray-400">
-        {rows.length} total entries · {(activeTab === 'all' ? visibleRows.length : hiddenRows.length)} shown · SECRETS are AES-256-GCM encrypted at rest · Master key is CONFIG_ENCRYPTION_KEY in server .env · INFRA changes require server restart
+        {rows.length} total entries · {(activeTab === 'all' ? visibleRows.length : hiddenRows.length)} shown · Boolean params (incl. sync toggles) use inline toggle — click Save Changes · SECRETS encrypted at rest · INFRA changes require restart
       </div>
     </div>
   );

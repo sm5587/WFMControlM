@@ -11,6 +11,7 @@
 /** Env vars that may carry DB2 credentials for the java connector child. */
 export const DB2_CONNECTOR_SECRET_ENV_KEYS = [
   'DB2_PASS_OVERRIDE',
+  'DB2_TRUSTSTORE_PASSWORD',
 ] as const;
 
 /** Best-effort zero-fill of a mutable Buffer. No-op for non-Buffers. */

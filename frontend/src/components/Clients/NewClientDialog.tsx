@@ -33,6 +33,7 @@ interface FormData {
   db2Port: number;
   db2Database: string;
   db2Schema: string;
+  db2SslEnabled: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ const EMPTY_FORM: FormData = {
   db2Port: 50000,
   db2Database: '',
   db2Schema: '',
+  db2SslEnabled: false,
 };
 
 // ── Helper ───────────────────────────────────────────────────────────────────
@@ -119,6 +121,7 @@ export default function NewClientDialog({ onClose }: { onClose: () => void }) {
         db2Port: form.db2Host.trim() ? form.db2Port : undefined,
         db2Database: form.db2Database.trim() || undefined,
         db2Schema: form.db2Schema.trim() || undefined,
+        db2SslEnabled: form.db2Host.trim() ? form.db2SslEnabled : undefined,
         appServers: form.appServers
           .filter(s => s.dns.trim())
           .map(s => ({ ...s, dns: s.dns.trim() })),
@@ -428,7 +431,7 @@ export default function NewClientDialog({ onClose }: { onClose: () => void }) {
               <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
                 <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>
-                  DB2 is used for payroll sync and job execution history. Leave blank if DB2 access is not yet configured — you can update it later.
+                  DB2 is used for batch monitoring and job execution history. Leave blank if DB2 access is not yet configured — you can update it later.
                 </span>
               </div>
 
@@ -473,9 +476,31 @@ export default function NewClientDialog({ onClose }: { onClose: () => void }) {
                     value={form.db2Schema}
                     onChange={e => set('db2Schema', e.target.value)}
                   />
-                  <p className="text-xs text-gray-400 mt-1">DB2 schema used for payroll / RTA integration queries</p>
                 </div>
               </div>
+
+              {form.db2Host.trim() && (
+                <div className="flex items-center justify-between select-none">
+                  <span className="text-xs font-semibold text-gray-600">JDBC SSL</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.db2SslEnabled}
+                    aria-label="JDBC SSL"
+                    onClick={() => set('db2SslEnabled', !form.db2SslEnabled)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer select-none items-center rounded-full border-0 p-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-zebra-400 focus-visible:ring-offset-1 ${
+                      form.db2SslEnabled ? 'bg-green-500' : 'bg-gray-300'
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                        form.db2SslEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -515,6 +540,7 @@ export default function NewClientDialog({ onClose }: { onClose: () => void }) {
                     <ReviewRow label="Host" value={`${form.db2Host}:${form.db2Port}`} mono />
                     <ReviewRow label="Database" value={form.db2Database || '—'} />
                     <ReviewRow label="Schema" value={form.db2Schema || '—'} />
+                    <ReviewRow label="JDBC SSL" value={form.db2SslEnabled ? 'On' : 'Off'} />
                   </>
                 ) : (
                   <p className="text-xs text-gray-400 col-span-2">Not configured</p>

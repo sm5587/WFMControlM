@@ -749,6 +749,7 @@ export default function MaintenanceWindows() {
   const qc = useQueryClient();
   const { getBool } = useConfig();
   const canOutageImpact = usePermission('OUTAGE_VIEW', 'read');
+  const canManageMaintenance = usePermission('MAINTENANCE_MANAGE', 'write');
   const [searchParams, setSearchParams] = useSearchParams();
   const showAdHocWindows = getBool(MAINTENANCE_ADHOC_WINDOWS_KEY, false);
 
@@ -894,6 +895,7 @@ export default function MaintenanceWindows() {
             </p>
           </div>
           <div className="relative w-[152px] h-[34px] shrink-0">
+            {canManageMaintenance && (
             <button
               type="button"
               onClick={() => setShowCreate(true)}
@@ -905,6 +907,8 @@ export default function MaintenanceWindows() {
             >
               <Plus className="w-4 h-4 shrink-0" /> New Window
             </button>
+            )}
+            {canManageMaintenance && (
             <button
               type="button"
               onClick={() => setShowCreateOutage(true)}
@@ -916,6 +920,7 @@ export default function MaintenanceWindows() {
             >
               <Siren className="w-4 h-4 shrink-0" /> Report Outage
             </button>
+            )}
           </div>
         </div>
 
@@ -1013,6 +1018,7 @@ export default function MaintenanceWindows() {
                 key={win.id}
                 win={win}
                 mode="outage"
+                canManage={canManageMaintenance}
                 onViewJobs={() => setSelectedWindow(win)}
                 onViewImpact={canOutageImpact ? () => openImpactFromOutage(win) : undefined}
                 onCancel={() => cancelOutageMutation.mutate(win.id)}
@@ -1106,6 +1112,7 @@ export default function MaintenanceWindows() {
             <WindowCard
               key={win.id}
               win={win}
+              canManage={canManageMaintenance}
               onViewJobs={() => setSelectedWindow(win)}
               onCancel={() => cancelMutation.mutate(win.id)}
             />
@@ -1136,13 +1143,14 @@ export default function MaintenanceWindows() {
 
 // ---- Window Card --------------------------------------------------------------
 
-function WindowCard({ win, mode = 'maintenance', onViewJobs, onViewImpact, onCancel, onDelete }: {
+function WindowCard({ win, mode = 'maintenance', onViewJobs, onViewImpact, onCancel, onDelete, canManage = false }: {
   win: MaintenanceWindow;
   mode?: 'maintenance' | 'outage';
   onViewJobs: () => void;
   onViewImpact?: () => void;
   onCancel: () => void;
   onDelete?: () => void;
+  canManage?: boolean;
 }) {
   const { fmt } = useTimezone();
   const duration = fmtDuration(win.startTimeUtc, win.endTimeUtc);
@@ -1223,7 +1231,7 @@ function WindowCard({ win, mode = 'maintenance', onViewJobs, onViewImpact, onCan
             <Eye className="w-3.5 h-3.5" /> View Affected Jobs
           </button>
         )}
-        {canSoftCancel && (
+        {canManage && canSoftCancel && (
           <button
             type="button"
             onClick={onCancel}
@@ -1232,7 +1240,7 @@ function WindowCard({ win, mode = 'maintenance', onViewJobs, onViewImpact, onCan
             <Trash2 className="w-3.5 h-3.5" /> {isOutage ? 'Cancel Outage' : 'Cancel'}
           </button>
         )}
-        {canDelete && onDelete && (
+        {canManage && canDelete && onDelete && (
           <button
             type="button"
             onClick={onDelete}

@@ -2,7 +2,7 @@
 # WFM Control-M - Scriptable Startup
 # Usage:
 #   .\start.ps1                     # daily dev: start backend + frontend only (DB unchanged)
-#   .\start.ps1 all|start           # same as default — start services only
+#   .\start.ps1 all|start           # same as default - start services only
 #   .\start.ps1 prepare             # first-time / prod: install, migrate, DDL/DML bootstrap
 #   .\start.ps1 up                  # prepare + start (fresh machine or after schema change)
 #   .\start.ps1 backend|frontend    # start one service
@@ -12,13 +12,15 @@
 #   -SkipInstall   skip npm install steps during prepare/up
 #   -SkipDb        skip Prisma/DDL/DML steps during prepare/up
 #   -Build         run npm run build during prepare/up
+#   -LdapDevMock   simulate LDAP login locally (default: on). Use -LdapDevMock:$false when AD is reachable.
 # ============================================================
 
 param(
     [string]$Mode = "all",
     [switch]$SkipInstall,
     [switch]$SkipDb,
-    [switch]$Build
+    [switch]$Build,
+    [switch]$LdapDevMock = $true
 )
 
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
@@ -110,9 +112,39 @@ function Initialize-Environment {
     Write-Host "`n[WFM] Prepare complete." -ForegroundColor Green
 }
 
+function Start-DevShell {
+    param(
+        [string]$WorkingDir,
+        [string[]]$EnvLines = @(),
+        [string]$RunCommand
+    )
+
+    $escapedDir = $WorkingDir.Replace("'", "''")
+    $script = "Set-Location -LiteralPath '$escapedDir'`n"
+    if ($EnvLines.Count -gt 0) {
+        $script += ($EnvLines -join "`n") + "`n"
+    }
+    $script += $RunCommand
+
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded -WindowStyle Normal
+}
+
 function Start-Backend {
+    if ($LdapDevMock) {
+        Write-Host "[WFM] LDAP dev mock enabled - any username/password accepted as AD login" -ForegroundColor Yellow
+    }
     Write-Host "`n[WFM] Starting backend on http://localhost:4005 (Local) ..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "`$env:SSH_CREDENTIALS_FILE = '$Root\.saved_credentials.json'; `$env:DEPLOYMENT_LABEL = 'Local'; Set-Location '$Backend'; node node_modules\ts-node-dev\lib\bin.js --respawn --transpile-only src/index.ts" -WindowStyle Normal
+
+    $envLines = @(
+        "`$env:SSH_CREDENTIALS_FILE = '$($Root.Replace("'", "''"))\.saved_credentials.json'",
+        "`$env:DEPLOYMENT_LABEL = 'Local'"
+    )
+    if ($LdapDevMock) {
+        $envLines += "`$env:LDAP_DEV_MOCK = 'true'"
+    }
+
+    Start-DevShell -WorkingDir $Backend -EnvLines $envLines -RunCommand "npm run dev"
 }
 
 function Start-Frontend {
@@ -122,7 +154,7 @@ function Start-Frontend {
         try { $stream = [System.IO.File]::OpenRead($_.FullName); $stream.Close() } catch {}
     }
     Write-Host "[WFM] Starting frontend on http://localhost:3005 ..." -ForegroundColor Green
-    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "Set-Location '$Frontend'; node node_modules\vite\bin\vite.js --port 3005" -WindowStyle Normal
+    Start-DevShell -WorkingDir $Frontend -RunCommand "npm start -- --port 3005"
 }
 
 function Stop-All {
@@ -145,7 +177,7 @@ try {
     switch ($Mode.ToLower()) {
         "prepare"  { Initialize-Environment }
         "up"       { Initialize-Environment; Start-All }
-        "start"    { Start-All }   # alias for daily start — use "up" for DDL/DML bootstrap
+        "start"    { Start-All }   # alias for daily start - use "up" for DDL/DML bootstrap
         "backend"  { Start-Backend }
         "frontend" { Start-Frontend }
         "stop"     { Stop-All }

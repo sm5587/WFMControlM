@@ -16,13 +16,15 @@ import { db2Pool } from './services/db2-connection-pool';
 import { db2DirectService } from './services/db2-direct-service';
 import { keeperService } from './services/keeper-service';
 import { purgeService } from './services/purge-service';
+import { syncService } from './services/sync-service';
 import cron from 'node-cron';
 import { initializeWebSocket } from './websocket';
-import { errorHandler, requestLogger, authMiddleware, requireAdmin } from './middleware';
+import { errorHandler, requestLogger, authMiddleware, requireAdmin, csrfMiddleware } from './middleware';
 import { createServiceLogger } from './utils/logger';
 import { APP_FUNCTIONS } from './constants/functions';
 import { prisma } from './database/prisma';
 import { hasPreviousEncryptionKey } from './utils/crypto';
+import { isLdapDevMockEnabled } from './utils/ldap-dev-mock';
 
 // Import routes
 import authRouter from './routes/auth';
@@ -73,6 +75,13 @@ async function bootstrap() {
   validateCriticalConfig();
   logger.info('AppConfig loaded from database');
 
+  if (isLdapDevMockEnabled()) {
+    logger.warn(
+      'LDAP DEV MOCK is active — all login attempts are treated as successful AD authentication. ' +
+      'Disable LDAP_DEV_MOCK or infra.ldapDevMock before production.',
+    );
+  }
+
   if (hasPreviousEncryptionKey()) {
     logger.warn(
       'CONFIG_ENCRYPTION_KEY_PREVIOUS is set — encryption key rotation in progress. ' +
@@ -115,6 +124,7 @@ async function bootstrap() {
       }
     },
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
   }));
   app.use(express.json({ limit: configService.getString('infra.bodySizeLimit') }));
   app.use(express.urlencoded({ extended: true }));
@@ -138,6 +148,9 @@ async function bootstrap() {
 
   // ---- API Routes ----
   const apiRouter = express.Router();
+
+  // CSRF protection for cookie-authenticated state-changing requests
+  apiRouter.use(csrfMiddleware);
 
   // Public: login (no auth needed)
   apiRouter.use('/auth', authRouter);
@@ -246,6 +259,29 @@ async function bootstrap() {
       logger.error(`Nightly purge failed: ${err.message}`);
     }
   });
+
+  // ---- Daily automatic cron discovery sync ----
+  const cronSyncSchedule = configService.getString('engine.cronSyncSchedule', '0 3 * * *');
+  if (cron.validate(cronSyncSchedule)) {
+    cron.schedule(cronSyncSchedule, async () => {
+      if (!configService.isSyncEnabled()) {
+        logger.info('[CronSyncSchedule] Skipped — SSH sync disabled (engine.syncEnabled=false)');
+        return;
+      }
+      logger.info('[CronSyncSchedule] Starting scheduled daily cron sync for all active clients...');
+      try {
+        const result = await syncService.syncAllCrons(true);
+        logger.info(
+          `[CronSyncSchedule] Complete: ${result.succeeded} synced, ${result.skipped} skipped, ${result.failed} failed (${result.total} clients)`,
+        );
+      } catch (err: any) {
+        logger.error(`[CronSyncSchedule] Failed: ${err.message}`);
+      }
+    });
+    logger.info(`Daily cron sync scheduled: ${cronSyncSchedule}`);
+  } else {
+    logger.warn(`Invalid engine.cronSyncSchedule "${cronSyncSchedule}" — daily cron sync not scheduled`);
+  }
 
   // ---- Backend warm sync for DB Monitor batch data ----
   const dbMonitorBatchDays = configService.getInt('engine.dbMonitorBatchDays');

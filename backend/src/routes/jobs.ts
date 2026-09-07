@@ -43,6 +43,13 @@ function computeNextRunLocal(cronExpr: string, serverTz: string, clientTz: strin
 const router = Router();
 const logger = createServiceLogger('JobsAPI');
 
+/** GET list/detail routes require Cron Jobs read; log-tail uses JOBS_LOG_TAIL. */
+router.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  if (/\/log-tail$/.test(req.path)) return next();
+  return requirePermission('JOBS_VIEW', 'read')(req, res, next);
+});
+
 // Validation schemas
 const createJobSchema = z.object({
   name: z.string().min(1).max(255),
@@ -170,7 +177,7 @@ router.get('/', async (req: Request, res: Response) => {
         where,
         include: {
           _count: { select: { executions: true } },
-          client: { select: { id: true, clientId: true, name: true, cluster: true } },
+          client: { select: { id: true, clientId: true, name: true, cluster: true, remoteLogTailEnabled: true } },
         },
         orderBy: { name: 'asc' },
         skip: (parseInt(page as string) - 1) * parseInt(pageSize as string),
@@ -221,6 +228,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     const job = await prisma.job.findUnique({
       where: { id: req.params.id },
       include: {
+        client: { select: { id: true, clientId: true, name: true, cluster: true, remoteLogTailEnabled: true } },
         executions: {
           orderBy: { scheduledAt: 'desc' },
           take: 10,
@@ -459,17 +467,23 @@ router.get('/executions/:id/logs', async (req: Request, res: Response) => {
 });
 
 // GET /api/jobs/:id/log-tail — fetch last N lines of the job's remote log via SSH
-router.get('/:id/log-tail', async (req: Request, res: Response) => {
+router.get('/:id/log-tail', requirePermission('JOBS_LOG_TAIL', 'read'), async (req: Request, res: Response) => {
   try {
     const lines = Math.min(Math.max(parseInt(req.query.lines as string) || 10, 1), 100);
     const job = await prisma.job.findUnique({
       where: { id: req.params.id },
       select: {
         id: true, name: true, logPath: true,
-        client: { select: { clientId: true, appServers: { where: { environment: 'Prod', isActive: true }, select: { dns: true }, take: 1 } } },
+        client: { select: { clientId: true, remoteLogTailEnabled: true, appServers: { where: { environment: 'Prod', isActive: true }, select: { dns: true }, take: 1 } } },
       },
     });
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    if (job.client?.remoteLogTailEnabled === false) {
+      return res.status(403).json({
+        success: false,
+        error: `Remote log tail is disabled for client ${job.client.clientId}. Enable it in Clients → App Servers if permitted.`,
+      });
+    }
     if (!job.logPath) return res.status(400).json({ success: false, error: 'No log path configured for this job' });
 
     const wfmPrefix = config.ssh.wfmPathPrefix || configService.getString('infra.sshWfmPathPrefix', '/mount/RWS4');

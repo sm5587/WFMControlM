@@ -281,13 +281,44 @@ export function getFileMonitorPaths(input: Pick<FileMonitorFetchRequest, 'pendin
   };
 }
 
+/** Exactly one scan type must be requested (pending OR rejected, not both). */
+export function validateFileMonitorScanType(input: Pick<FileMonitorFetchRequest, 'checkPending' | 'checkRejected'>) {
+  const pending = input.checkPending === true;
+  const rejected = input.checkRejected === true;
+  if (pending === rejected) {
+    return 'Select exactly one scan type: pending IN folder or rejected DTS (today)';
+  }
+  return null;
+}
+
+export async function resolveFileMonitorClients(input: FileMonitorFetchRequest = {}) {
+  const where: { isActive: boolean; clientId?: { in: string[] }; cluster?: { in: string[] } } = { isActive: true };
+  const clusters = (input.clusters ?? []).filter(Boolean);
+  const clientIds = (input.clientIds ?? []).filter(Boolean);
+  if (clientIds.length > 0) {
+    where.clientId = { in: clientIds };
+  } else if (clusters.length > 0) {
+    where.cluster = { in: clusters };
+  }
+
+  return prisma.client.findMany({
+    where,
+    select: { clientId: true },
+    orderBy: [{ cluster: 'asc' }, { clientId: 'asc' }],
+  });
+}
+
 export async function fetchUploadFileMonitor(
   input: FileMonitorFetchRequest = {},
   options: FileMonitorFetchOptions = {},
 ): Promise<FileMonitorFetchResult> {
   const { isCancelled, onConnection, onConnectionClosed, onProgress } = options;
-  const checkPending = input.checkPending !== false;
-  const checkRejected = input.checkRejected !== false;
+  const scanTypeError = validateFileMonitorScanType(input);
+  if (scanTypeError) {
+    throw new Error(scanTypeError);
+  }
+  const checkPending = input.checkPending === true;
+  const checkRejected = input.checkRejected === true;
   const { pending: pendingPath, rejected: rejectedRoot } = getFileMonitorPaths(input);
   const cmdTimeout = configService.getInt('infra.sshCommandTimeoutSec', 30);
   const rejectedTimeoutSec = configService.getInt('infra.sshRejectedFindTimeoutSec', 120);
@@ -299,17 +330,17 @@ export async function fetchUploadFileMonitor(
   let usesTotp = false;
 
   try {
-    const where: any = { isActive: true };
-    const clusters = (input.clusters ?? []).filter(Boolean);
     const clientIds = (input.clientIds ?? []).filter(Boolean);
-    if (clientIds.length > 0) {
-      where.clientId = { in: clientIds };
-    } else if (clusters.length > 0) {
-      where.cluster = { in: clusters };
-    }
-
+    const clusters = (input.clusters ?? []).filter(Boolean);
     const clients = await prisma.client.findMany({
-      where,
+      where: {
+        isActive: true,
+        ...(clientIds.length > 0
+          ? { clientId: { in: clientIds } }
+          : clusters.length > 0
+            ? { cluster: { in: clusters } }
+            : {}),
+      },
       include: { appServers: { where: { environment: 'Prod', isActive: true } } },
       orderBy: [{ cluster: 'asc' }, { clientId: 'asc' }],
     });

@@ -12,6 +12,9 @@ import { useDbClientConnections } from '../../hooks/useDbClientConnections';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
+import { useConfig } from '../../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
+import SyncDisabledBanner from '../common/SyncDisabledBanner';
 
 function stripClientPrefix(name: string, clientId?: string): string {
   if (!clientId) return name;
@@ -64,6 +67,11 @@ export default function JobsList() {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const canEditJobs   = usePermission('JOBS_TOGGLE',  'write');
   const canDeleteJobs = usePermission('JOBS_DELETE',  'write');
+  const canLogTail    = usePermission('JOBS_LOG_TAIL', 'read');
+  const canSyncCrons  = usePermission('CLIENTS_SYNC',  'write');
+
+  const { getBool } = useConfig();
+  const syncEnabled = getBool(APP_CONFIG_KEYS.syncEnabled, true);
   const [logViewerJob, setLogViewerJob] = useState<Job | null>(null);
   const [clientSearch, setClientSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -126,6 +134,23 @@ export default function JobsList() {
 
   const allJobs = (data?.data || []) as Job[];
   const clients = (clientsData?.data || []) as Client[];
+
+  const remoteLogTailByClientId = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const c of clients) {
+      map.set(c.id, c.remoteLogTailEnabled !== false);
+    }
+    return map;
+  }, [clients]);
+
+  const isLogTailAllowed = (job: Job) => {
+    if (!canLogTail) return false;
+    const clientDbId = job.client?.id;
+    if (clientDbId && remoteLogTailByClientId.has(clientDbId)) {
+      return remoteLogTailByClientId.get(clientDbId)!;
+    }
+    return job.client?.remoteLogTailEnabled !== false;
+  };
 
   // Clients missing cleanup job (only those that have at least one synced job)
   const noCleanupClients = useMemo(() => {
@@ -304,6 +329,7 @@ export default function JobsList() {
       )}
       {/* Last refresh + cron sync status */}
       <div className="space-y-2">
+        <SyncDisabledBanner params={['ssh']} />
         {jobsUpdatedAt && (
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-gray-400" />
@@ -324,7 +350,6 @@ export default function JobsList() {
             })()}
           </p>
         </div>
-
       </div>
 
       {/* Summary Cards */}
@@ -482,9 +507,10 @@ export default function JobsList() {
             className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
           />
         </div>
+        {canSyncCrons && (
         <button
           onClick={async () => {
-            if (syncing) return;
+            if (syncing || !syncEnabled) return;
             setSyncing(true);
             setSyncingMessage('');
             try {
@@ -504,19 +530,28 @@ export default function JobsList() {
               refetch();
             } catch (err: any) {
               await queryClient.refetchQueries({ queryKey: ['cron-sync-status'] });
-              console.error('Cron sync failed:', err?.response?.data?.error || err.message);
+              const msg = err?.response?.data?.error || err.message;
+              showToast('error', msg || 'Cron sync failed');
+              console.error('Cron sync failed:', msg);
             } finally {
               setSyncing(false);
               setSyncingMessage('');
             }
           }}
-          className={`p-2 text-gray-500 hover:text-gray-700 ${syncing ? 'opacity-50 cursor-not-allowed' : ''}`}
-          title={clientFilter && clientFilter !== 'none' ? 'Sync crons from appserver' : 'Sync crons from all appservers'}
-          disabled={syncing}
+          className={`p-2 text-gray-500 hover:text-gray-700 ${syncing || !syncEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          title={
+            !syncEnabled
+              ? `Disabled — set ${APP_CONFIG_KEYS.syncEnabled}=true in Admin → Config`
+              : clientFilter && clientFilter !== 'none'
+                ? 'Sync crons from appserver'
+                : 'Sync crons from all appservers'
+          }
+          disabled={syncing || !syncEnabled}
         >
           <RefreshCw className={`w-4 h-4 ${syncing || isLoading ? 'animate-spin' : ''}`} />
         </button>
-        {clientFilter && clientFilter !== 'none' && clients.find(cl => cl.id === clientFilter) && (
+        )}
+        {clientFilter && clientFilter !== 'none' && clients.find(cl => cl.id === clientFilter) && canDeleteJobs && (
           <button
             onClick={async () => {
               if (resettingCrons || syncing) return;
@@ -693,6 +728,7 @@ export default function JobsList() {
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-end gap-0.5">
+                            {isLogTailAllowed(job) && (
                             <button
                               onClick={() => setLogViewerJob(job)}
                               className="p-1 text-purple-500 hover:bg-purple-50 rounded transition-colors"
@@ -700,6 +736,7 @@ export default function JobsList() {
                             >
                               <FileText className="w-3.5 h-3.5" />
                             </button>
+                            )}
                             {canDeleteJobs && (
                               <button
                                 onClick={() => {
@@ -754,6 +791,7 @@ export default function JobsList() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-0.5">
+                      {isLogTailAllowed(job) && (
                       <button
                         onClick={() => setLogViewerJob(job)}
                         className="p-1 text-purple-500 hover:bg-purple-50 rounded transition-colors"
@@ -761,6 +799,7 @@ export default function JobsList() {
                       >
                         <FileText className="w-3.5 h-3.5" />
                       </button>
+                      )}
                       {canDeleteJobs && (
                         <button
                           onClick={() => {
@@ -786,7 +825,9 @@ export default function JobsList() {
 
 
       {/* Log Viewer Modal */}
-      {logViewerJob && <LogViewerModal job={logViewerJob} onClose={() => setLogViewerJob(null)} />}
+      {logViewerJob && isLogTailAllowed(logViewerJob) && (
+        <LogViewerModal job={logViewerJob} onClose={() => setLogViewerJob(null)} />
+      )}
         </div>{/* end col-span-10 */}
       </div>{/* end grid */}
     </div>
@@ -794,8 +835,11 @@ export default function JobsList() {
 }
 
 function PriorityBadge({ priority }: { priority: number }) {
-  const color = priority >= 8 ? 'text-red-600 bg-red-50' :
-                priority >= 5 ? 'text-yellow-600 bg-yellow-50' :
+  const { getInt } = useConfig();
+  const critical = getInt('threshold.jobPriorityCritical', 8);
+  const warning = getInt('threshold.jobPriorityWarning', 5);
+  const color = priority >= critical ? 'text-red-600 bg-red-50' :
+                priority >= warning ? 'text-yellow-600 bg-yellow-50' :
                 'text-gray-500 bg-gray-50';
   return (
     <span className={`px-2 py-0.5 rounded text-xs font-semibold ${color}`}>

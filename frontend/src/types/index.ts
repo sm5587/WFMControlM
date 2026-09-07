@@ -207,6 +207,8 @@ export interface Client {
   db2Schema?: string;
   db2Username?: string;
   db2PasswordSet?: boolean;
+  db2SslEnabled?: boolean;
+  remoteLogTailEnabled?: boolean;
   timezone: string;
   clientType?: 'BAU' | 'IMPL';
   tags: string[];
@@ -304,7 +306,7 @@ export interface Job {
   tags: string[];
   owner?: string;
   team?: string;
-  client?: { id: string; clientId: string; name: string; cluster?: string };
+  client?: { id: string; clientId: string; name: string; cluster?: string; remoteLogTailEnabled?: boolean };
   sourceSystem?: string;
   serverTimezone?: string;
   nextRunTime?: string;

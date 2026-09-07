@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bell, Database, Clock, AlertTriangle, CheckCircle, BellOff,
-  Send, UserPlus, Trash2, X, Mail, Timer,
+  Send, UserPlus, Trash2, X, Mail, Timer, BarChart3,
 } from 'lucide-react';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
 import { useEscalatedAlerts, type EscalatedAlert } from '../../hooks/useEscalatedAlerts';
@@ -13,6 +13,7 @@ import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useConfig } from '../../contexts/ConfigContext';
 import { isNotifyEligible, minutesUntilNotifyEligible } from '../../utils/notify';
+import EscalationMonthlyReport from './EscalationMonthlyReport';
 
 interface Recipient {
   id: string;
@@ -30,14 +31,14 @@ export type { EscalatedAlert } from '../../hooks/useEscalatedAlerts';
 export default function AlertCenter() {
   const queryClient = useQueryClient();
   const { fmt } = useTimezone();
-  const { getInt } = useConfig();
+  const { getInt, getBool } = useConfig();
   const canAck         = usePermission('ALERTS_ACK',          'write');
   const canSuppress    = usePermission('ALERTS_SUPPRESS',     'write');
   const canNotify      = usePermission('ALERTS_NOTIFY',       'write');
   const canManageRecip = usePermission('RECIPIENTS_MANAGE',   'write');
-  const showUnprocPunchTab = getInt('ui.showUnprocPunchTab', 0) === 1;
+  const showUnprocPunchTab = getBool('display.showUnprocPunchTab', false);
   const notifyCooldownMins = getInt('threshold.notifyCooldownMins', 60);
-  const [activeTab, setActiveTab] = useState<'pending' | 'escalated' | 'unproc-punch'>('pending');
+  const [activeTab, setActiveTab] = useState<'pending' | 'escalated' | 'unproc-punch' | 'report'>('pending');
   const [notifyTick, setNotifyTick] = useState(0);
 
   // Re-check notify eligibility when cooldown expires (without waiting for refetch)
@@ -347,6 +348,16 @@ export default function AlertCenter() {
             )}
           </button>
         )}
+
+        <button
+          onClick={() => setActiveTab('report')}
+          className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'report' ? 'border-indigo-500 text-indigo-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4" />
+          Monthly Report
+        </button>
       </div>
 
       {/* ================ PENDING TAB ================ */}
@@ -472,7 +483,10 @@ export default function AlertCenter() {
               <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
               <div>
                 <p className="text-sm font-medium text-gray-700">Alerts pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
-                <p className="text-xs text-gray-500 mt-0.5">Acknowledge, suppress, or notify your team via email.</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Acknowledge, suppress, or notify your team via email.
+                  Escalated alerts are emailed automatically and system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
+                </p>
               </div>
             </div>
             {canNotify && notifiableOpenAlerts.length > 0 && (
@@ -979,6 +993,11 @@ export default function AlertCenter() {
             </>
           )}
         </div>
+      )}
+
+      {/* ================ MONTHLY REPORT TAB ================ */}
+      {activeTab === 'report' && (
+        <EscalationMonthlyReport />
       )}
 
       {/* ================ SUPPRESS MODAL ================ */}

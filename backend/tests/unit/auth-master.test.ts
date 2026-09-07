@@ -35,7 +35,10 @@ jest.mock('bcryptjs', () => ({
 jest.mock('../../src/database/prisma', () => ({
   prisma: {
     user: { findUnique: jest.fn() },
-    userProfile: { findMany: jest.fn().mockResolvedValue([]) },
+    userProfile: {
+      findMany: jest.fn().mockResolvedValue([{ profile: { permissions: [] } }]),
+      count: jest.fn().mockResolvedValue(1),
+    },
   },
 }));
 
@@ -277,7 +280,8 @@ describe('POST /api/auth/login — normal users unaffected by master config', ()
       isActive: true,
       passwordHash: '$2b$10$somehash',
     });
-    prisma.userProfile.findMany.mockResolvedValueOnce([]);
+    prisma.userProfile.findMany.mockResolvedValueOnce([{ profile: { permissions: [] } }]);
+    prisma.userProfile.count.mockResolvedValueOnce(1);
 
     const app = buildApp();
     const res = await request(app)

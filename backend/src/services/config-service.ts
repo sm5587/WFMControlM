@@ -13,6 +13,7 @@ import {
   ConfigValidationError,
   validateConfigValue,
 } from '../utils/config-limits';
+import { applyLdapDevMockPublicConfig } from '../utils/ldap-dev-mock';
 
 export { ConfigValidationError };
 
@@ -66,11 +67,17 @@ class ConfigService {
     await this.ensureAppNameConfig();
     await this.ensureNotifyCooldownConfig();
     await this.ensureMaintenanceAdHocWindowsConfig();
+    await this.ensurePayrollEnabledConfig();
+    await this.ensureShowUnprocPunchTabConfig();
     await this.ensureMasterAccountConfig();
     await this.ensureFileMonitorConfig();
     await this.ensureTlsConfig();
+    await this.ensureDb2SslConfig();
     await this.ensureSsoConfig();
+    await this.ensureLdapConfig();
     await this.ensureAuthTokenRevocationConfig();
+    await this.ensureSyncConfig();
+    await this.cleanupLegacyConfig();
 
     this.loaded = true;
     logger.info(`Loaded ${rows.length} config entries from DB`);
@@ -152,6 +159,62 @@ class ConfigService {
       category: 'DISPLAY',
       label: 'Maintenance Ad-hoc Windows Tab',
       description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert display.payrollEnabled when upgrading an older database. */
+  private async ensurePayrollEnabledConfig(): Promise<void> {
+    const key = 'display.payrollEnabled';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: 'false',
+        category: 'DISPLAY',
+        label: 'Payroll Jobs Menu',
+        description: 'Show Payroll Jobs screen and API (true/false)',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: 'false',
+      category: 'DISPLAY',
+      label: 'Payroll Jobs Menu',
+      description: 'Show Payroll Jobs screen and API (true/false)',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert display.showUnprocPunchTab when upgrading an older database. */
+  private async ensureShowUnprocPunchTabConfig(): Promise<void> {
+    const key = 'display.showUnprocPunchTab';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: 'false',
+        category: 'DISPLAY',
+        label: 'Unprocessed Punch Alerts Tab',
+        description: 'Show Unprocessed Punch tab on Alerts page (true/false)',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: 'false',
+      category: 'DISPLAY',
+      label: 'Unprocessed Punch Alerts Tab',
+      description: 'Show Unprocessed Punch tab on Alerts page (true/false)',
       isSecret: false,
       updatedBy: 'system',
       updatedAt: new Date(),
@@ -272,13 +335,83 @@ class ConfigService {
     }
   }
 
+  /** DB2 JDBC TLS truststore — required when a client has db2SslEnabled=true. */
+  private async ensureDb2SslConfig(): Promise<void> {
+    const defaults = [
+      ['infra.db2SslEnabled', 'false', 'INFRA', 'DB2 SSL Enabled', 'Global master switch for JDBC sslConnection. Requires true here AND per-client JDBC SSL enabled, plus infra.db2TrustStorePath.', false] as const,
+      ['infra.db2TrustStorePath', '', 'INFRA', 'DB2 Truststore Path', 'JKS truststore path for JDBC sslConnection (e.g. /app/certs/db2-truststore.jks)', false] as const,
+      ['infra.db2TrustStorePassword', '', 'INFRA', 'DB2 Truststore Password', 'Password for the DB2 JDBC truststore JKS file', true] as const,
+    ];
+
+    for (const [key, value, category, label, description, isSecret] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: {
+          key,
+          value,
+          category,
+          label,
+          description,
+          isSecret,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(key, {
+        key,
+        value,
+        category,
+        label,
+        description,
+        isSecret,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
+  }
+
   /** SSO / MFA via load balancer — email header capture for access requests. */
   private async ensureSsoConfig(): Promise<void> {
     const defaults = [
-      ['infra.ssoEnabled', 'false', 'INFRA', 'SSO/LDAP Login Enabled', 'Enable corporate SSO/LDAP login via load-balancer email header. When false, only username/password login is available.', false] as const,
+      ['infra.ssoEnabled', 'false', 'INFRA', 'SSO Header Login Enabled', 'Enable SSO via load-balancer email header (X-Forwarded-Email). Separate from direct LDAP — use LDAP Enabled for in-app AD bind.', false] as const,
       ['infra.ssoEmailHeader', 'X-Forwarded-Email', 'INFRA', 'SSO Email Header', 'HTTP header name the load balancer sets with the authenticated user email', false] as const,
       ['infra.ssoAllowedDomain', 'zebra.com', 'INFRA', 'SSO Allowed Email Domain', 'Only @zebra.com (or configured domain) emails may register or sign in via SSO', false] as const,
     ];
+
+    for (const [key, value, category, label, description, isSecret] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: { key, value, category, label, description, isSecret, updatedBy: 'system' },
+      });
+      this.cache.set(key, {
+        key, value, category, label, description, isSecret,
+        updatedBy: 'system', updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
+  }
+
+  /** Direct LDAP / Active Directory bind for username/password login. */
+  private async ensureLdapConfig(): Promise<void> {
+    const defaults = [
+      ['infra.ldapEnabled', 'false', 'INFRA', 'LDAP Enabled', 'Authenticate login against corporate LDAP/AD (in-app bind). Requires user record + profile in WFM Watch.', false] as const,
+      ['infra.ldapUrl', 'ldap://usc1.rfx.zebra.com:389', 'INFRA', 'LDAP URL', 'LDAP server URL (e.g. ldap://usc1.rfx.zebra.com:389 or ldaps://host:636)', false] as const,
+      ['infra.ldapBaseDn', 'dc=rfx,dc=zebra,dc=com', 'INFRA', 'LDAP Base DN', 'Base DN (e.g. dc=rfx,dc=zebra,dc=com)', false] as const,
+      ['infra.ldapBindDn', 'uid=svc_wfmwatch,cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com', 'INFRA', 'LDAP Bind DN', 'Service account DN for user search (ldap.manager.dn)', false] as const,
+      ['infra.ldapBindPassword', '', 'INFRA', 'LDAP Bind Password', 'Password for LDAP service account (ldap.manager.password)', true] as const,
+      ['infra.ldapUserSearchBase', 'dc=rfx,dc=zebra,dc=com', 'INFRA', 'LDAP User Search Base', 'Base DN for user search (ldap.userSearch.base)', false] as const,
+      ['infra.ldapUserFilter', '(uid={{username}})', 'INFRA', 'LDAP User Filter', 'Search filter; use {{username}} or {0} placeholder (e.g. (uid={{username}}))', false] as const,
+      ['infra.ldapUserDnPattern', 'uid={{username}},cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com', 'INFRA', 'LDAP User DN Pattern', 'Direct bind DN pattern when search is not used (ldap.userDn.pattern)', false] as const,
+      ['infra.ldapGroupSearchBase', 'dc=rfx,dc=zebra,dc=com', 'INFRA', 'LDAP Group Search Base', 'Base DN for group search (ldap.groupSearch.base)', false] as const,
+      ['infra.ldapDomain', '', 'INFRA', 'LDAP Domain', 'UPN suffix for direct bind (user@domain) when Bind DN is empty', false] as const,
+      ['infra.ldapEmailAttribute', 'mail', 'INFRA', 'LDAP Email Attribute', 'LDAP attribute for user email (default: mail)', false] as const,
+      ['infra.ldapDisplayNameAttribute', 'cn', 'INFRA', 'LDAP Display Name Attribute', 'LDAP attribute for display name (default: cn)', false] as const,
+      ['infra.ldapUseStartTls', 'false', 'INFRA', 'LDAP StartTLS', 'Use STARTTLS on ldap:// connections (not needed for ldaps://)', false] as const,
+      ['infra.ldapTlsRejectUnauthorized', 'true', 'INFRA', 'LDAP TLS Verify Certs', 'Validate LDAP server certificate when using TLS/StartTLS', false] as const,
+      ['infra.ldapAllowLocalFallback', 'true', 'INFRA', 'LDAP Allow Local Fallback', 'If LDAP bind fails, fall back to local password in User table (non-master accounts)', false] as const,
+      ['infra.ldapDevMock', 'false', 'INFRA', 'LDAP Dev Mock (non-production)', 'Simulate successful LDAP login without contacting a server. Blocked in production; prefer LDAP_DEV_MOCK env var locally.', false] as const,
+      ['infra.ldapTimeoutMs', '10000', 'INFRA', 'LDAP Timeout (ms)', 'LDAP connection and bind timeout in milliseconds', false] as const,
+    ] as const;
 
     for (const [key, value, category, label, description, isSecret] of defaults) {
       if (this.cache.has(key)) continue;
@@ -321,6 +454,29 @@ class ConfigService {
     logger.info(`Added missing config key "${key}"`);
   }
 
+  /** SSH/cron sync master toggle and daily auto-sync schedule. */
+  private async ensureSyncConfig(): Promise<void> {
+    const defaults = [
+      ['engine.syncEnabled', 'true', 'ENGINE', 'SSH Sync Enabled', 'Master switch for cron discovery, log checks, and timezone detection via SSH. Set false during production incidents.', false] as const,
+      ['engine.dbJobsSyncEnabled', 'true', 'ENGINE', 'DB Jobs Sync Enabled', 'Master switch for DB2 RFX_QUEUE fetches (Fetch All, per-client refresh, background polling). Set false during production incidents.', false] as const,
+      ['engine.punchSyncEnabled', 'true', 'ENGINE', 'Punch Sync Enabled', 'Master switch for unprocessed punch DB2 queries (Refresh, progressive load, background polling). Set false during production incidents.', false] as const,
+      ['engine.cronSyncSchedule', '0 3 * * *', 'ENGINE', 'Daily Cron Sync Schedule', 'Cron expression for automatic nightly cron discovery from all appservers (server local time). Requires restart to change.', false] as const,
+      ['engine.autoEscalationNotifyEnabled', 'true', 'ENGINE', 'Auto Escalation Email', 'When true, automatically email notification recipients and system-acknowledge escalated alerts for Default Suppress (min) after they cross the escalation threshold.', false] as const,
+    ];
+
+    for (const [key, value, category, label, description, isSecret] of defaults) {
+      if (this.cache.has(key)) continue;
+      await prisma.appConfig.create({
+        data: { key, value, category, label, description, isSecret, updatedBy: 'system' },
+      });
+      this.cache.set(key, {
+        key, value, category, label, description, isSecret,
+        updatedBy: 'system', updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${key}"`);
+    }
+  }
+
   /**
    * Get a string config value. Returns defaultVal if not found.
    */
@@ -356,6 +512,48 @@ class ConfigService {
     const v = this.cache.get(key)?.value;
     if (v === undefined || v === '') return defaultVal;
     return v === 'true' || v === '1';
+  }
+
+  /** Whether SSH-based sync (cron discovery, log checks, TZ detect) is allowed. */
+  isSyncEnabled(): boolean {
+    return this.getBool('engine.syncEnabled', true);
+  }
+
+  /** Whether DB2 RFX_QUEUE fetches for DB Jobs are allowed. */
+  isDbJobsSyncEnabled(): boolean {
+    return this.getBool('engine.dbJobsSyncEnabled', true);
+  }
+
+  /** Whether unprocessed punch DB2 queries are allowed. */
+  isPunchSyncEnabled(): boolean {
+    return this.getBool('engine.punchSyncEnabled', true);
+  }
+
+  /** Whether JDBC sslConnection is allowed globally (also requires per-client db2SslEnabled). */
+  isDb2SslEnabled(): boolean {
+    return this.getBool('infra.db2SslEnabled', false);
+  }
+
+  /** Remove superseded or unused AppConfig keys from older databases. */
+  private async cleanupLegacyConfig(): Promise<void> {
+    const obsoleteKeys = [
+      'infra.db2JjsPath',
+      'engine.jjsTimeoutMs',
+      'engine.jjsMaxBuffer',
+      'ui.showUnprocPunchTab',
+      'display.defaultBatchDays',
+      'engine.maxConcurrentJobs',
+      'engine.heartbeatIntervalMs',
+      'engine.executionHistoryDays',
+      'engine.logRetentionDays',
+    ];
+
+    for (const key of obsoleteKeys) {
+      if (!this.cache.has(key)) continue;
+      await prisma.appConfig.delete({ where: { key } });
+      this.cache.delete(key);
+      logger.info(`Removed obsolete config key "${key}"`);
+    }
   }
 
   /** Product display name from AppConfig (display.appName). */
@@ -400,6 +598,7 @@ class ConfigService {
       if (entry.isSecret || entry.category === 'SECRETS') continue;
       result[key] = entry.value;
     }
+    applyLdapDevMockPublicConfig(result);
     return result;
   }
 
@@ -452,28 +651,67 @@ class ConfigService {
   }
 
   /**
-   * Bulk update multiple config values.
+   * Update the help description for a config key (admin UI).
    */
-  async bulkUpdate(updates: Array<{ key: string; value: string }>, userId?: string): Promise<{
+  async updateDescription(key: string, description: string, userId?: string): Promise<void> {
+    const existing = this.cache.get(key);
+    if (!existing) {
+      throw new Error(`Config key "${key}" not found`);
+    }
+
+    const trimmed = description.trim();
+    await prisma.appConfig.update({
+      where: { key },
+      data: {
+        description: trimmed || null,
+        updatedBy: userId || null,
+      },
+    });
+
+    existing.description = trimmed || null;
+    existing.updatedBy = userId || null;
+    existing.updatedAt = new Date();
+    logger.info(`Config description for "${key}" updated by ${userId || 'system'}`);
+  }
+
+  /**
+   * Bulk update config values and/or descriptions.
+   */
+  async bulkUpdate(updates: Array<{ key: string; value?: string; description?: string }>, userId?: string): Promise<{
     updated: number;
     requiresRestart: boolean;
     categories: string[];
   }> {
-    for (const { key, value } of updates) {
-      validateConfigValue(key, value);
+    for (const { key, value, description } of updates) {
+      if (value === undefined && description === undefined) {
+        throw new Error(`Config update for "${key}" must include value and/or description`);
+      }
+      if (value !== undefined) {
+        validateConfigValue(key, value);
+      }
     }
 
     const categories = new Set<string>();
     let requiresRestart = false;
+    let updated = 0;
 
-    for (const { key, value } of updates) {
-      const result = await this.update(key, value, userId);
-      categories.add(result.category);
-      if (result.requiresRestart) requiresRestart = true;
+    for (const { key, value, description } of updates) {
+      if (value !== undefined) {
+        const result = await this.update(key, value, userId);
+        categories.add(result.category);
+        if (result.requiresRestart) requiresRestart = true;
+        updated++;
+      }
+      if (description !== undefined) {
+        await this.updateDescription(key, description, userId);
+        const cat = this.cache.get(key)?.category;
+        if (cat) categories.add(cat);
+        if (value === undefined) updated++;
+      }
     }
 
     return {
-      updated: updates.length,
+      updated,
       requiresRestart,
       categories: Array.from(categories),
     };

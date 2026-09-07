@@ -47,16 +47,18 @@ jest.mock('../../src/services/config-service', () => ({
       const defaults: Record<string, string> = {
         'infra.db2LibDir': '',
         'infra.db2JavaPath': 'java',
-        'infra.db2JjsPath': '',
+        'infra.db2SslEnabled': 'false',
       };
       return defaults[key] ?? '';
+    }),
+    getBool: jest.fn((key: string, defaultVal = false) => {
+      if (key === 'infra.db2SslEnabled') return false;
+      return defaultVal;
     }),
     getInt: jest.fn((key: string, defaultVal = 0) => {
       const defaults: Record<string, number> = {
         'engine.db2ConnectorTimeoutMs': 120000,
         'engine.db2ConnectorMaxBuffer': 10485760,
-        'engine.jjsTimeoutMs': 120000,
-        'engine.jjsMaxBuffer': 10485760,
         'infra.db2DefaultPort': 50000,
       };
       return defaults[key] ?? defaultVal;

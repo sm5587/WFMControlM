@@ -11,7 +11,7 @@ source "$SCRIPT_DIR/lib/dotenv.sh"
 #
 # Optional env vars:
 #   APP_DIR=...              # override; default is APP_DIR from .env
-#   CHECK_DB2=true|false              # Java8/jjs + DB2 assets (default false)
+#   CHECK_DB2=true|false              # JDK 17+ java + DB2 lib assets (default false)
 #   CHECK_FRONTEND=true|false         # nginx/rsync for frontend serving (default true)
 #   CHECK_RUNTIME=true|false          # DB content, SSH creds, AppConfig paths (default true)
 #   REQUIRE_CONFIG_ENCRYPTION_KEY=true|false  # default false for sandbox install checks
@@ -459,9 +459,6 @@ if [[ "$CHECK_DB2" == "true" ]]; then
 
   if [[ -n "${DB_PATH:-}" && -f "${DB_PATH:-}" ]] && cmd_exists sqlite3; then
     CFG_JAVA="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='infra.db2JavaPath';" 2>/dev/null || true)"
-    if [[ -z "$CFG_JAVA" ]]; then
-      CFG_JAVA="$(sqlite3 "$DB_PATH" "SELECT COALESCE(value,'') FROM AppConfig WHERE key='infra.db2JjsPath';" 2>/dev/null || true)"
-    fi
     if [[ -n "$CFG_JAVA" && ( -x "$CFG_JAVA" || "$CFG_JAVA" == "java" ) ]]; then
       pass "AppConfig infra.db2JavaPath resolves for DB2 ($CFG_JAVA)"
     elif [[ -n "$CFG_JAVA" ]]; then
@@ -479,7 +476,7 @@ if [[ "$FAIL_COUNT" -gt 0 ]]; then
   echo "[preflight] FAILED — fix failed checks before deploy."
   echo ""
   echo "Common fixes:"
-  echo "  sudo apt install -y nodejs npm sqlite3 nginx rsync curl build-essential java-1.8.0-openjdk"
+  echo "  sudo apt install -y nodejs npm sqlite3 nginx rsync curl build-essential openjdk-17-jre-headless"
   echo "  npm run install:all && npm run build && npm --prefix backend run prisma:generate"
   echo "  npm run db:bootstrap          # schema + config + clients"
   echo "  bash ./scripts/start-app-unix.sh && bash ./scripts/start-frontend-unix.sh"

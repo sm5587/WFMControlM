@@ -4,7 +4,7 @@
 
 import { Router, Request, Response } from 'express';
 import { prisma } from '../database/prisma';
-import { syncService } from '../services/sync-service';
+import { syncService, SyncDisabledError } from '../services/sync-service';
 import { db2DirectService } from '../services/db2-direct-service';
 import { createServiceLogger } from '../utils/logger';
 import { encryptClientDb2Password, hasStoredDb2Password } from '../utils/client-db2-password';
@@ -13,6 +13,21 @@ import { z } from 'zod';
 
 const router = Router();
 const logger = createServiceLogger('ClientsAPI');
+
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('CLIENTS_VIEW', 'read')(req, res, next);
+  }
+  return next();
+});
+
+function handleSyncError(res: Response, error: any): boolean {
+  if (error instanceof SyncDisabledError || error?.name === 'SyncDisabledError') {
+    res.status(503).json({ success: false, error: error.message });
+    return true;
+  }
+  return false;
+}
 
 // ---- CLIENTS ----
 
@@ -30,6 +45,8 @@ const CreateClientSchema = z.object({
   db2Port: z.number().int().default(50000),
   db2Database: z.string().optional(),
   db2Schema: z.string().optional(),
+  db2SslEnabled: z.boolean().default(false),
+  remoteLogTailEnabled: z.boolean().default(true),
   // App servers — one entry per environment row
   appServers: z.array(z.object({
     environment: z.enum(['Prod', 'PP']),
@@ -84,6 +101,7 @@ router.post('/detect-timezones', requirePermission('CLIENTS_DETECT_TZ', 'write')
     const result = await syncService.detectAllTimezones({ cluster, clientIds, force: !!force });
     res.json({ success: true, data: result });
   } catch (error: any) {
+    if (handleSyncError(res, error)) return;
     logger.error(`Timezone detection failed: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -169,7 +187,7 @@ router.get('/cron-sync-status', async (_req: Request, res: Response) => {
 });
 
 // POST /api/clients/reset-crons - Purge cron data only (manual re-sync via refresh)
-router.post('/reset-crons', requirePermission('CLIENTS_SYNC', 'write'), async (req: Request, res: Response) => {
+router.post('/reset-crons', requirePermission('JOBS_DELETE', 'write'), async (req: Request, res: Response) => {
   try {
     const { clientId } = req.body || {};
 
@@ -255,11 +273,11 @@ router.get('/:id', async (req: Request, res: Response) => {
 // PATCH /api/clients/:id - Update client details (admin only)
 router.patch('/:id', requirePermission('CLIENTS_EDIT', 'write'), async (req: Request, res: Response) => {
   try {
-    const boolKeys = ['whiteGlove', 'isActive'];
+    const boolKeys = ['whiteGlove', 'isActive', 'db2SslEnabled', 'remoteLogTailEnabled'];
     const numKeys  = ['db2Port'];
     const allowed  = ['name', 'timezone', 'clientType', 'cluster',
                       'whiteGlove', 'isActive', 'db2Host', 'db2Port', 'db2Database', 'db2Schema',
-                      'db2Username', 'db2Password'];
+                      'db2Username', 'db2Password', 'db2SslEnabled', 'remoteLogTailEnabled'];
     const data: Record<string, any> = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
@@ -399,7 +417,7 @@ router.delete('/:id/servers/:serverId', requirePermission('CLIENTS_EDIT', 'write
 // ---- SYNC ----
 
 // POST /api/clients/:id/sync - Trigger sync for a single client
-router.post('/:id/sync', async (req: Request, res: Response) => {
+router.post('/:id/sync', requirePermission('CLIENTS_SYNC', 'write'), async (req: Request, res: Response) => {
   try {
     const { syncType = 'FULL_SYNC', force } = req.body;
     const clientId = req.params.id;
@@ -415,6 +433,7 @@ router.post('/:id/sync', async (req: Request, res: Response) => {
 
     res.json({ success: true, data: results });
   } catch (error: any) {
+    if (handleSyncError(res, error)) return;
     logger.error(`Sync failed: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -428,6 +447,7 @@ router.post('/sync-all', requirePermission('CLIENTS_SYNC', 'write'), async (req:
     const result = await syncService.syncAllClients(!!force);
     res.json({ success: true, data: result });
   } catch (error: any) {
+    if (handleSyncError(res, error)) return;
     logger.error(`Sync-all failed: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -441,6 +461,7 @@ router.post('/sync-all-crons', requirePermission('CLIENTS_SYNC', 'write'), async
     const result = await syncService.syncAllCrons(!!force);
     res.json({ success: true, data: result });
   } catch (error: any) {
+    if (handleSyncError(res, error)) return;
     logger.error(`Sync-all-crons failed: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }

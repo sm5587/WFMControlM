@@ -4,13 +4,27 @@
 // Uses db2DirectService (Java JDBC) — same as DB Monitor
 // ============================================================
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { payrollService } from '../services/payroll-service';
 import { db2DirectService } from '../services/db2-direct-service';
 import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
+import { configService } from '../services/config-service';
+import { PAYROLL_ENABLED_KEY } from '../constants/app-display';
+import { requirePermission } from '../middleware';
 
 const router = Router();
+
+function requirePayrollEnabled(req: Request, res: Response, next: NextFunction): void {
+  if (!configService.getBool(PAYROLL_ENABLED_KEY, false)) {
+    res.status(404).json({ success: false, error: 'Payroll feature is disabled' });
+    return;
+  }
+  next();
+}
+
+router.use(requirePayrollEnabled);
+router.use(requirePermission('PAYROLL_VIEW', 'read'));
 
 // ============================================================
 // Background sync: query each client DB2 for RTA_INTEGRATION

@@ -12,16 +12,23 @@ import {
   extractRequestToken,
   setSessionCookie,
 } from '../utils/session-cookie';
+import { createCsrfTokenFromSession } from '../utils/csrf-token';
 import { prisma } from '../database/prisma';
 import { createServiceLogger } from '../utils/logger';
 import { APP_FUNCTIONS } from '../constants/functions';
 import { tokenRevocationService } from '../services/token-revocation-service';
 import { loginRateLimiter } from '../middleware/login-rate-limit';
 import { extractSsoEmail, extractSsoEmailDetailed, isAllowedSsoDomain } from '../utils/sso-email';
-import { resolveSsoAccessStatus } from '../services/access-request-service';
+import { resolveSsoAccessStatus, resolveLdapAccessStatus, SsoAccessStatus } from '../services/access-request-service';
+import { authenticateLdap, isLdapEnabled } from '../services/ldap-service';
+import { configService } from '../services/config-service';
 
 const router = Router();
 const logger = createServiceLogger('Auth');
+
+function csrfForSession(sessionToken: string): string | undefined {
+  return createCsrfTokenFromSession(sessionToken) ?? undefined;
+}
 
 // ── helpers ─────────────────────────────────────────────────
 
@@ -60,6 +67,80 @@ async function signToken(
     timezone,
     permissions,
   });
+}
+
+function accessStatusResponse(res: Response, status: SsoAccessStatus, error: string): Response {
+  return res.status(403).json({
+    success: false,
+    error,
+    data: { accessStatus: status },
+  });
+}
+
+function resolveLdapEmail(ldapResult: { username: string; email?: string }): string | null {
+  if (ldapResult.email?.trim()) {
+    return ldapResult.email.trim().toLowerCase();
+  }
+  const domain = configService.getString('infra.ldapDomain').trim().replace(/^@/, '');
+  if (domain) {
+    return `${ldapResult.username.trim()}@${domain}`.toLowerCase();
+  }
+  return null;
+}
+
+/** Issue session cookie after validating user has profiles. */
+async function completeUserLogin(
+  user: { id: string; username: string; displayName: string; email: string; timezone: string; isActive: boolean },
+  ip: string,
+  res: Response,
+  via: 'local' | 'ldap',
+): Promise<Response | void> {
+  if (!user.isActive) {
+    logger.warn(`[LOGIN] Inactive user=${user.username} ip=${ip}`);
+    return res.status(401).json({ success: false, error: 'Invalid credentials' });
+  }
+
+  const profileCount = await prisma.userProfile.count({ where: { userId: user.id } });
+  if (profileCount === 0) {
+    logger.warn(`[LOGIN] No profile assigned user=${user.username} ip=${ip}`);
+    return accessStatusResponse(res, {
+      ssoEnabled: false,
+      email: user.email,
+      status: 'ACTIVE',
+      canLogin: false,
+      displayName: user.displayName,
+      message: 'No profile assigned. Contact an administrator to grant access.',
+    }, 'No profile assigned. Contact an administrator to grant access.');
+  }
+
+  const token = await signToken(user.id, user.username, user.displayName, user.timezone);
+  logger.info(`[LOGIN] Success via=${via} user=${user.username} ip=${ip}`);
+
+  setSessionCookie(res, token);
+
+  return res.json({
+    success: true,
+    data: {
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        email: user.email,
+        timezone: user.timezone,
+      },
+      csrfToken: csrfForSession(token),
+    },
+  });
+}
+
+async function findUserForLdapLogin(ldapUsername: string, ldapEmail?: string) {
+  const byUsername = await prisma.user.findUnique({ where: { username: ldapUsername } });
+  if (byUsername) return byUsername;
+
+  if (ldapEmail) {
+    return prisma.user.findUnique({ where: { email: ldapEmail.toLowerCase() } });
+  }
+  return null;
 }
 
 // ── POST /api/auth/register ──────────────────────────────────
@@ -151,8 +232,44 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response) => {
         success: true,
         data: {
           user: { id: 'master', username, displayName: 'WFM Admin', email: null, isMaster: true },
+          csrfToken: csrfForSession(token),
         },
       });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Direct LDAP / AD bind (when enabled in Admin → Config) ─────────────
+    if (isLdapEnabled()) {
+      const ldapResult = await authenticateLdap(username, password);
+      if (ldapResult.success) {
+        const user = await findUserForLdapLogin(ldapResult.username, ldapResult.email);
+        if (!user) {
+          const email = resolveLdapEmail(ldapResult);
+          if (!email) {
+            logger.warn(`[LOGIN] LDAP ok but no email ldapUser=${ldapResult.username} ip=${ip}`);
+            return res.status(403).json({
+              success: false,
+              error: 'LDAP authentication succeeded but no email could be resolved. Configure infra.ldapEmailAttribute or infra.ldapDomain.',
+            });
+          }
+
+          logger.info(`[LOGIN] LDAP ok, creating access request ldapUser=${ldapResult.username} email=${email} ip=${ip}`);
+          const accessStatus = await resolveLdapAccessStatus(email, ip, {
+            displayName: ldapResult.displayName,
+            requestedUsername: ldapResult.username,
+          });
+          return accessStatusResponse(
+            res,
+            accessStatus,
+            accessStatus.message || 'Access request submitted. Contact an administrator.',
+          );
+        }
+        const done = await completeUserLogin(user, ip, res, 'ldap');
+        if (done) return done;
+      } else if (!configService.getBool('infra.ldapAllowLocalFallback', true)) {
+        logger.warn(`[LOGIN] LDAP failed, local fallback disabled user=${username} ip=${ip}`);
+        return res.status(401).json({ success: false, error: 'Invalid credentials' });
+      }
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -168,26 +285,8 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
-    const profileCount = await prisma.userProfile.count({ where: { userId: user.id } });
-    if (profileCount === 0) {
-      logger.warn(`[LOGIN] No profile assigned user=${username} ip=${ip}`);
-      return res.status(403).json({
-        success: false,
-        error: 'No profile assigned. Contact an administrator to grant access.',
-      });
-    }
-
-    const token = await signToken(user.id, user.username, user.displayName, user.timezone);
-    logger.info(`[LOGIN] Success user=${username} ip=${ip}`);
-
-    setSessionCookie(res, token);
-
-    res.json({
-      success: true,
-      data: {
-        user: { id: user.id, username: user.username, displayName: user.displayName, email: user.email, timezone: user.timezone },
-      },
-    });
+    const done = await completeUserLogin(user, ip, res, 'local');
+    if (done) return done;
   } catch (err: any) {
     logger.error(`[LOGIN] Unexpected error: ${err.message}`, {
       stack: err.stack,
@@ -283,6 +382,7 @@ router.post('/sso-login', async (req: Request, res: Response) => {
       success: true,
       data: {
         user: { id: user.id, username: user.username, displayName: user.displayName, email: user.email, timezone: user.timezone },
+        csrfToken: csrfForSession(token),
       },
     });
   } catch (err: any) {
@@ -307,9 +407,17 @@ router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
 // ── GET /api/auth/me ─────────────────────────────────────────
 router.get('/me', authMiddleware, (req: Request, res: Response) => {
   const u = (req as any).user;
+  const sessionToken = extractRequestToken(req);
   res.json({
     success: true,
-    data: { id: u.userId, username: u.username, displayName: u.displayName, timezone: u.timezone || 'Asia/Kolkata', permissions: u.permissions },
+    data: {
+      id: u.userId,
+      username: u.username,
+      displayName: u.displayName,
+      timezone: u.timezone || 'Asia/Kolkata',
+      permissions: u.permissions,
+      csrfToken: sessionToken ? csrfForSession(sessionToken) : undefined,
+    },
   });
 });
 
@@ -336,12 +444,20 @@ router.post('/refresh-permissions', authMiddleware, async (req: Request, res: Re
         isMaster: true,
       });
       setSessionCookie(res, token);
-      return res.json({ success: true, message: 'Permissions refreshed' });
+      return res.json({
+        success: true,
+        message: 'Permissions refreshed',
+        csrfToken: csrfForSession(token),
+      });
     }
     const { userId, username, displayName, timezone } = user;
     const token = await signToken(userId, username, displayName, timezone || 'Asia/Kolkata');
     setSessionCookie(res, token);
-    res.json({ success: true, message: 'Permissions refreshed' });
+    res.json({
+      success: true,
+      message: 'Permissions refreshed',
+      csrfToken: csrfForSession(token),
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

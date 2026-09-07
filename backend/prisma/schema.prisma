@@ -27,6 +27,8 @@ model Client {
   db2Schema       String?
   db2Username     String?       // DB2 login username (e.g. rwsuser)
   db2Password     String?       // DB2 login password (AES-256-GCM encrypted at rest)
+  db2SslEnabled   Boolean       @default(false) // JDBC sslConnection=true (native DB2 TLS)
+  remoteLogTailEnabled Boolean  @default(true)  // false = block SSH log tail + automated log checks (data sovereignty)
 
   // Payroll
   payrollEnabled  Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
@@ -563,10 +565,11 @@ model User {
 
 // SSO/MFA access requests — email captured from load balancer, pending admin approval
 model AccessRequest {
-  id          String    @id @default(uuid())
-  email       String    @unique
-  displayName String?
-  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  id                String    @id @default(uuid())
+  email             String    @unique
+  displayName       String?
+  requestedUsername String?
+  status            String    @default("PENDING") // PENDING | APPROVED | REJECTED
   requestedAt DateTime  @default(now())
   reviewedAt  DateTime?
   reviewedBy  String?

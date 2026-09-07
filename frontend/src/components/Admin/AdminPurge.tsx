@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trash2, Play, RefreshCw, ToggleLeft, ToggleRight, Clock, Database } from 'lucide-react';
 import { adminApi, PurgeConfig } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
+import { useConfig } from '../../contexts/ConfigContext';
 
 function formatAgo(dateStr: string | null | undefined): string {
   if (!dateStr) return 'Never';
@@ -18,6 +19,9 @@ function formatAgo(dateStr: string | null | undefined): string {
 export default function AdminPurge() {
   const canView   = usePermission('DATA_PURGE_VIEW', 'read');
   const canManage = usePermission('DATA_PURGE_RUN',  'write');
+  const { getInt } = useConfig();
+  const purgeRowsRed = getInt('threshold.purgeRowsRed', 10000);
+  const purgeRowsAmber = getInt('threshold.purgeRowsAmber', 1000);
   const qc = useQueryClient();
   const [runningAll, setRunningAll] = useState(false);
   const [runningOne, setRunningOne] = useState<string | null>(null);
@@ -142,7 +146,7 @@ export default function AdminPurge() {
 
                   {/* Row count */}
                   <td className="px-5 py-3 text-right">
-                    <span className={`text-sm font-mono font-medium ${rowCount > 10000 ? 'text-red-600' : rowCount > 1000 ? 'text-amber-600' : 'text-gray-700'}`}>
+                    <span className={`text-sm font-mono font-medium ${rowCount > purgeRowsRed ? 'text-red-600' : rowCount > purgeRowsAmber ? 'text-amber-600' : 'text-gray-700'}`}>
                       {rowCount.toLocaleString()}
                     </span>
                   </td>

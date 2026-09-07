@@ -1,6 +1,6 @@
 # WFM Control-M — Unix Deployment Guide
 
-Install and run WFM Control-M on Linux from a **git clone**. The app uses **SQLite** (via Prisma), **Node.js 18+**, and a React frontend. Full WFM monitoring (DB2 batch status, RFX queue, SSH cron sync) additionally requires **Java 8 with Nashorn (`jjs`)** and client connection assets.
+Install and run WFM Control-M on Linux from a **git clone**. The app uses **SQLite** (via Prisma), **Node.js 18+**, and a React frontend. Full WFM monitoring (DB2 batch status, RFX queue, SSH cron sync) additionally requires **JDK 17+ (`java`)** and the compiled DB2 JDBC connector in `lib/`.
 
 See also:
 
@@ -68,20 +68,19 @@ Required **on the host** (or mounted into a custom image). The stock Dockerfiles
 
 | Software / asset | Purpose |
 | ---------------- | ------- |
-| **Java 8 JRE** with **`jjs`** (Nashorn) | DB2 queries via `lib/DB2Connector.js` — **not** Java 11+ (Nashorn removed) |
-| **`lib/DB2Connector.js`** + **`lib/db2jcc4.jar`** | JDBC bridge to client DB2 databases |
-| **`dbconnections/Production/*_DBString.txt`** | Per-client DB2 connection files |
+| **JDK 17+ JRE** (`java` on PATH) | DB2 queries via compiled `lib/DB2Connector.class` + `lib/db2jcc4.jar` |
+| **`lib/DB2Connector.class`** + **`lib/db2jcc4.jar`** | JDBC bridge to client DB2 databases (compile from `lib/DB2Connector.java` if needed) |
+| **`dbconnections/Production/*_DBString.txt`** *(optional)* | One-time import via `import-db2-creds.ts`; runtime credentials live in the Client table |
 | **Network access** | Reach client DB2 hosts and app servers (SSH port 22) |
-| **AppConfig** (Admin → Config) | Set `infra.db2LibDir`, `infra.db2JjsPath`, `infra.db2ConnDir`, SSH/SMTP secrets |
+| **AppConfig** (Admin → Config) | Set `infra.db2LibDir`, `infra.db2JavaPath`, SSH/SMTP secrets |
 
-> **Note:** DB2 access in this project uses the **Java/jjs bridge**, not the `ibm_db` npm package. You do **not** need the IBM DB2 ODBC CLI driver unless you add separate tooling.
+> **Note:** DB2 access uses a **Java JDBC child process** (`java -cp DB2Connector …`), not Nashorn/jjs (removed in Java 11+). You do **not** need the IBM DB2 ODBC CLI driver unless you add separate tooling.
 
-Example Java 8 on RHEL/CentOS (adjust for your distro):
+Example JDK 17 on RHEL/CentOS (adjust for your distro):
 
 ```bash
-# OpenJDK 8 — verify jjs exists: /usr/lib/jvm/java-1.8.0-openjdk/bin/jjs
-sudo yum install -y java-1.8.0-openjdk
-jjs -version   # must succeed
+sudo yum install -y java-17-openjdk-headless
+java -version   # must report 17+
 ```
 
 Then set in **Admin → Config** (or `AppConfig` rows after bootstrap):
@@ -89,8 +88,8 @@ Then set in **Admin → Config** (or `AppConfig` rows after bootstrap):
 | Key | Example (Unix) |
 | --- | -------------- |
 | `infra.db2LibDir` | `/application/wfmwatch/lib` |
-| `infra.db2JjsPath` | `/usr/lib/jvm/java-1.8.0-openjdk/bin/jjs` |
-| `infra.db2ConnDir` | `/application/wfmwatch/dbconnections/Production` |
+| `infra.db2JavaPath` | `/usr/lib/jvm/java-17-openjdk/bin/java` |
+| `infra.db2ConnDir` | `/application/wfmwatch/dbconnections/Production` *(import script only)* |
 
 ---
 
@@ -166,9 +165,9 @@ The SQLite file lives inside the container by default. Mount a volume on `/app/p
 
 ### DB2 / SSH in Docker
 
-The stock backend image is **Node 18 Alpine only** — no Java, no `jjs`. For DB Monitor and DB Jobs:
+The stock backend image is **Node 18 Alpine only** — no Java bundled by default. For DB Monitor and DB Jobs:
 
-- Install Java 8 + mount `lib/` and `dbconnections/` into the container, **or**
+- Install JDK 17+ + mount `lib/` into the container, **or**
 - Run **bare metal** for the backend on a host that has Java and network access to client systems.
 
 ---
@@ -190,7 +189,7 @@ sudo yum install -y python3 git
 sudo yum install -y nginx
 sudo systemctl enable --now nginx
 
-# Java 8 + jjs (required for DB2 features — see Tier 4 above)
+# JDK 17+ java (required for DB2 features — see Tier 4 above)
 sudo yum install -y java-1.8.0-openjdk
 ```
 
@@ -262,7 +261,7 @@ After first login:
 
 1. Change the bootstrap admin password.
 2. Set production secrets in **Admin → Config** (`secrets.jwtSecret`, `secrets.smtp*`, etc.).
-3. Set `infra.db2LibDir`, `infra.db2JjsPath`, `infra.db2ConnDir` if using DB2 features.
+3. Set `infra.db2LibDir`, `infra.db2JavaPath` if using DB2 features.
 4. Set CORS origins to production hostnames only.
 
 Client/AppServer inventory is **environment-specific** — load via Admin or import scripts, not from `dml.sql`.
@@ -273,7 +272,7 @@ Client/AppServer inventory is **environment-specific** — load via Admin or imp
 
 1. **25k files is normal after `npm install`** — that is `node_modules/`. Clone git source; do not copy a Windows dev tree wholesale.
 
-2. **Java 8 + `jjs` for DB2** — DB Monitor, DB Jobs, and batch queries use `lib/DB2Connector.js` via Nashorn. Java 11+ does not include `jjs`. Configure paths in AppConfig.
+2. **JDK 17+ `java` for DB2** — DB Monitor, DB Jobs, and batch queries use compiled `lib/DB2Connector.class` via `java -cp`. Configure `infra.db2JavaPath` and `infra.db2LibDir` in AppConfig.
 
 3. **`ssh2` native bindings** — Compiles during `npm install`; requires gcc/make/python3 on bare metal.
 
@@ -328,6 +327,6 @@ cat VERSION
 | ---- | ---- |
 | Fastest install, UI + API | **Docker Compose** |
 | Production on Unix with Nginx + PM2 | **Bare metal build** |
-| DB Monitor / DB Jobs / SSH cron sync | **Bare metal (or custom Docker) + Java 8 jjs + lib/ + dbconnections** |
+| DB Monitor / DB Jobs / SSH cron sync | **Bare metal (or custom Docker) + JDK 17 java + lib/** |
 | Regenerate bootstrap SQL | `npm run db:extract` — [dbextract.md](dbextract.md) |
 | Pre-go-live validation | [production-readiness-checklist.md](production-readiness-checklist.md) |

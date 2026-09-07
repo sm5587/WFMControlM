@@ -9,7 +9,7 @@ import {
 import { jobsApi, unprocessedPunchApi, escalationsApi } from '../../services/api';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
 import { useTimezone } from '../../hooks/useTimezone';
-import { useAppName } from '../../contexts/ConfigContext';
+import { useAppName, useConfig } from '../../contexts/ConfigContext';
 
 // ---- Widget registry ----
 type WidgetId =
@@ -42,6 +42,8 @@ function loadHidden(): Set<WidgetId> {
 
 export default function Dashboard() {
   const appName = useAppName();
+  const { getInt } = useConfig();
+  const upcomingRefreshMs = getInt('polling.upcomingJobsRefreshSecs', 60) * 1000;
   const { data: allBatchData, isLoading: batchLoading, dataUpdatedAt: batchUpdatedAt } = useAllClientsBatchData();
 
   const { data: jobsData } = useQuery({
@@ -56,7 +58,8 @@ export default function Dashboard() {
   const { data: upcomingData } = useQuery({
     queryKey: ['upcoming-jobs'],
     queryFn: () => jobsApi.getUpcoming(2),
-    staleTime: 30 * 60 * 1000,
+    staleTime: upcomingRefreshMs,
+    refetchInterval: upcomingRefreshMs,
   });
 
   const { data: punchRes, isLoading: punchLoading, error: punchError } = useQuery({

@@ -24,6 +24,33 @@ describe('config-limits', () => {
       expect(() => validateConfigValue('infra.db2PoolMax', '20')).toThrow(ConfigValidationError);
       expect(() => validateConfigValue('infra.db2PoolMax', '10')).not.toThrow();
     });
+
+    it('rejects non-boolean engine.syncEnabled values', () => {
+      expect(() => validateConfigValue('engine.syncEnabled', 'yes')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('engine.syncEnabled', 'true')).not.toThrow();
+      expect(() => validateConfigValue('engine.syncEnabled', 'false')).not.toThrow();
+    });
+
+    it('rejects non-boolean engine.dbJobsSyncEnabled values', () => {
+      expect(() => validateConfigValue('engine.dbJobsSyncEnabled', '1')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('engine.dbJobsSyncEnabled', 'false')).not.toThrow();
+    });
+
+    it('rejects non-boolean engine.punchSyncEnabled values', () => {
+      expect(() => validateConfigValue('engine.punchSyncEnabled', 'yes')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('engine.punchSyncEnabled', 'true')).not.toThrow();
+    });
+
+    it('rejects invalid cron sync schedule', () => {
+      expect(() => validateConfigValue('engine.cronSyncSchedule', 'not-a-cron')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('engine.cronSyncSchedule', '0 3 * * *')).not.toThrow();
+    });
+
+    it('rejects non-boolean infra.db2SslEnabled values', () => {
+      expect(() => validateConfigValue('infra.db2SslEnabled', 'yes')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('infra.db2SslEnabled', 'true')).not.toThrow();
+      expect(() => validateConfigValue('infra.db2SslEnabled', 'false')).not.toThrow();
+    });
   });
 
   describe('clampConfigInt', () => {

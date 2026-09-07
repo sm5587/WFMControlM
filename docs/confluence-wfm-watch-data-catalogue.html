@@ -1,0 +1,268 @@
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Document purpose:</strong> Data catalogue and PII assessment for WFM Watch — supports security approval for single-server, multi-region deployment.</p>
+<p><strong>Audience:</strong> Security team, compliance, operations.</p>
+<p><strong>Confluence page:</strong> <a href="https://confluence.zebra.com/spaces/SUPW/pages/1254498245/Data+Catalogue">SUPW / Data Catalogue</a></p>
+<p><strong>Last updated:</strong> August 2026</p>
+<p><strong>Source repository:</strong> WFMControlM — <code>docs/WFM-Watch-Data-Catalogue.md</code></p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h1>WFM Watch — Data Catalogue &amp; PII Assessment</h1>
+
+<h2>Executive summary</h2>
+<p>WFM Watch is an <strong>internal operations monitoring console</strong> used by Zebra WFM support engineers to observe batch jobs, cron schedules, DB2 queues, unprocessed punch counts, and maintenance windows across ~77 Workforce Management (WFM) client environments globally.</p>
+
+<table><tbody>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>Does the app store or expose <strong>customer/employee PII</strong> (names, SSN, bank accounts, phone, home address)?</td><td><strong>No</strong> — by design. Queries are limited to operational WFM metadata.</td></tr>
+<tr><td>Does the app access <strong>banking/financial account data</strong>?</td><td><strong>No</strong> — it monitors WFM job infrastructure, not banking systems or account records.</td></tr>
+<tr><td>What sensitive data <strong>does</strong> exist?</td><td><strong>Operator identity</strong> (Zebra staff emails), <strong>infrastructure credentials</strong> (DB2/SSH, encrypted), and <strong>client business identifiers</strong> (company codes, hostnames).</td></tr>
+<tr><td>Deployment model</td><td><strong>Single central server</strong> aggregates read-only status from client app servers (SSH) and client DB2 databases (JDBC) across regions.</td></tr>
+<tr><td>Data residency</td><td>Client workforce data <strong>remains at source</strong> (client DB2 / app servers). Only aggregates, caches, and ops metadata are stored on the WFM Watch server.</td></tr>
+</tbody></table>
+
+<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">PII attestation</ac:parameter><ac:rich-text-body>
+<p>WFM Watch does <strong>not</strong> query, store, or expose client customer or employee PII. Internal Zebra operator identity (email, display name) is stored for authentication and alerting only.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h2>Application scope</h2>
+
+<h3>What the application does</h3>
+<ul>
+<li>Monitors <strong>cron jobs</strong> on remote Linux app servers via SSH (read-only)</li>
+<li>Queries <strong>DB2 batch/queue tables</strong> for job status, stale pending counts, and queue health</li>
+<li>Reports <strong>unprocessed punch counts</strong> (aggregate only — no individual punch records)</li>
+<li>Manages <strong>maintenance windows</strong>, <strong>alerting</strong>, and <strong>escalation</strong> for WFM operations staff</li>
+<li>Provides <strong>RBAC</strong> for Zebra operators (Admin, Monitor, Read Only profiles)</li>
+</ul>
+
+<h3>What the application does NOT do</h3>
+<ul>
+<li>Does not process payroll, issue payments, or access bank accounts</li>
+<li>Does not query employee master data, HR records, or time-clock punch detail</li>
+<li>Does not store or transmit SSN, national ID, credit card, or bank account numbers</li>
+<li>Does not serve end-customers or client employees — <strong>operators only</strong> (Zebra/internal staff)</li>
+</ul>
+
+<h3>Banking-sector clients</h3>
+<p>Some WFM clients may operate in regulated industries (retail, pharmacy, financial services). WFM Watch connects only to each client's <strong>WFM application infrastructure</strong> (app servers + WFM DB2 schema). It does <strong>not</strong> integrate with core banking, CRM, or customer identity systems.</p>
+
+<h2>Multi-region, single-server architecture</h2>
+
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:parameter ac:name="title">Deployment topology</ac:parameter><ac:plain-text-body><![CDATA[
+┌─────────────────────────────────────────────────────────────────┐
+│  WFM Watch Server (single deployment)                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │ React UI     │  │ Express API  │  │ SQLite (local cache) │  │
+│  │ (operators)  │  │ + Scheduler  │  │ users, clients,    │  │
+│  └──────────────┘  └──────────────┘  │ job caches, audit    │  │
+│                                       └──────────────────────┘  │
+└────────────┬───────────────────────────────┬────────────────────┘
+             │ SSH (port 22)                 │ JDBC (port 50000/50030)
+             ▼                               ▼
+   ┌─────────────────────┐         ┌─────────────────────┐
+   │ Client App Servers  │         │ Client DB2 (WFM)    │
+   │ US / UK / AU / DE…  │         │ per-tenant database │
+   │ (cron, log paths)   │         │ RWSUSER schema      │
+   └─────────────────────┘         └─────────────────────┘
+]]></ac:plain-text-body></ac:structured-macro>
+
+<table><tbody>
+<tr><th>Aspect</th><th>Detail</th></tr>
+<tr><td><strong>Tenancy</strong></td><td>Logical isolation by Client.clientId (~77 tenants). Single SQLite database; no per-region app instances.</td></tr>
+<tr><td><strong>Cluster field</strong></td><td>Groups clients geographically (e.g. CL12 US, CL52 UK, CL15 AU) for maintenance filtering — not a residency enforcement mechanism.</td></tr>
+<tr><td><strong>Cross-region access</strong></td><td>Any authenticated operator with network reach can view any client's status. Access is controlled by login + RBAC, not geo-fencing.</td></tr>
+<tr><td><strong>Data at rest (central)</strong></td><td>SQLite on WFM Watch host: ops metadata, encrypted credentials, caches, audit logs.</td></tr>
+<tr><td><strong>Data at source (client)</strong></td><td>Full WFM datasets remain on client app servers and client DB2; most queries are live/read-through.</td></tr>
+</tbody></table>
+
+<p><strong>Security implication:</strong> The central server holds infrastructure connection metadata for all regions and operational aggregates. It does <strong>not</strong> consolidate employee or customer personal records.</p>
+
+<h2>Data source inventory</h2>
+<table><tbody>
+<tr><th>#</th><th>Source</th><th>Protocol</th><th>Data retrieved</th><th>Persisted locally?</th><th>Customer/employee PII?</th></tr>
+<tr><td>1</td><td><strong>SQLite</strong> (app DB)</td><td>Local file</td><td>Users, clients, jobs, caches, config, audit</td><td>Yes — primary store</td><td>Operator PII only</td></tr>
+<tr><td>2</td><td><strong>Client DB2</strong> (~77)</td><td>JDBC</td><td>Batch status, queue jobs, punch counts</td><td>Partial — queue cache only</td><td><strong>No</strong></td></tr>
+<tr><td>3</td><td><strong>Client app servers</strong></td><td>SSH</td><td>Cron entries, log file tails, file monitor paths</td><td>Cron cache; log excerpts transient</td><td><strong>No</strong> (log content uncontrolled)</td></tr>
+<tr><td>4</td><td><strong>SMTP / Mailpit</strong></td><td>SMTP</td><td>Alert/escalation email bodies</td><td>No</td><td>Operator email addresses</td></tr>
+<tr><td>5</td><td><strong>Slack</strong></td><td>Webhook</td><td>Alert notifications</td><td>No</td><td>Channel metadata</td></tr>
+<tr><td>6</td><td><strong>Load balancer (SSO)</strong></td><td>HTTP header</td><td>X-Forwarded-Email for corporate SSO</td><td>Access request record</td><td>Operator email</td></tr>
+<tr><td>7</td><td><strong>Excel import</strong></td><td>HTTP upload</td><td>Maintenance calendar entries</td><td>Yes</td><td><strong>No</strong></td></tr>
+</tbody></table>
+
+<h2>Client DB2 data — tables and columns queried</h2>
+<p>All production queries are defined in repository file <code>database/client-db2-queries.sql</code>.</p>
+
+<table><tbody>
+<tr><th>DB2 table</th><th>Purpose</th><th>Columns / projection</th><th>Customer/employee PII?</th></tr>
+<tr><td><code>RWSUSER.BATCH_STATUS</code></td><td>Batch job health</td><td>JOB_TYPE, PLAN_TYPE, STATUS, timestamps, DESCRIPTION, counts, UNIT_SKEY</td><td><strong>No</strong> — job metadata</td></tr>
+<tr><td><code>RWSUSER.RFX_QUEUE</code></td><td>Running queue jobs</td><td>JOB_TYPE, EXEC_CRON, PARAM_2, LAST_JOB_TIME, JOBS_PENDING, QUEUE_STATUS</td><td><strong>No</strong></td></tr>
+<tr><td><code>RWSUSER.RFX_QUEUE_JOB</code></td><td>Batch detail subquery</td><td>JOB_ESTATUS counts by BATCH_STATUS_ID</td><td><strong>No</strong></td></tr>
+<tr><td><code>RWSUSER.TA_UNPROC_PUNCH</code></td><td>Unprocessed punches</td><td><strong>COUNT(1) and MIN(LAST_UPDATE_TIME) only</strong></td><td><strong>No</strong> — aggregate count only</td></tr>
+<tr><td><code>RWSUSER.PRODUCT_FEATURE</code></td><td>Feature flags</td><td>FEATURE_VALUE for RTA_INTEGRATION</td><td><strong>No</strong></td></tr>
+<tr><td><code>SYSIBM.SYSDUMMY1</code></td><td>Connection test</td><td>CURRENT TIMESTAMP</td><td><strong>No</strong></td></tr>
+<tr><td><code>SYSCAT.TABLES</code></td><td>Schema discovery</td><td>Table names, row counts</td><td><strong>No</strong></td></tr>
+</tbody></table>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">PII categories NOT present in any coded query</ac:parameter><ac:rich-text-body>
+<table><tbody>
+<tr><th>Category</th><th>Present in app?</th></tr>
+<tr><td>Employee name (first/last)</td><td><strong>No</strong></td></tr>
+<tr><td>SSN / national ID</td><td><strong>No</strong></td></tr>
+<tr><td>Bank account / routing numbers</td><td><strong>No</strong></td></tr>
+<tr><td>Credit/debit card numbers</td><td><strong>No</strong></td></tr>
+<tr><td>Phone number</td><td><strong>No</strong></td></tr>
+<tr><td>Home/mailing address</td><td><strong>No</strong></td></tr>
+<tr><td>Email (client employees)</td><td><strong>No</strong></td></tr>
+<tr><td>Date of birth</td><td><strong>No</strong></td></tr>
+<tr><td>Individual time-clock punch records</td><td><strong>No</strong> (count only)</td></tr>
+</tbody></table>
+</ac:rich-text-body></ac:structured-macro>
+
+<h2>Local data store — SQLite classification</h2>
+
+<h3>No customer/employee PII stored</h3>
+<p>The application schema (<code>backend/prisma/schema.prisma</code>) contains <strong>no models</strong> for employees, customers, bank accounts, or identity documents.</p>
+
+<h3>Internal operator data (Zebra staff PII — expected)</h3>
+<table><tbody>
+<tr><th>Model</th><th>Fields</th><th>Classification</th></tr>
+<tr><td>User</td><td>username, email, displayName, passwordHash, timezone</td><td>Internal operator PII</td></tr>
+<tr><td>AccessRequest</td><td>email, displayName, sourceIp</td><td>Internal operator PII + IP</td></tr>
+<tr><td>NotificationRecipient</td><td>name, email</td><td>Internal/on-call contact PII</td></tr>
+<tr><td>AuditLog</td><td>userName, ipAddress, change details</td><td>Audit trail — operator identifiers</td></tr>
+<tr><td>AlertRule / EscalatedAlert</td><td>recipients, emailRecipients (JSON)</td><td>Email addresses</td></tr>
+</tbody></table>
+
+<h3>Business / infrastructure data (not personal PII)</h3>
+<table><tbody>
+<tr><th>Model</th><th>Fields</th><th>Classification</th></tr>
+<tr><td>Client</td><td>clientId, name, cluster, timezone, db2Host, db2Port, db2Database, db2Username, db2Password (encrypted)</td><td>Client org identifier + infra credentials</td></tr>
+<tr><td>AppServer</td><td>dns, environment, serverNum, sshPort</td><td>Infrastructure metadata</td></tr>
+<tr><td>CachedCronJob</td><td>cronExpression, command, owner, logPath, serverDns</td><td>Operational metadata</td></tr>
+<tr><td>CachedQueueJob</td><td>jobData (JSON from RFX_QUEUE)</td><td>Operational batch metadata</td></tr>
+<tr><td>Job / JobExecution</td><td>job definitions, log excerpts, exit codes</td><td>Operational</td></tr>
+<tr><td>MaintenanceWindow / MaintenanceCalendar</td><td>outage schedules</td><td>Operational</td></tr>
+</tbody></table>
+
+<h3>Credentials and secrets (high sensitivity — not customer PII)</h3>
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Production approach:</strong> Client DB2 passwords and application secrets (SMTP, SSH, JWT) are entered by authorised operators via <strong>Admin → Config</strong> and <strong>Client</strong> settings after deployment. Values are <strong>AES-256-GCM encrypted at rest</strong>. Bootstrap SQL seeds schema, RBAC, and non-secret defaults only — <strong>client connection credentials are not deployed from seed files</strong>.</p>
+</ac:rich-text-body></ac:structured-macro>
+<table><tbody>
+<tr><th>Location</th><th>How set</th><th>Protection</th></tr>
+<tr><td>Client.db2Password</td><td>Admin → Client edit (per client)</td><td>AES-256-GCM at rest</td></tr>
+<tr><td>AppConfig secrets (JWT, SMTP, SSH)</td><td>Admin → Config</td><td>Encrypted at rest when isSecret=true</td></tr>
+<tr><td>JWT session cookie (wfm_session)</td><td>Runtime</td><td>HttpOnly, HS256 signed</td></tr>
+<tr><td>Operator login passwords</td><td>Admin → Users</td><td>bcrypt one-way hash</td></tr>
+</tbody></table>
+
+<h2>API and UI data exposure</h2>
+
+<h3>What APIs return (authenticated)</h3>
+<table><tbody>
+<tr><th>Endpoint area</th><th>Data returned</th><th>Customer/employee PII?</th></tr>
+<tr><td>/api/clients</td><td>Client codes, names, DB2 host/port (password stripped)</td><td><strong>No</strong></td></tr>
+<tr><td>/api/db-monitor/*</td><td>Batch summaries, connection status</td><td><strong>No</strong></td></tr>
+<tr><td>/api/db-jobs/*</td><td>Queue job metadata (cached)</td><td><strong>No</strong></td></tr>
+<tr><td>/api/unprocessed-punch/*</td><td>Punch counts per client</td><td><strong>No</strong></td></tr>
+<tr><td>/api/jobs/:id/log-tail</td><td>Remote log lines (scrubbed)</td><td>Uncontrolled content risk</td></tr>
+<tr><td>/api/admin/users</td><td>Operator emails, display names</td><td>Internal operator PII only</td></tr>
+<tr><td>POST /api/db-monitor/:id/query</td><td>Ad-hoc SELECT results</td><td>Risk — restrict in production</td></tr>
+</tbody></table>
+
+<h3>What APIs never return</h3>
+<ul>
+<li>DB2 passwords (stripped; db2PasswordSet flag only)</li>
+<li>AppConfig secrets (masked; admin reveal endpoint audited separately)</li>
+<li>Row-level punch/employee records from TA_UNPROC_PUNCH</li>
+</ul>
+
+<h3>Frontend screens</h3>
+<table><tbody>
+<tr><th>Screen</th><th>Permission</th><th>Customer/employee PII?</th></tr>
+<tr><td>Dashboard</td><td>Authenticated</td><td><strong>No</strong></td></tr>
+<tr><td>Clients</td><td>CLIENTS_VIEW</td><td><strong>No</strong></td></tr>
+<tr><td>DB Monitor / DB Jobs</td><td>DBMONITOR_VIEW / DBJOBS_VIEW</td><td><strong>No</strong></td></tr>
+<tr><td>Unprocessed Punch</td><td>UNPROC_PUNCH_VIEW</td><td><strong>No</strong> (count only)</td></tr>
+<tr><td>Jobs / Monitor / File Monitor</td><td>JOBS_VIEW / MONITOR_VIEW / FILE_MONITOR_VIEW</td><td><strong>No</strong></td></tr>
+<tr><td>Admin Users</td><td>USERS_VIEW</td><td>Internal PII only</td></tr>
+</tbody></table>
+
+<h2>Logging, retention, and controls</h2>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Log redaction and retention</ac:parameter><ac:rich-text-body>
+<p>Application log redaction (<code>backend/src/utils/log-redaction.ts</code>) scrubs: passwords, secrets, tokens, JWT, DB2 passwords, SMTP creds, authorization headers, encrypted blobs.</p>
+<p>Log files: <code>{infra.logDir}/combined.log</code>, <code>error.log</code> — rotated (10 MB × 5–10).</p>
+<table><tbody>
+<tr><th>Data type</th><th>Default retention</th></tr>
+<tr><td>Sync history</td><td>30 days</td></tr>
+<tr><td>Job executions</td><td>30 days</td></tr>
+<tr><td>Alert events</td><td>60 days</td></tr>
+<tr><td>Escalated alerts</td><td>90 days</td></tr>
+<tr><td>Audit log</td><td>90 days</td></tr>
+<tr><td>Cached cron jobs</td><td>30 days</td></tr>
+</tbody></table>
+</ac:rich-text-body></ac:structured-macro>
+
+<h3>Security controls</h3>
+<table><tbody>
+<tr><th>Control</th><th>Implementation</th></tr>
+<tr><td>Authentication</td><td>JWT (HttpOnly cookie), bcrypt passwords, optional SSO</td></tr>
+<tr><td>Authorization</td><td>RBAC profiles + per-function permissions</td></tr>
+<tr><td>Credential encryption</td><td>AES-256-GCM at rest for DB2 passwords and AppConfig secrets</td></tr>
+<tr><td>Log scrubbing</td><td>Automatic redaction of secrets and tokens</td></tr>
+<tr><td>Rate limiting</td><td>Login attempts (10 / 15 min / IP)</td></tr>
+<tr><td>Data minimization</td><td>Punch count only; password stripping in API</td></tr>
+<tr><td>Retention / purge</td><td>Configurable nightly purge per table</td></tr>
+<tr><td>Audit trail</td><td>AuditLog for admin actions</td></tr>
+</tbody></table>
+
+<p><strong>Infrastructure controls (ops responsibility):</strong> private subnet deployment, egress firewall allowlist to registered client IPs (ports 22, 50000/50030, 587), TLS on operator-facing traffic, DB2 transport TLS (requires DBA enablement).</p>
+
+<h2>Data flow summary</h2>
+<table><tbody>
+<tr><th>Data category</th><th>Origin</th><th>Stored on WFM Watch?</th><th>Exposed in UI/API?</th><th>Customer/employee PII?</th></tr>
+<tr><td>Batch job status</td><td>Client DB2</td><td>Transient / API only</td><td>Yes</td><td><strong>No</strong></td></tr>
+<tr><td>Queue job metadata</td><td>Client DB2</td><td>Cached in SQLite</td><td>Yes</td><td><strong>No</strong></td></tr>
+<tr><td>Unprocessed punch count</td><td>Client DB2</td><td>Transient / API only</td><td>Yes (count)</td><td><strong>No</strong></td></tr>
+<tr><td>Cron schedules</td><td>Client SSH</td><td>Cached in SQLite</td><td>Yes</td><td><strong>No</strong></td></tr>
+<tr><td>Client infra metadata</td><td>App config</td><td>SQLite</td><td>Yes (no passwords)</td><td><strong>No</strong></td></tr>
+<tr><td>DB2/SSH credentials</td><td>Admin config</td><td>SQLite (encrypted)</td><td>No (masked)</td><td>N/A</td></tr>
+<tr><td>Operator identity</td><td>Login/SSO</td><td>SQLite</td><td>Admin screens</td><td>Internal PII</td></tr>
+<tr><td>Alert recipients</td><td>Admin config</td><td>SQLite</td><td>Admin/alert config</td><td>Internal PII</td></tr>
+</tbody></table>
+
+<h2>Residual risks</h2>
+<ac:structured-macro ac:name="warning"><ac:rich-text-body>
+<p>These items are disclosed for security review. They do not indicate customer/employee PII exposure by design.</p>
+</ac:rich-text-body></ac:structured-macro>
+<table><tbody>
+<tr><th>Risk</th><th>Mitigation / note</th></tr>
+<tr><td>Ad-hoc DB2 SELECT (POST /api/db-monitor/:id/query)</td><td>SELECT-only keyword blocklist; restrict to trusted admin profiles in production</td></tr>
+<tr><td>Remote log tail content</td><td>Log scrubbing before API return; content originates from client servers</td></tr>
+<tr><td>Source DB2 tables may contain PII</td><td>App does not query employee master or punch detail tables</td></tr>
+</tbody></table>
+
+<h2>Security approval checklist</h2>
+<ac:task-list>
+<ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Confirm WFM Watch scope is operational monitoring only — no banking core integration</ac:task-body></ac:task>
+<ac:task><ac:task-id>2</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Accept that client employee PII is not queried or stored by application code paths</ac:task-body></ac:task>
+<ac:task><ac:task-id>3</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Accept internal operator PII (Zebra staff emails) is required for auth/alerting</ac:task-body></ac:task>
+<ac:task><ac:task-id>4</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Review residual risks: ad-hoc DB2 query, remote log content</ac:task-body></ac:task>
+<ac:task><ac:task-id>5</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Confirm infra controls: private subnet, egress allowlist, TLS, credential management</ac:task-body></ac:task>
+<ac:task><ac:task-id>6</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Approve single-server aggregation of operational metadata across regions</ac:task-body></ac:task>
+</ac:task-list>
+
+<h2>References</h2>
+<ul>
+<li>Repository: WFMControlM — <code>docs/WFM-Watch-Data-Catalogue.md</code></li>
+<li>Architecture: <code>docs/WFM_ControlM.md</code></li>
+<li>DB2 query manifest: <code>database/client-db2-queries.sql</code></li>
+<li>Security review responses: <code>docs/WFM-Watch-Security-Review-*.md</code></li>
+<li>Security Q&amp;A workbook: <code>docs/WFM-Watch-Security-Review-Response.xlsx</code></li>
+<li>Production checklist: <code>docs/production-readiness-checklist.md</code></li>
+</ul>
+
+<ac:structured-macro ac:name="note"><ac:rich-text-body>
+<p><strong>Questions or security review feedback?</strong> Contact the WFM L2 Engg team, Swapna Mishra, owning this application.</p>
+</ac:rich-text-body></ac:structured-macro>

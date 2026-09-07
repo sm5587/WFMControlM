@@ -1,6 +1,7 @@
 -- WFM Control-M consolidated production DDL
 -- Generated from current Prisma schema (all tables/indexes/constraints).
 -- Apply on a fresh database before running database/dml.sql.
+-- Regenerate: npm run db:extract
 
 PRAGMA foreign_keys = ON;
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS "Client" (
     "db2Schema" TEXT,
     "db2Username" TEXT,
     "db2Password" TEXT,
+    "db2SslEnabled" BOOLEAN NOT NULL DEFAULT false,
     "payrollEnabled" BOOLEAN NOT NULL DEFAULT false,
     "payrollCycle" TEXT NOT NULL DEFAULT 'weekly',
     "payrollSyncedAt" DATETIME,
@@ -312,8 +314,33 @@ CREATE TABLE IF NOT EXISTS "User" (
     "passwordHash" TEXT NOT NULL,
     "timezone" TEXT NOT NULL DEFAULT 'Asia/Kolkata',
     "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "tokenVersion" INTEGER NOT NULL DEFAULT 0,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS "AccessRequest" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "email" TEXT NOT NULL,
+    "displayName" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "requestedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "reviewedAt" DATETIME,
+    "reviewedBy" TEXT,
+    "reviewNote" TEXT,
+    "sourceIp" TEXT,
+    "userId" TEXT,
+    CONSTRAINT "AccessRequest_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS "RevokedToken" (
+    "jti" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "expiresAt" DATETIME NOT NULL,
+    "revokedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "reason" TEXT
 );
 
 -- CreateTable
@@ -605,6 +632,24 @@ CREATE INDEX IF NOT EXISTS "User_username_idx" ON "User"("username");
 CREATE INDEX IF NOT EXISTS "User_isActive_idx" ON "User"("isActive");
 
 -- CreateIndex
+CREATE UNIQUE INDEX IF NOT EXISTS "AccessRequest_email_key" ON "AccessRequest"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX IF NOT EXISTS "AccessRequest_userId_key" ON "AccessRequest"("userId");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "AccessRequest_status_idx" ON "AccessRequest"("status");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "AccessRequest_requestedAt_idx" ON "AccessRequest"("requestedAt");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "RevokedToken_expiresAt_idx" ON "RevokedToken"("expiresAt");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "RevokedToken_userId_idx" ON "RevokedToken"("userId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX IF NOT EXISTS "Profile_name_key" ON "Profile"("name");
 
 -- CreateIndex
@@ -633,5 +678,3 @@ CREATE INDEX IF NOT EXISTS "CalendarDate_date_idx" ON "CalendarDate"("date");
 
 -- CreateIndex
 CREATE UNIQUE INDEX IF NOT EXISTS "CalendarDate_calendarId_date_key" ON "CalendarDate"("calendarId", "date");
-
-

@@ -369,12 +369,25 @@ function computeNextRun(cronExpr: string, serverTz: string, clientTz: string): {
 
 // ------------------------------------------------------------------ SyncService
 
+export class SyncDisabledError extends Error {
+  constructor() {
+    super('SSH sync is disabled (engine.syncEnabled=false). Re-enable in Admin → Config or the Cron Jobs page.');
+    this.name = 'SyncDisabledError';
+  }
+}
+
 class SyncService extends EventEmitter {
   private isSyncing = false;
 
   /** Always read fresh — AppConfig can change without restart. */
   private getCredentials(): SSHCredentials {
     return loadCredentials();
+  }
+
+  private assertSyncEnabled(): void {
+    if (!configService.isSyncEnabled()) {
+      throw new SyncDisabledError();
+    }
   }
 
   /**
@@ -385,6 +398,7 @@ class SyncService extends EventEmitter {
    * 4. Upsert into database with log paths
    */
   async syncClientCrons(clientDbId: string, force = false): Promise<SyncResult> {
+    this.assertSyncEnabled();
     const startTime = Date.now();
     const errors: string[] = [];
     let discovered = 0, created = 0, updated = 0;
@@ -556,7 +570,7 @@ class SyncService extends EventEmitter {
             if (existing.cronExpression !== entry.schedule) updates.cronExpression = entry.schedule;
             if (entry.logPath && existing.logPath !== entry.logPath) {
               updates.logPath = entry.logPath;
-              updates.logCheckEnabled = true;
+              if (client.remoteLogTailEnabled) updates.logCheckEnabled = true;
             }
             // Always refresh timezone and next run
             updates.serverTimezone = serverTz;
@@ -577,7 +591,7 @@ class SyncService extends EventEmitter {
                 cronExpression: entry.schedule,
                 command: entry.command,
                 logPath: entry.logPath,
-                logCheckEnabled: !!entry.logPath,
+                logCheckEnabled: !!entry.logPath && client.remoteLogTailEnabled,
                 sourceIdentifier: entry.command,
                 serverTimezone: serverTz,
                 timezone: clientTz,
@@ -596,7 +610,7 @@ class SyncService extends EventEmitter {
                 cronExpression: entry.schedule,
                 command: entry.command,
                 logPath: entry.logPath,
-                logCheckEnabled: !!entry.logPath,
+                logCheckEnabled: !!entry.logPath && client.remoteLogTailEnabled,
                 serverTimezone: serverTz,
                 timezone: clientTz,
                 nextRunTime: nextRun?.utc,
@@ -708,12 +722,18 @@ class SyncService extends EventEmitter {
    * Returns per-job results with a deterministic status.
    */
   async checkClientLogs(clientDbId: string): Promise<LogCheckResult[]> {
+    this.assertSyncEnabled();
     const client = await prisma.client.findUnique({
       where: { id: clientDbId },
       include: { appServers: { where: { environment: 'Prod', isActive: true } } },
     });
 
     if (!client) throw new Error(`Client not found: ${clientDbId}`);
+
+    if (!client.remoteLogTailEnabled) {
+      logger.info(`Remote log tail disabled for ${client.clientId} — skipping log checks`);
+      return [];
+    }
 
     const server = client.appServers[0];
     if (!server) throw new Error(`No active Prod servers for client ${client.clientId}`);
@@ -1120,6 +1140,7 @@ class SyncService extends EventEmitter {
    * Waits 30s between each client for TOTP cooldown (only when using personal/TOTP auth).
    */
   async syncAllCrons(force = false): Promise<{ total: number; succeeded: number; failed: number; skipped: number; results: SyncResult[] }> {
+    this.assertSyncEnabled();
     if (this.isSyncing) {
       throw new Error('A sync operation is already in progress');
     }
@@ -1174,6 +1195,7 @@ class SyncService extends EventEmitter {
    * Sync all active clients (batch — sequential to avoid TOTP collisions)
    */
   async syncAllClients(force = false): Promise<{ total: number; succeeded: number; failed: number; skipped: number; results: SyncResult[] }> {
+    this.assertSyncEnabled();
     if (this.isSyncing) {
       throw new Error('A sync operation is already in progress');
     }
@@ -1220,6 +1242,7 @@ class SyncService extends EventEmitter {
    */
   async checkSpecificJobs(jobIds: string[]): Promise<LogCheckResult[]> {
     if (jobIds.length === 0) return [];
+    this.assertSyncEnabled();
 
     const jobs = await prisma.job.findMany({
       where: {
@@ -1254,6 +1277,10 @@ class SyncService extends EventEmitter {
     const creds = this.getCredentials();
 
     for (const [clientId, clientJobs] of byClient) {
+      if (!clientJobs[0].client!.remoteLogTailEnabled) {
+        logger.info(`[AutoCheck] Remote log tail disabled for ${clientJobs[0].client!.clientId} — skipping ${clientJobs.length} job(s)`);
+        continue;
+      }
       const server = clientJobs[0].client!.appServers[0];
       const serverTz = server.timezone || 'UTC';
       let conn: SSH2Client | null = null;
@@ -1409,6 +1436,7 @@ class SyncService extends EventEmitter {
     cooldown: number;
     results: { clientId: string; server: string; timezone: string | null; error?: string; priority: string }[];
   }> {
+    this.assertSyncEnabled();
     const where: any = { isActive: true };
     if (filter?.cluster) where.cluster = filter.cluster;
     if (filter?.clientIds?.length) where.id = { in: filter.clientIds };

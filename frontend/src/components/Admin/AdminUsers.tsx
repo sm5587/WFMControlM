@@ -1,8 +1,72 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { UserPlus, Shield, UserX, UserCheck, X, Pencil, Clock, CheckCircle, XCircle } from 'lucide-react';
-import { adminApi, authApi, AdminUser, AccessRequest } from '../../services/api';
+import {
+  UserPlus, Shield, UserX, UserCheck, X, Pencil, Clock, CheckCircle, XCircle,
+  Search, LayoutList, Layers,
+} from 'lucide-react';
+import { adminApi, authApi, AdminUser, AccessRequest, AdminProfile } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
+
+type StatusFilter = 'all' | 'active' | 'inactive';
+type ViewMode = 'list' | 'grouped';
+
+interface UserGroup {
+  key: string;
+  label: string;
+  users: AdminUser[];
+}
+
+function matchesUserSearch(user: AdminUser, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    user.username.toLowerCase().includes(q)
+    || user.email.toLowerCase().includes(q)
+    || user.displayName.toLowerCase().includes(q)
+    || user.profiles.some(up => up.profile.name.toLowerCase().includes(q))
+  );
+}
+
+function filterUsers(
+  users: AdminUser[],
+  searchQuery: string,
+  profileFilter: string,
+  statusFilter: StatusFilter,
+): AdminUser[] {
+  let result = users;
+
+  if (statusFilter === 'active') result = result.filter(u => u.isActive);
+  else if (statusFilter === 'inactive') result = result.filter(u => !u.isActive);
+
+  if (profileFilter === '__none__') {
+    result = result.filter(u => u.profiles.length === 0);
+  } else if (profileFilter) {
+    result = result.filter(u => u.profiles.some(up => up.profileId === profileFilter));
+  }
+
+  if (searchQuery.trim()) {
+    result = result.filter(u => matchesUserSearch(u, searchQuery));
+  }
+
+  return result;
+}
+
+function groupUsersByProfile(users: AdminUser[], profiles: AdminProfile[]): UserGroup[] {
+  const groups: UserGroup[] = profiles
+    .map(profile => ({
+      key: profile.id,
+      label: profile.name,
+      users: users.filter(u => u.profiles.some(up => up.profileId === profile.id)),
+    }))
+    .filter(group => group.users.length > 0);
+
+  const unassigned = users.filter(u => u.profiles.length === 0);
+  if (unassigned.length > 0) {
+    groups.push({ key: '__none__', label: 'No profile assigned', users: unassigned });
+  }
+
+  return groups;
+}
 
 export default function AdminUsers() {
   const canManage = usePermission('USERS_MANAGE', 'write');
@@ -23,9 +87,42 @@ export default function AdminUsers() {
   });
 
   const users: AdminUser[] = usersData?.data ?? [];
-  const profiles = profilesData?.data ?? [];
+  const profiles: AdminProfile[] = profilesData?.data ?? [];
   const accessRequests: AccessRequest[] = accessRequestsData?.data ?? [];
   const pendingRequests = accessRequests.filter(r => r.status === 'PENDING');
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [profileFilter, setProfileFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+
+  const hasUserFilters = !!(searchQuery.trim() || profileFilter || statusFilter !== 'all');
+
+  const filteredUsers = useMemo(
+    () => filterUsers(users, searchQuery, profileFilter, statusFilter),
+    [users, searchQuery, profileFilter, statusFilter],
+  );
+
+  const groupedUsers = useMemo(
+    () => groupUsersByProfile(filteredUsers, profiles),
+    [filteredUsers, profiles],
+  );
+
+  const filteredPendingRequests = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return pendingRequests;
+    return pendingRequests.filter(req =>
+      req.email.toLowerCase().includes(q)
+      || (req.requestedUsername || '').toLowerCase().includes(q)
+      || (req.displayName || '').toLowerCase().includes(q),
+    );
+  }, [pendingRequests, searchQuery]);
+
+  const clearUserFilters = () => {
+    setSearchQuery('');
+    setProfileFilter('');
+    setStatusFilter('all');
+  };
 
   // ── New User dialog ──
   const [showNewUser, setShowNewUser] = useState(false);
@@ -94,6 +191,7 @@ export default function AdminUsers() {
   const [approveTarget, setApproveTarget] = useState<AccessRequest | null>(null);
   const [approveProfileId, setApproveProfileId] = useState('');
   const [approveDisplayName, setApproveDisplayName] = useState('');
+  const [approveUsername, setApproveUsername] = useState('');
   const [rejectTarget, setRejectTarget] = useState<AccessRequest | null>(null);
   const [rejectNote, setRejectNote] = useState('');
 
@@ -102,6 +200,7 @@ export default function AdminUsers() {
       adminApi.approveAccessRequest(approveTarget!.id, {
         profileId: approveProfileId,
         displayName: approveDisplayName || undefined,
+        username: approveUsername || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-access-requests'] });
@@ -109,6 +208,7 @@ export default function AdminUsers() {
       setApproveTarget(null);
       setApproveProfileId('');
       setApproveDisplayName('');
+      setApproveUsername('');
     },
   });
 
@@ -125,10 +225,101 @@ export default function AdminUsers() {
     setApproveTarget(req);
     setApproveProfileId('');
     setApproveDisplayName(req.displayName || req.email.split('@')[0]);
+    setApproveUsername(req.requestedUsername || req.email.split('@')[0]);
   };
 
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+  const renderUserRow = (u: AdminUser) => (
+    <tr key={u.id} className={`hover:bg-gray-50 ${!u.isActive ? 'opacity-50' : ''}`}>
+      <td className="px-4 py-3">
+        <p className="font-medium text-gray-900">{u.displayName}</p>
+        <p className="text-xs text-gray-400 mt-0.5 font-mono">@{u.username}</p>
+      </td>
+      <td className="px-4 py-3 text-gray-600">{u.email}</td>
+      <td className="px-4 py-3 text-xs text-gray-500 font-mono">{u.timezone || 'Asia/Kolkata'}</td>
+      <td className="px-4 py-3">
+        <div className="flex flex-wrap gap-1">
+          {u.profiles.length === 0 && (
+            <span className="text-xs text-gray-400 italic">No profiles</span>
+          )}
+          {u.profiles.map(up => (
+            <span
+              key={up.profileId}
+              className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 text-xs rounded-full"
+            >
+              {up.profile.name}
+              {canAssign && (
+                <button
+                  onClick={() => removeProfMut.mutate({ userId: u.id, profileId: up.profileId })}
+                  className="hover:text-red-500 ml-0.5"
+                  title="Remove profile"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <span className={`inline-flex items-center px-2 py-0.5 text-xs rounded-full font-medium ${
+          u.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+        }`}>
+          {u.isActive ? 'Active' : 'Inactive'}
+        </span>
+      </td>
+      {(canManage || canAssign) && (
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-1">
+            {canManage && (
+              <button
+                onClick={() => openEdit(u)}
+                className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
+                title="Edit user"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+            {canAssign && (
+              <button
+                onClick={() => { setAssignTarget({ userId: u.id, username: u.username }); setAssignProfileId(''); }}
+                className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                title="Assign profile"
+              >
+                <Shield className="w-4 h-4" />
+              </button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => toggleActiveMut.mutate({ id: u.id, isActive: !u.isActive })}
+                className={`p-1.5 rounded-lg ${u.isActive ? 'text-red-500 hover:bg-red-50' : 'text-green-600 hover:bg-green-50'}`}
+                title={u.isActive ? 'Deactivate user' : 'Reactivate user'}
+              >
+                {u.isActive ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+              </button>
+            )}
+          </div>
+        </td>
+      )}
+    </tr>
+  );
+
+  const userTableHead = (
+    <thead className="bg-gray-50 border-b border-gray-200">
+      <tr>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timezone</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Profiles</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+        {(canManage || canAssign) && (
+          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+        )}
+      </tr>
+    </thead>
+  );
 
   return (
     <div className="p-6 space-y-6">
@@ -137,11 +328,11 @@ export default function AdminUsers() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Users</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {users.length} registered users
-            {pendingRequests.length > 0 && (
+            {filteredUsers.length}{filteredUsers.length !== users.length ? ` of ${users.length}` : ''} registered users
+            {filteredPendingRequests.length > 0 && (
               <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium">
                 <Clock className="w-3 h-3" />
-                {pendingRequests.length} pending request{pendingRequests.length !== 1 ? 's' : ''}
+                {filteredPendingRequests.length} pending request{filteredPendingRequests.length !== 1 ? 's' : ''}
               </span>
             )}
           </p>
@@ -158,7 +349,7 @@ export default function AdminUsers() {
       </div>
 
       {/* Pending Access Requests */}
-      {pendingRequests.length > 0 && (
+      {filteredPendingRequests.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-amber-200 bg-amber-100/60">
             <h2 className="text-sm font-semibold text-amber-900 flex items-center gap-2">
@@ -166,13 +357,14 @@ export default function AdminUsers() {
               Pending Access Requests
             </h2>
             <p className="text-xs text-amber-700 mt-0.5">
-              Users who signed in via SSO/MFA and are awaiting administrator approval
+              Users who signed in via SSO/MFA or LDAP and are awaiting administrator approval
             </p>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-amber-50/80 border-b border-amber-200">
               <tr>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Email</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Username</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Requested</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-amber-800 uppercase">Source IP</th>
                 {canManage && (
@@ -181,9 +373,10 @@ export default function AdminUsers() {
               </tr>
             </thead>
             <tbody className="divide-y divide-amber-100">
-              {pendingRequests.map(req => (
+              {filteredPendingRequests.map(req => (
                 <tr key={req.id} className="bg-white/60 hover:bg-white">
                   <td className="px-4 py-3 font-medium text-gray-900">{req.email}</td>
+                  <td className="px-4 py-3 text-gray-600 font-mono text-xs">{req.requestedUsername || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{formatDate(req.requestedAt)}</td>
                   <td className="px-4 py-3 text-xs text-gray-500 font-mono">{req.sourceIp || '—'}</td>
                   {canManage && (
@@ -213,103 +406,129 @@ export default function AdminUsers() {
         </div>
       )}
 
+      {/* Search & filters */}
+      {!isLoading && users.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search by username, email, display name, or profile…"
+                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={profileFilter}
+                onChange={e => setProfileFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white min-w-[160px]"
+                aria-label="Filter by profile"
+              >
+                <option value="">All profiles</option>
+                <option value="__none__">No profile assigned</option>
+                {profiles.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                aria-label="Filter by status"
+              >
+                <option value="all">All statuses</option>
+                <option value="active">Active only</option>
+                <option value="inactive">Inactive only</option>
+              </select>
+              <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('list')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm ${
+                    viewMode === 'list' ? 'bg-indigo-50 text-indigo-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                  title="Flat list"
+                >
+                  <LayoutList className="w-4 h-4" />
+                  List
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('grouped')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-l border-gray-200 ${
+                    viewMode === 'grouped' ? 'bg-indigo-50 text-indigo-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                  title="Group by profile"
+                >
+                  <Layers className="w-4 h-4" />
+                  By profile
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>
+              Showing {filteredUsers.length} user{filteredUsers.length !== 1 ? 's' : ''}
+              {viewMode === 'grouped' && groupedUsers.length > 0 && (
+                <span> in {groupedUsers.length} group{groupedUsers.length !== 1 ? 's' : ''}</span>
+              )}
+            </span>
+            {hasUserFilters && (
+              <button
+                type="button"
+                onClick={clearUserFilters}
+                className="text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Users Table */}
       {isLoading ? (
         <div className="text-center py-12 text-gray-400">Loading...</div>
-      ) : (
+      ) : viewMode === 'list' ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-sm resizable-cols">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timezone</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Profiles</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                {(canManage || canAssign) && (
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                )}
-              </tr>
-            </thead>
+            {userTableHead}
             <tbody className="divide-y divide-gray-100">
-              {users.map(u => (
-                <tr key={u.id} className={`hover:bg-gray-50 ${!u.isActive ? 'opacity-50' : ''}`}>
-                  <td className="px-4 py-3">
-                    <p className="font-medium text-gray-900">{u.displayName}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">@{u.username}</p>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{u.email}</td>
-                  <td className="px-4 py-3 text-xs text-gray-500 font-mono">{u.timezone || 'Asia/Kolkata'}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {u.profiles.length === 0 && (
-                        <span className="text-xs text-gray-400 italic">No profiles</span>
-                      )}
-                      {u.profiles.map(up => (
-                        <span
-                          key={up.profileId}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 text-xs rounded-full"
-                        >
-                          {up.profile.name}
-                          {canAssign && (
-                            <button
-                              onClick={() => removeProfMut.mutate({ userId: u.id, profileId: up.profileId })}
-                              className="hover:text-red-500 ml-0.5"
-                              title="Remove profile"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 text-xs rounded-full font-medium ${
-                      u.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {u.isActive ? 'Active' : 'Inactive'}
-                    </span>
-                  </td>
-                  {(canManage || canAssign) && (
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        {canManage && (
-                          <button
-                            onClick={() => openEdit(u)}
-                            className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
-                            title="Edit user"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                        )}
-                        {canAssign && (
-                          <button
-                            onClick={() => { setAssignTarget({ userId: u.id, username: u.username }); setAssignProfileId(''); }}
-                            className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg"
-                            title="Assign profile"
-                          >
-                            <Shield className="w-4 h-4" />
-                          </button>
-                        )}
-                        {canManage && (
-                          <button
-                            onClick={() => toggleActiveMut.mutate({ id: u.id, isActive: !u.isActive })}
-                            className={`p-1.5 rounded-lg ${u.isActive ? 'text-red-500 hover:bg-red-50' : 'text-green-600 hover:bg-green-50'}`}
-                            title={u.isActive ? 'Deactivate user' : 'Reactivate user'}
-                          >
-                            {u.isActive ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              ))}
+              {filteredUsers.map(renderUserRow)}
             </tbody>
           </table>
-          {users.length === 0 && (
-            <div className="text-center py-10 text-gray-400">No users found</div>
+          {filteredUsers.length === 0 && (
+            <div className="text-center py-10 text-gray-400">
+              {hasUserFilters ? 'No users match your filters.' : 'No users found'}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {groupedUsers.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-200 text-center py-10 text-gray-400">
+              {hasUserFilters ? 'No users match your filters.' : 'No users found'}
+            </div>
+          ) : (
+            groupedUsers.map(group => (
+              <div key={group.key} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-gray-900">{group.label}</h2>
+                  <span className="text-xs text-gray-500">
+                    {group.users.length} user{group.users.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <table className="w-full text-sm resizable-cols">
+                  {userTableHead}
+                  <tbody className="divide-y divide-gray-100">
+                    {group.users.map(renderUserRow)}
+                  </tbody>
+                </table>
+              </div>
+            ))
           )}
         </div>
       )}
@@ -422,6 +641,16 @@ export default function AdminUsers() {
             <p className="text-sm text-gray-600">
               Grant access to <strong>{approveTarget.email}</strong> and assign a profile.
             </p>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={approveUsername}
+                onChange={e => setApproveUsername(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono"
+                placeholder="Must match LDAP sAMAccountName"
+              />
+            </div>
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">Display Name</label>
               <input

@@ -491,7 +491,14 @@ function ClientRow({
         <td className="px-5 py-3">
           {client.db2Connection?.host ? (
             <div title={`${client.db2Connection.host}:${client.db2Connection.port}/${client.db2Connection.database}`}>
-              <span className="text-xs font-medium text-gray-700">{client.db2Connection.database}</span>
+              <span className="text-xs font-medium text-gray-700">
+                {client.db2Connection.database}
+                {client.db2SslEnabled && (
+                  <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700">
+                    TLS
+                  </span>
+                )}
+              </span>
               <span className="text-xs text-gray-400 block truncate max-w-[180px]">{client.db2Connection.host}:{client.db2Connection.port}</span>
               {(!client.db2Username || !client.db2PasswordSet) && (
                 <span className="inline-flex items-center gap-1 text-xs text-amber-600 mt-0.5">

@@ -105,8 +105,27 @@ export function requirePermission(functionId: FunctionId, mode: 'read' | 'write'
   };
 }
 
+/** Pass if the user has write on any of the given function IDs. */
+export function requireAnyPermission(functionIds: FunctionId[], mode: 'read' | 'write' = 'write') {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Not authenticated' });
+    }
+    if (!functionIds.some(id => hasPermission(user, id, mode))) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied. Required one of: ${functionIds.join(', ')} (${mode})`,
+      });
+    }
+    next();
+  };
+}
+
 // Convenience shorthands used in routes
 export const requireAdmin = requirePermission('PERMISSIONS_EDIT', 'write');
+
+export { csrfMiddleware } from './csrf';
 
 // Request logging middleware
 export function requestLogger(req: Request, res: Response, next: NextFunction) {

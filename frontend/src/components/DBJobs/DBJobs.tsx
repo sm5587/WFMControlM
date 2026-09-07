@@ -10,6 +10,10 @@ import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useResizablePanel } from '../../hooks/useResizablePanel';
 import { SortableHeader, useSortState } from '../ui/SortableHeader';
+import { useConfig } from '../../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
+import SyncDisabledBanner from '../common/SyncDisabledBanner';
+import { usePermission } from '../../context/AuthContext';
 
 // Queue status labels (QUEUE_STATUS from RFX_QUEUE)
 const JOB_STATUS_MAP: Record<string, { label: string; color: string; icon: any }> = {
@@ -43,6 +47,9 @@ interface ClientInfo {
 
 export default function DBJobs() {
   const { fmt, fmtDb2 } = useTimezone();
+  const { getBool } = useConfig();
+  const dbJobsSyncEnabled = getBool(APP_CONFIG_KEYS.dbJobsSyncEnabled, true);
+  const canManageDbJobs = usePermission('DBJOBS_VIEW', 'write');
   const [search, setSearch] = useState('');
   const [clusterFilter, setClusterFilter] = useState('');
   const [selectedClient, setSelectedClient] = useState<string | null>(null);
@@ -80,6 +87,9 @@ export default function DBJobs() {
   const fetchAllMutation = useMutation({
     mutationFn: () => dbJobsApi.fetchAll(),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['db-jobs-queue-all'] }),
+    onError: (error: any) => {
+      window.alert(error?.response?.data?.error || error?.message || 'Fetch failed');
+    },
   });
 
   const markCriticalMutation = useMutation({
@@ -110,6 +120,9 @@ export default function DBJobs() {
   const refreshClientMutation = useMutation({
     mutationFn: (clientId: string) => dbJobsApi.refreshClient(clientId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['db-jobs-queue-all'] }),
+    onError: (error: any) => {
+      window.alert(error?.response?.data?.error || error?.message || 'Refresh failed');
+    },
   });
 
   const clientsData = data?.data?.clients || {};
@@ -184,6 +197,7 @@ export default function DBJobs() {
   };
 
   const toggleCritical = (clientId: string, jobName: string, isCritical: boolean) => {
+    if (!canManageDbJobs) return;
     if (isCritical) {
       unmarkCriticalMutation.mutate({ clientId, jobName });
     } else {
@@ -257,8 +271,10 @@ export default function DBJobs() {
 
   return (
     <div className="p-6 space-y-6">
+      <SyncDisabledBanner params={['dbJobs']} />
+
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">DB Jobs (RFX Queue)</h1>
           <p className="text-sm text-gray-500 mt-1">
@@ -268,18 +284,21 @@ export default function DBJobs() {
                 — {isCached ? 'cached today' : isStale ? 'stale cache' : 'no cache'} {data.data.fetchedAt ? fmt(data.data.fetchedAt) : ''}
               </span>
             )}
-            {isEmpty && <span className="text-amber-500 ml-1">— no job data yet, click Fetch All</span>}
+            {isEmpty && dbJobsSyncEnabled && <span className="text-amber-500 ml-1">— no job data yet, click Fetch All</span>}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {canManageDbJobs && (
           <button
             onClick={() => fetchAllMutation.mutate()}
-            disabled={fetchAllMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-zebra-600 text-white rounded-lg hover:bg-zebra-700 transition-colors disabled:opacity-50"
+            disabled={fetchAllMutation.isPending || !dbJobsSyncEnabled}
+            title={dbJobsSyncEnabled ? 'Fetch queue jobs from all DB2 clients' : 'DB Jobs sync is disabled'}
+            className="flex items-center gap-2 px-4 py-2 bg-zebra-600 text-white rounded-lg hover:bg-zebra-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`w-4 h-4 ${fetchAllMutation.isPending ? 'animate-spin' : ''}`} />
             {fetchAllMutation.isPending ? 'Fetching from DB2...' : 'Fetch All from DB2'}
           </button>
+          )}
         </div>
       </div>
 
@@ -385,7 +404,7 @@ export default function DBJobs() {
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
-                  {nonCriticalFilteredJobs.length > 0 && (
+                  {canManageDbJobs && nonCriticalFilteredJobs.length > 0 && (
                     <button
                       onClick={() => {
                         const toMark = nonCriticalFilteredJobs.map(r => ({ clientId: r.clientId, jobName: getJobName(r.job) }));
@@ -398,7 +417,9 @@ export default function DBJobs() {
                       {markCriticalBatchMutation.isPending ? 'Marking...' : `Mark All as Critical (${nonCriticalFilteredJobs.length})`}
                     </button>
                   )}
+                  {canManageDbJobs && (
                   <span className="text-xs text-gray-400">Click ★ to toggle critical across any client</span>
+                  )}
                 </div>
               </div>
               {crossClientJobs.length === 0 ? (
@@ -426,6 +447,7 @@ export default function DBJobs() {
                         return (
                           <tr key={`${clientId}-${jobName}-${i}`} className={`hover:bg-gray-50 transition-colors ${job.isCritical ? 'bg-amber-50/40' : ''}`}>
                             <td className="px-3 py-2.5">
+                              {canManageDbJobs ? (
                               <button
                                 onClick={() => toggleCritical(clientId, jobName, job.isCritical)}
                                 className={`p-1 rounded transition-colors ${
@@ -437,6 +459,9 @@ export default function DBJobs() {
                               >
                                 {job.isCritical ? <Star className="w-3.5 h-3.5 fill-current" /> : <StarOff className="w-3.5 h-3.5" />}
                               </button>
+                              ) : job.isCritical ? (
+                                <Star className="w-3.5 h-3.5 text-amber-500 fill-current" />
+                              ) : null}
                             </td>
                             <td className="px-3 py-2.5">
                               <span className="text-xs text-gray-500">{cluster}</span>
@@ -566,9 +591,9 @@ export default function DBJobs() {
                 <p className="text-xs text-red-500 mt-1">{selectedError}</p>
                 <button
                   onClick={() => refreshClientMutation.mutate(selectedClient!)}
-                  disabled={refreshClientMutation.isPending}
-                  className="mt-4 inline-flex items-center gap-1.5 px-3 py-2 text-xs text-zebra-600 bg-zebra-50 hover:bg-zebra-100 rounded-lg transition-colors disabled:opacity-50"
-                  title="Retry this client from DB2 now"
+                  disabled={refreshClientMutation.isPending || !dbJobsSyncEnabled}
+                  className="mt-4 inline-flex items-center gap-1.5 px-3 py-2 text-xs text-zebra-600 bg-zebra-50 hover:bg-zebra-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={dbJobsSyncEnabled ? 'Retry this client from DB2 now' : 'DB Jobs sync is disabled'}
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${refreshClientMutation.isPending ? 'animate-spin' : ''}`} />
                   {refreshClientMutation.isPending ? 'Refreshing...' : 'Retry'}
@@ -607,9 +632,9 @@ export default function DBJobs() {
                     </div>
                     <button
                       onClick={() => refreshClientMutation.mutate(selectedClient!)}
-                      disabled={refreshClientMutation.isPending}
-                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-zebra-600 bg-zebra-50 hover:bg-zebra-100 rounded-lg transition-colors disabled:opacity-50"
-                      title="Refresh this client from DB2 now"
+                      disabled={refreshClientMutation.isPending || !dbJobsSyncEnabled}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-zebra-600 bg-zebra-50 hover:bg-zebra-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={dbJobsSyncEnabled ? 'Refresh this client from DB2 now' : 'DB Jobs sync is disabled'}
                     >
                       <RefreshCw className={`w-3 h-3 ${refreshClientMutation.isPending ? 'animate-spin' : ''}`} />
                       {refreshClientMutation.isPending ? 'Refreshing...' : 'Refresh'}
@@ -655,6 +680,7 @@ export default function DBJobs() {
                             return (
                               <tr key={`${jobName}-${idx}`} className={`hover:bg-gray-50 transition-colors ${job.isCritical ? 'bg-amber-50/30' : ''}`}>
                                 <td className="px-4 py-2.5">
+                                  {canManageDbJobs ? (
                                   <button
                                     onClick={() => toggleCritical(selectedClient!, jobName, job.isCritical)}
                                     className={`p-1 rounded transition-colors ${
@@ -666,6 +692,9 @@ export default function DBJobs() {
                                   >
                                     {job.isCritical ? <Star className="w-3.5 h-3.5 fill-current" /> : <StarOff className="w-3.5 h-3.5" />}
                                   </button>
+                                  ) : job.isCritical ? (
+                                    <Star className="w-3.5 h-3.5 text-amber-500 fill-current" />
+                                  ) : null}
                                 </td>
                                 <td className="px-4 py-2.5">
                                   <span className="text-xs font-medium text-gray-900">{jobName}</span>

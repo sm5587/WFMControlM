@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { clientsApi } from '../services/api';
 import { Client } from '../types';
 import { useAuth } from './AuthContext';
+import { useConfig } from '../contexts/ConfigContext';
 
 interface GlobalFilterContextType {
   selectedCluster: string;
@@ -28,6 +29,8 @@ const GlobalFilterContext = createContext<GlobalFilterContextType>({
 
 export function GlobalFilterProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const { getInt } = useConfig();
+  const clientListStaleMins = getInt('polling.clientListStaleMins', 5);
   const [selectedCluster, setSelectedClusterState] = useState('');
   const [selectedClientId, setSelectedClientId] = useState('');
 
@@ -41,8 +44,8 @@ export function GlobalFilterProvider({ children }: { children: React.ReactNode }
     queryKey: ['clients-all-global', user?.id],
     queryFn: () => clientsApi.list({ isActive: true, pageSize: 10000 }),
     enabled: !!user,
-    staleTime: 5 * 60 * 1000,
-    gcTime: 15 * 60 * 1000,
+    staleTime: clientListStaleMins * 60 * 1000,
+    gcTime: clientListStaleMins * 3 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 

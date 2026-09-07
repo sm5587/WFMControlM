@@ -256,6 +256,10 @@ export class Scheduler extends EventEmitter {
    */
   private async scanUpcomingJobs(): Promise<void> {
     try {
+      if (!configService.isSyncEnabled()) {
+        return;
+      }
+
       const jobs = await prisma.job.findMany({
         where: {
           isActive: true,
@@ -263,6 +267,7 @@ export class Scheduler extends EventEmitter {
           cronExpression: { not: null },
           logCheckEnabled: true,
           logPath: { not: null },
+          client: { remoteLogTailEnabled: true },
         },
         include: {
           client: { select: { id: true, clientId: true } },

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { jobsApi } from '../../services/api';
 import { useTimezone } from '../../hooks/useTimezone';
+import { usePermission } from '../../context/AuthContext';
 
 function stripClientPrefix(name: string, clientId?: string): string {
   if (!clientId) return name;
@@ -20,6 +21,7 @@ function stripClientPrefix(name: string, clientId?: string): string {
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>();
   const { fmt } = useTimezone();
+  const canLogTail = usePermission('JOBS_LOG_TAIL', 'read');
 
   // Log tail state
   const [logTailLines, setLogTailLines] = useState<string[] | null>(null);
@@ -48,11 +50,12 @@ export default function JobDetail() {
     queryFn: () => jobsApi.get(id!),
   });
 
-  // Auto-fetch log on load if job has a logPath
+  // Auto-fetch log on load if job has a logPath and user may tail logs
   const job = jobData?.data;
+  const showLogTail = canLogTail && job?.client?.remoteLogTailEnabled !== false;
   useEffect(() => {
-    if (job?.logPath) fetchLogTail(tailCount);
-  }, [job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (showLogTail && job?.logPath) fetchLogTail(tailCount);
+  }, [job?.id, showLogTail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return <div className="p-6 text-gray-400">Loading job details...</div>;
@@ -88,10 +91,10 @@ export default function JobDetail() {
       </div>
 
       {/* Two-column layout: Config + Status | Log Tail */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className={`grid grid-cols-1 gap-6 ${showLogTail ? 'lg:grid-cols-3' : ''}`}>
 
         {/* Left: Job Config */}
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        <div className={`bg-white rounded-xl p-5 shadow-sm border border-gray-100 ${showLogTail ? '' : 'max-w-2xl'}`}>
           <h3 className="text-sm font-semibold text-gray-700 mb-4">Job Configuration</h3>
           <dl className="space-y-3">
             <InfoRow label="Type" value={job.jobType} />
@@ -143,7 +146,8 @@ export default function JobDetail() {
           )}
         </div>
 
-        {/* Right: Live Log Tail (spans 2 cols on lg) */}
+        {/* Right: Live Log Tail — only when permitted and enabled for client */}
+        {showLogTail && (
         <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
@@ -213,6 +217,7 @@ export default function JobDetail() {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

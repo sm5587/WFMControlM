@@ -4,6 +4,7 @@ build/
 .env
 .env.local
 backend/.env
+backend/ldap-test.config.json
 
 # Logs and diagnostic output
 *.log
@@ -43,4 +44,5 @@ VERSION
 # Local Confluence scripts (one-time use; may contain PAT)
 scripts/upload-confluence-page.py
 scripts/generate-phase1-cluster-page.py
+scripts/publish-data-catalogue-confluence.py
 scripts/__pycache__/

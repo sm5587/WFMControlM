@@ -6,3 +6,6 @@ export const DEFAULT_DEPLOYMENT_LABEL = 'Local';
 
 /** Admin → Config: set to true to show the Ad-hoc Windows tab on Maintenance. */
 export const MAINTENANCE_ADHOC_WINDOWS_KEY = 'display.maintenanceAdHocWindows';
+
+/** Admin → Config: set to true to show Payroll Jobs menu and API (initial rollout: false). */
+export const PAYROLL_ENABLED_KEY = 'display.payrollEnabled';

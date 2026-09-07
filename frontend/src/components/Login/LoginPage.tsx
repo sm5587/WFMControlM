@@ -1,17 +1,23 @@
 import React, { useState } from 'react';
 import { Activity, Lock, User, Eye, EyeOff, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useAppName } from '../../contexts/ConfigContext';
-import { instanceUrlHint } from '../DeploymentBadge';
+import { useAppName, useDeploymentLabel, useConfig } from '../../contexts/ConfigContext';
+import { deploymentHint } from '../DeploymentBadge';
+import AccessRequestPage, { SsoAccessStatus } from './AccessRequestPage';
 
 export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
   const appName = useAppName();
+  const deploymentLabel = useDeploymentLabel();
+  const { getBool } = useConfig();
+  const ldapEnabled = getBool('infra.ldapEnabled', false);
+  const ldapDevMock = getBool('infra.ldapDevMock', false);
   const { login, sessionExpired } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw]     = useState(false);
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
+  const [accessStatus, setAccessStatus] = useState<SsoAccessStatus | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,11 +26,19 @@ export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
     try {
       await login(username.trim(), password);
     } catch (err: any) {
-      setError(err.message || 'Invalid credentials');
+      if (err.accessStatus) {
+        setAccessStatus(err.accessStatus as SsoAccessStatus);
+      } else {
+        setError(err.message || 'Invalid credentials');
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  if (accessStatus) {
+    return <AccessRequestPage status={accessStatus} />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center px-4">
@@ -35,7 +49,7 @@ export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
             <Activity className="w-10 h-10 text-zebra-400" />
             <div>
               <h1 className="text-2xl font-bold text-white tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400 font-mono">{instanceUrlHint()}</p>
+              <p className="text-xs text-slate-400 font-mono">{deploymentHint(deploymentLabel)}</p>
             </div>
           </div>
         </div>
@@ -43,6 +57,15 @@ export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
         {/* Card */}
         <div className="bg-slate-800 rounded-xl shadow-2xl p-8 border border-slate-700">
           <h2 className="text-lg font-semibold text-white mb-6">Sign in</h2>
+
+          {ldapEnabled && (
+            <div className="mb-4 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-300 text-sm">
+              <Lock className="w-4 h-4 flex-shrink-0 text-slate-400" />
+              {ldapDevMock
+                ? 'LDAP dev mock active — any username/password is accepted as AD login'
+                : 'Corporate LDAP/AD sign-in enabled'}
+            </div>
+          )}
 
           {ssoEmail && (
             <div className="mb-4 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-300 text-sm">

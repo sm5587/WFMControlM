@@ -8,10 +8,11 @@ import {
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
 import { useAlertsMenuBadge } from '../hooks/useAlertsMenuBadge';
-import { useAuth, usePermission } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
-import { useAppName } from '../contexts/ConfigContext';
-import { instanceUrlHint } from './DeploymentBadge';
+import { useAppName, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
+import { deploymentHint } from './DeploymentBadge';
+import { PAYROLL_ENABLED_KEY } from '../constants/app-display';
 
 const navItems = [
   { path: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, permission: null },
@@ -28,21 +29,25 @@ const navItems = [
 
 const adminNavItems = [
   { path: '/admin/users',    label: 'Users',    icon: Users,   permission: 'USERS_VIEW' },
-  { path: '/admin/profiles', label: 'Profiles', icon: Settings, permission: 'USERS_VIEW' },
+  { path: '/admin/profiles', label: 'Profiles', icon: Settings, permission: 'PROFILES_VIEW' },
   { path: '/admin/purge',    label: 'Purge',    icon: Trash2,   permission: 'DATA_PURGE_VIEW' },
   { path: '/admin/config',   label: 'Config',   icon: Wrench,   permission: 'PERMISSIONS_EDIT' },
 ];
 
 export default function Layout() {
   const appName = useAppName();
+  const deploymentLabel = useDeploymentLabel();
+  const { getBool } = useConfig();
+  const payrollEnabled = getBool(PAYROLL_ENABLED_KEY, false);
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const { isConnected } = useWebSocket();
   useBackgroundPolling();
   const { showBadge: showAlertsBadge } = useAlertsMenuBadge();
   const { user, logout } = useAuth();
-  const canManageUsers = usePermission('USERS_VIEW', 'read');
-  const { canRead } = useAuth();
+  const { canRead, canWrite } = useAuth();
+  const showAdminSection = adminNavItems.some(item => canRead(item.permission));
+  const isAdminUser = canWrite('PERMISSIONS_EDIT') || canWrite('USERS_MANAGE');
   const {
     selectedCluster, selectedClientId,
     setSelectedCluster, setSelectedClientId,
@@ -64,7 +69,7 @@ export default function Layout() {
           {!collapsed && (
             <div>
               <h1 className="text-lg font-bold tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400 font-mono">{instanceUrlHint()}</p>
+              <p className="text-xs text-slate-400 font-mono">{deploymentHint(deploymentLabel)}</p>
             </div>
           )}
         </div>
@@ -74,6 +79,7 @@ export default function Layout() {
           {navItems.map(({ path, label, icon: Icon, permission }) => {
             // Hide nav item if user lacks the required read permission
             if (permission && !canRead(permission)) return null;
+            if (path === '/payroll' && !payrollEnabled) return null;
             const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
             const showRedBadge = path === '/alerts' && showAlertsBadge;
             return (
@@ -99,7 +105,7 @@ export default function Layout() {
         </nav>
 
         {/* Admin Section */}
-        {canManageUsers && (
+        {showAdminSection && (
           <nav className="py-2 border-t border-slate-700">
             {!collapsed && (
               <p className="px-4 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Admin</p>
@@ -130,13 +136,13 @@ export default function Layout() {
           {/* Role badge */}
           {!collapsed && user && (
             <div className="flex items-center gap-2">
-              {canManageUsers
+              {isAdminUser
                 ? <Shield className="w-3.5 h-3.5 text-zebra-400 flex-shrink-0" />
                 : <Eye className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
               }
               <div className="min-w-0">
                 <p className="text-xs text-white font-medium truncate">{user.displayName}</p>
-                <p className="text-[10px] text-slate-400">{canManageUsers ? 'Admin' : 'Monitor'}</p>
+                <p className="text-[10px] text-slate-400">{isAdminUser ? 'Admin' : 'Monitor'}</p>
               </div>
               <button
                 onClick={logout}

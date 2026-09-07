@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { unprocessedPunchApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../constants/app-config-keys';
+import { usePermission } from '../context/AuthContext';
 
 export function parseDb2Ts(s: string | null): Date | null {
   if (!s) return null;
@@ -12,14 +14,17 @@ export function parseDb2Ts(s: string | null): Date | null {
 
 /** Stale unprocessed-punch rows shown in Alert Center escalated tab. */
 export function useStalePunchRows() {
-  const { getInt } = useConfig();
+  const { getInt, getBool } = useConfig();
+  const canRefreshAll = usePermission('UNPROC_PUNCH_REFRESH_ALL', 'write');
   const punchRefreshMins = getInt('polling.punchRefreshMins', 30);
+  const punchSyncEnabled = getBool(APP_CONFIG_KEYS.punchSyncEnabled, true);
+  const punchPollingEnabled = punchSyncEnabled && canRefreshAll;
 
   const { data: punchRes, isSuccess: punchLoaded } = useQuery({
     queryKey: ['unprocessed-punch-all'],
     queryFn: () => unprocessedPunchApi.getAll(),
     staleTime: punchRefreshMins * 60 * 1000,
-    refetchInterval: punchRefreshMins * 60 * 1000,
+    refetchInterval: punchPollingEnabled ? punchRefreshMins * 60 * 1000 : false,
     refetchOnWindowFocus: false,
   });
 

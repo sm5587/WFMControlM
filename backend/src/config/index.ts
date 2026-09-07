@@ -108,10 +108,6 @@ export const config = {
   // Engine settings
   engine: {
     pollIntervalMs: 5000,       // How often to check for pending jobs
-    maxConcurrentJobs: 50,      // Global max concurrent executions
-    heartbeatIntervalMs: 10000, // Agent heartbeat interval
-    executionHistoryDays: 90,   // Retain execution history
-    logRetentionDays: 30,       // Retain execution logs
   },
 };
 
@@ -132,6 +128,14 @@ export function applyDbConfig(): void {
   config.smtp.port        = configService.getInt('secrets.smtpPort');
   if (config.smtp.host === '127.0.0.1' && (!config.smtp.port || config.smtp.port === 587)) {
     config.smtp.port = 1025;
+  }
+  // Inside Docker, loopback SMTP points at the backend container — use Mailpit service name.
+  const dockerDeploy = config.deploymentLabel.trim().toLowerCase() === 'docker';
+  if (dockerDeploy && (config.smtp.host === '127.0.0.1' || config.smtp.host === 'localhost')) {
+    config.smtp.host = 'mailpit';
+    if (!config.smtp.port || config.smtp.port === 587) {
+      config.smtp.port = 1025;
+    }
   }
   config.smtp.user        = configService.getString('secrets.smtpUser');
   config.smtp.pass        = configService.getString('secrets.smtpPass');
@@ -168,9 +172,5 @@ export function applyDbConfig(): void {
   config.logDir           = configService.getString('infra.logDir');
 
   // ENGINE (patch into config.engine)
-  config.engine.pollIntervalMs     = configService.getInt('engine.pollIntervalMs');
-  config.engine.maxConcurrentJobs  = configService.getInt('engine.maxConcurrentJobs');
-  config.engine.heartbeatIntervalMs = configService.getInt('engine.heartbeatIntervalMs');
-  config.engine.executionHistoryDays = configService.getInt('engine.executionHistoryDays');
-  config.engine.logRetentionDays   = configService.getInt('engine.logRetentionDays');
+  config.engine.pollIntervalMs = configService.getInt('engine.pollIntervalMs');
 }

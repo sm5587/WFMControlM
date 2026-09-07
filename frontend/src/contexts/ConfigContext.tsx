@@ -5,7 +5,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { configApi } from '../services/api';
-import { instanceUrlHint } from '../components/DeploymentBadge';
+import { deploymentHint } from '../components/DeploymentBadge';
 import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME, DEFAULT_DEPLOYMENT_LABEL } from '../constants/app-display';
 
 interface ConfigContextValue {
@@ -83,8 +83,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loaded) return;
-    document.title = `${appName} · ${instanceUrlHint()} | Job Monitoring & Alerting`;
-  }, [loaded, appName]);
+    document.title = `${appName} · ${deploymentHint(deploymentLabel)} | Job Monitoring & Alerting`;
+  }, [loaded, appName, deploymentLabel]);
   const getInt = (key: string, fallback: number) => {
     const v = config[key];
     if (v === undefined) return fallback;

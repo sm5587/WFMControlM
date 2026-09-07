@@ -6,6 +6,10 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { unprocessedPunchApi } from '../../services/api';
 import { useProgressivePunchData, PunchRow } from '../../hooks/useProgressivePunchData';
+import { useConfig } from '../../contexts/ConfigContext';
+import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
+import SyncDisabledBanner from '../common/SyncDisabledBanner';
+import { usePermission } from '../../context/AuthContext';
 
 // ============================================================
 // Unprocessed Punch Page
@@ -36,16 +40,23 @@ function CountBadge({ count, loading }: { count: number | null; loading?: boolea
 }
 
 export default function UnprocessedPunch() {
+  const { getBool } = useConfig();
+  const punchSyncEnabled = getBool(APP_CONFIG_KEYS.punchSyncEnabled, true);
+  const canRefreshAll = usePermission('UNPROC_PUNCH_REFRESH_ALL', 'write');
+  const canRefreshHigh = usePermission('UNPROC_PUNCH_REFRESH_HIGH', 'write');
+  const canRefreshRow = usePermission('UNPROC_PUNCH_REFRESH_ROW', 'write');
   const [search, setSearch] = useState('');
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
   const [isHighAlertRefreshing, setIsHighAlertRefreshing] = useState(false);
   const [refreshingRows, setRefreshingRows] = useState<Set<string>>(new Set());
   const queryClient = useQueryClient();
 
-  const { rows, total, loaded, status, fetchedAt, start } = useProgressivePunchData();
+  const { rows, total, loaded, status, fetchedAt, start } = useProgressivePunchData(canRefreshAll);
 
   const isStreaming = status === 'connecting' || status === 'streaming';
-  const isDone      = status === 'done';
+  const refreshAllEnabled = punchSyncEnabled && canRefreshAll;
+  const refreshHighEnabled = punchSyncEnabled && canRefreshHigh;
+  const refreshRowEnabled = punchSyncEnabled && canRefreshRow;
 
   // Update a row in the shared React Query cache so it persists across navigation
   const updateCachedRow = useCallback((clientId: string, updated: Partial<PunchRow>) => {
@@ -59,10 +70,10 @@ export default function UnprocessedPunch() {
   }, [queryClient]);
 
   const refreshRow = async (clientId: string) => {
-    if (refreshingRows.has(clientId)) return;
+    if (!refreshRowEnabled || refreshingRows.has(clientId)) return;
     setRefreshingRows(prev => new Set(prev).add(clientId));
     try {
-      const res = await unprocessedPunchApi.getPunchCount(clientId);
+      const res = await unprocessedPunchApi.getPunchCount(clientId, 'row');
       const data = (res as any)?.data;
       if (data) updateCachedRow(clientId, {
         punchCount: data.punchCount ?? null,
@@ -112,12 +123,12 @@ export default function UnprocessedPunch() {
   const visibleHighAlertRows = highAlertRows;
 
   async function refreshHighAlert() {
-    if (isHighAlertRefreshing) return;
+    if (!refreshHighEnabled || isHighAlertRefreshing) return;
     setIsHighAlertRefreshing(true);
     await Promise.all(
       highAlertRows.map(async base => {
         try {
-          const resp = await unprocessedPunchApi.getPunchCount(base.clientId);
+          const resp = await unprocessedPunchApi.getPunchCount(base.clientId, 'high');
           const d = (resp as any)?.data;
           if (d) updateCachedRow(base.clientId, {
             punchCount: d.punchCount ?? null,
@@ -147,8 +158,11 @@ export default function UnprocessedPunch() {
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
+      <div className="px-6 pt-4">
+        <SyncDisabledBanner params={['punch']} />
+      </div>
       {/* â”€â”€ Header â”€â”€ */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between gap-4">
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <Timer className="w-6 h-6 text-zebra-500 flex-shrink-0" />
           <div>
@@ -159,7 +173,7 @@ export default function UnprocessedPunch() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           {/* Progress bar while streaming */}
           {isStreaming && total > 0 && (
             <div className="flex items-center gap-2">
@@ -175,16 +189,19 @@ export default function UnprocessedPunch() {
           {lastRefreshed && !isStreaming && (
             <span className="text-xs text-gray-400 hidden sm:block">Refreshed {lastRefreshed}</span>
           )}
-          <button
-            onClick={() => {
-              start();
-            }}
-            disabled={isStreaming}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isStreaming ? 'animate-spin' : ''}`} />
-            {isStreaming ? 'Loading...' : 'Refresh'}
-          </button>
+          {canRefreshAll && (
+            <button
+              onClick={() => {
+                start();
+              }}
+              disabled={isStreaming || !refreshAllEnabled}
+              title={refreshAllEnabled ? 'Refresh punch counts from DB2' : punchSyncEnabled ? 'You do not have permission to refresh all clients' : 'Punch sync is disabled'}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isStreaming ? 'animate-spin' : ''}`} />
+              {isStreaming ? 'Loading...' : 'Refresh'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -219,14 +236,17 @@ export default function UnprocessedPunch() {
                 <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
                 <span className="text-sm font-semibold text-amber-700">High Pending - {visibleHighAlertRows.length} client{visibleHighAlertRows.length !== 1 ? 's' : ''} exceeding 500</span>
               </div>
-              <button
-                onClick={refreshHighAlert}
-                disabled={isHighAlertRefreshing}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-amber-700 border border-amber-200 rounded-md hover:bg-amber-100 disabled:opacity-50 transition-colors bg-white"
-              >
-                <RefreshCw className={`w-3 h-3 ${isHighAlertRefreshing ? 'animate-spin' : ''}`} />
-                {isHighAlertRefreshing ? 'Refreshing...' : 'Refresh'}
-              </button>
+              {canRefreshHigh && (
+                <button
+                  onClick={refreshHighAlert}
+                  disabled={isHighAlertRefreshing || !refreshHighEnabled}
+                  title={refreshHighEnabled ? 'Refresh high-alert clients from DB2' : punchSyncEnabled ? 'You do not have permission to refresh high-alert clients' : 'Punch sync is disabled'}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-amber-700 border border-amber-200 rounded-md hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors bg-white"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isHighAlertRefreshing ? 'animate-spin' : ''}`} />
+                  {isHighAlertRefreshing ? 'Refreshing...' : 'Refresh'}
+                </button>
+              )}
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm resizable-cols">
@@ -308,7 +328,7 @@ export default function UnprocessedPunch() {
                     <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider w-40">Pending Punches</th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">Last Update Time</th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">DB Current Time</th>
-                    <th className="w-8" />
+                    {canRefreshRow && <th className="w-8" />}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -336,7 +356,7 @@ export default function UnprocessedPunch() {
                           </td>
                           <td className="px-4 py-2" />
                           <td className="px-4 py-2" />
-                          <td className="px-4 py-2" />
+                          {canRefreshRow && <td className="px-4 py-2" />}
                         </tr>
                         {!collapsed && clusterRows.map(rawR => {
                           const r = rawR;
@@ -359,14 +379,16 @@ export default function UnprocessedPunch() {
                                 {r.loading ? <span className="inline-block w-28 h-3 bg-gray-200 rounded animate-pulse" /> : (r.dbCurrentTime ?? (r.error ? <span className="text-red-400">-</span> : '-'))}
                               </td>
                               <td className="px-4 py-2.5 text-right">
-                                <button
-                                  onClick={() => refreshRow(r.clientId)}
-                                  disabled={isRefreshing || !!r.loading}
-                                  title="Refresh this client"
-                                  className="p-1 rounded hover:bg-gray-200 disabled:opacity-40 transition-colors text-gray-400 hover:text-gray-600"
-                                >
-                                  <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
-                                </button>
+                                {canRefreshRow ? (
+                                  <button
+                                    onClick={() => refreshRow(r.clientId)}
+                                    disabled={isRefreshing || !!r.loading || !refreshRowEnabled}
+                                    title={refreshRowEnabled ? 'Refresh this client' : punchSyncEnabled ? 'You do not have permission to refresh this client' : 'Punch sync is disabled'}
+                                    className="p-1 rounded hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-gray-400 hover:text-gray-600"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+                                  </button>
+                                ) : null}
                               </td>
                             </tr>
                           );

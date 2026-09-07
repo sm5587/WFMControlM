@@ -1,5 +1,5 @@
 // ============================================================
-// Access Request Service — SSO registration queue
+// Access Request Service — SSO / LDAP registration queue
 // ============================================================
 
 import bcrypt from 'bcryptjs';
@@ -22,6 +22,11 @@ export interface SsoAccessStatus {
   message?: string;
 }
 
+export interface AccessRequestOptions {
+  displayName?: string;
+  requestedUsername?: string;
+}
+
 function emailLocalPart(email: string): string {
   return email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '') || 'user';
 }
@@ -37,18 +42,20 @@ async function uniqueUsername(base: string): Promise<string> {
   }
 }
 
-/** Resolve SSO access state for an email — creates a pending request when needed. */
-export async function resolveSsoAccessStatus(
+/** Resolve access state for an email — creates a pending request when needed. */
+export async function resolveAccessRequestStatus(
   email: string,
   sourceIp?: string,
+  options?: AccessRequestOptions,
 ): Promise<SsoAccessStatus> {
   if (!isAllowedSsoDomain(email)) {
     const allowedDomain = config.sso.allowedDomain || 'zebra.com';
     return {
-      ssoEnabled: true,
+      ssoEnabled: false,
       email,
       status: 'DOMAIN_DENIED',
       canLogin: false,
+      displayName: options?.displayName,
       message: `Access is restricted to @${allowedDomain} accounts only.`,
     };
   }
@@ -61,7 +68,7 @@ export async function resolveSsoAccessStatus(
   if (existingUser) {
     if (!existingUser.isActive) {
       return {
-        ssoEnabled: true,
+        ssoEnabled: false,
         email,
         status: 'REJECTED',
         canLogin: false,
@@ -71,7 +78,7 @@ export async function resolveSsoAccessStatus(
     }
     const hasProfiles = existingUser.profiles.length > 0;
     return {
-      ssoEnabled: true,
+      ssoEnabled: false,
       email,
       status: 'ACTIVE',
       canLogin: hasProfiles,
@@ -86,11 +93,16 @@ export async function resolveSsoAccessStatus(
 
   if (!request) {
     request = await prisma.accessRequest.create({
-      data: { email, sourceIp, status: 'PENDING' },
+      data: {
+        email,
+        sourceIp,
+        status: 'PENDING',
+        displayName: options?.displayName?.trim() || null,
+        requestedUsername: options?.requestedUsername?.trim() || null,
+      },
     });
     logger.info(`New access request created email=${email} ip=${sourceIp || 'unknown'}`);
   } else if (request.status === 'REJECTED') {
-    // Allow user to re-request after rejection
     request = await prisma.accessRequest.update({
       where: { id: request.id },
       data: {
@@ -100,13 +112,24 @@ export async function resolveSsoAccessStatus(
         reviewNote: null,
         requestedAt: new Date(),
         sourceIp,
+        displayName: options?.displayName?.trim() || request.displayName,
+        requestedUsername: options?.requestedUsername?.trim() || request.requestedUsername,
       },
     });
     logger.info(`Access request re-opened email=${email}`);
+  } else if (options?.displayName || options?.requestedUsername) {
+    request = await prisma.accessRequest.update({
+      where: { id: request.id },
+      data: {
+        sourceIp,
+        ...(options.displayName?.trim() ? { displayName: options.displayName.trim() } : {}),
+        ...(options.requestedUsername?.trim() ? { requestedUsername: options.requestedUsername.trim() } : {}),
+      },
+    });
   }
 
   return {
-    ssoEnabled: true,
+    ssoEnabled: false,
     email,
     status: request.status as AccessRequestStatus,
     canLogin: false,
@@ -116,6 +139,24 @@ export async function resolveSsoAccessStatus(
         ? 'Your access request is pending administrator approval.'
         : undefined,
   };
+}
+
+/** Resolve SSO access state for an email — creates a pending request when needed. */
+export async function resolveSsoAccessStatus(
+  email: string,
+  sourceIp?: string,
+): Promise<SsoAccessStatus> {
+  const status = await resolveAccessRequestStatus(email, sourceIp);
+  return { ...status, ssoEnabled: true };
+}
+
+/** Resolve LDAP access state after successful AD authentication. */
+export async function resolveLdapAccessStatus(
+  email: string,
+  sourceIp?: string,
+  options?: AccessRequestOptions,
+): Promise<SsoAccessStatus> {
+  return resolveAccessRequestStatus(email, sourceIp, options);
 }
 
 /** Approve a pending access request — creates user and assigns profile. */
@@ -135,7 +176,9 @@ export async function approveAccessRequest(
   const existingUser = await prisma.user.findUnique({ where: { email: request.email } });
   if (existingUser) throw new Error('A user with this email already exists');
 
-  const baseUsername = options?.username?.trim() || emailLocalPart(request.email);
+  const baseUsername = options?.username?.trim()
+    || request.requestedUsername?.trim()
+    || emailLocalPart(request.email);
   const username = await uniqueUsername(baseUsername);
   const displayName = options?.displayName?.trim() || request.displayName || username;
   const passwordHash = await bcrypt.hash(randomBytes(32).toString('hex'), 10);

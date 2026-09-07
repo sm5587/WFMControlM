@@ -11,6 +11,28 @@ interface Props {
 
 type Tab = 'details' | 'db2' | 'servers';
 
+function ToggleSwitch({ enabled, onChange, label }: { enabled: boolean; onChange: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={label}
+      onClick={onChange}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer select-none items-center rounded-full border-0 p-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-zebra-400 focus-visible:ring-offset-1 ${
+        enabled ? 'bg-green-500' : 'bg-gray-300'
+      }`}
+    >
+      <span
+        aria-hidden
+        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+          enabled ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+}
+
 export default function EditClientDialog({ clientId, onClose }: Props) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>('details');
@@ -52,7 +74,7 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
   // ── DB2 form state ──────────────────────────────────────────
   const [db2, setDb2] = useState({
     db2Host: '', db2Port: '50000', db2Database: '', db2Schema: '',
-    db2Username: '', db2Password: '',
+    db2Username: '', db2Password: '', db2SslEnabled: false,
   });
   const [showPassword, setShowPassword] = useState(false);
   useEffect(() => {
@@ -64,6 +86,7 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
         db2Schema: client.db2Schema ?? '',
         db2Username: client.db2Username ?? '',
         db2Password: '', // never pre-filled; leave blank = keep existing
+        db2SslEnabled: client.db2SslEnabled ?? false,
       });
     }
   }, [client?.id]);
@@ -76,6 +99,7 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
       db2Schema: db2.db2Schema || undefined,
       db2Username: db2.db2Username || undefined,
       db2Password: db2.db2Password || undefined,
+      db2SslEnabled: db2.db2SslEnabled,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['clients'] });
@@ -85,9 +109,16 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
   });
 
   // ── Server state ────────────────────────────────────────────
+  const [remoteLogTailEnabled, setRemoteLogTailEnabled] = useState(true);
   // Track edits per server: serverId → pending changes
   const [serverEdits, setServerEdits] = useState<Record<string, { dns: string; sshPort: string; environment: string; serverNum: string }>>({});
   const [newServer, setNewServer] = useState<{ environment: string; serverNum: string; dns: string; sshPort: string } | null>(null);
+
+  useEffect(() => {
+    if (client) {
+      setRemoteLogTailEnabled(client.remoteLogTailEnabled ?? true);
+    }
+  }, [client?.id]);
 
   useEffect(() => {
     if (client?.appServers) {
@@ -135,6 +166,19 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
     },
   });
 
+  const logTailMut = useMutation({
+    mutationFn: (value: boolean) => clientsApi.update(clientId, { remoteLogTailEnabled: value }),
+    onSuccess: (resp) => {
+      const saved = resp?.data?.remoteLogTailEnabled ?? true;
+      setRemoteLogTailEnabled(saved);
+      qc.setQueryData(['client', clientId], resp);
+      qc.invalidateQueries({ queryKey: ['clients'] });
+      qc.invalidateQueries({ queryKey: ['clients-list-active'] });
+      qc.invalidateQueries({ queryKey: ['jobs-all'] });
+      flash('servers');
+    },
+  });
+
   const flash = (t: Tab) => {
     setSaved(t);
     setTimeout(() => setSaved(null), 2000);
@@ -148,9 +192,9 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col h-[min(680px,90vh)]">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Edit Client</h2>
             {client && (
@@ -165,7 +209,7 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-gray-100 px-6">
+        <div className="flex shrink-0 border-b border-gray-100 px-6">
           {tabs.map(t => (
             <button
               key={t.key}
@@ -179,14 +223,14 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
               {t.icon}
               {t.label}
               {saved === t.key && (
-                <span className="ml-1 text-xs text-green-600 font-normal">✓ Saved</span>
+                <span className="ml-1 text-xs text-green-600 font-normal" aria-label="Saved">✓</span>
               )}
             </button>
           ))}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        {/* Tab content — fixed height so dialog does not resize between tabs */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
           {isLoading ? (
             <div className="text-center py-8 text-gray-400">Loading…</div>
           ) : (
@@ -232,17 +276,11 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
                       <label className="block text-xs font-medium text-gray-600">Status</label>
                       <p className="text-xs text-gray-400 mt-0.5">Inactive clients are hidden from Jobs and Monitor menus</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsActive(v => !v)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                        isActive ? 'bg-green-500' : 'bg-gray-300'
-                      }`}
-                    >
-                      <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-                        isActive ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
-                    </button>
+                    <ToggleSwitch
+                      enabled={isActive}
+                      onChange={() => setIsActive(v => !v)}
+                      label="Client active status"
+                    />
                   </div>
 
                   {detailsMut.isError && (
@@ -263,73 +301,141 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
 
               {/* DB2 TAB */}
               {tab === 'db2' && (
-                <div className="space-y-4">
-                  <p className="text-xs text-gray-500">
-                    Connection details used to query DB2. Stored securely; password will be replaced by Keeper when integrated.
-                  </p>
-                  {(
-                    [
-                      { key: 'db2Host',     label: 'Host',     placeholder: 'e.g. z182sp-aaprwsprdbs04.rfx.zebra.com' },
-                      { key: 'db2Port',     label: 'Port',     placeholder: '50000', type: 'number' },
-                      { key: 'db2Database', label: 'Database', placeholder: 'e.g. RWS4' },
-                      { key: 'db2Schema',   label: 'Schema',   placeholder: 'e.g. RWSUSER' },
-                      { key: 'db2Username', label: 'Username', placeholder: 'e.g. datareader' },
-                    ] as { key: keyof typeof db2; label: string; placeholder: string; type?: string }[]
-                  ).map(({ key, label, placeholder, type }) => (
-                    <div key={key}>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+                <div className="space-y-2.5">
+                  <div className="grid grid-cols-[1fr_5.5rem] gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Host</label>
                       <input
-                        type={(type as string | undefined) ?? 'text'}
-                        value={db2[key]}
-                        placeholder={placeholder}
-                        onChange={e => setDb2(p => ({ ...p, [key]: e.target.value }))}
-                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                        type="text"
+                        value={db2.db2Host}
+                        placeholder="db2host.rfx.zebra.com"
+                        onChange={e => setDb2(p => ({ ...p, db2Host: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
                       />
                     </div>
-                  ))}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Port</label>
+                      <input
+                        type="number"
+                        value={db2.db2Port}
+                        placeholder="50000"
+                        onChange={e => setDb2(p => ({ ...p, db2Port: e.target.value }))}
+                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                      />
+                    </div>
+                  </div>
 
-                  {/* Password field with eye toggle */}
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
-                    <div className="relative">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Database</label>
                       <input
-                        type={showPassword ? 'text' : 'password'}
-                        value={db2.db2Password}
-                        placeholder={client?.db2PasswordSet ? '••••••••  (already set — leave blank to keep)' : 'Enter password'}
-                        onChange={e => setDb2(p => ({ ...p, db2Password: e.target.value }))}
-                        className="w-full px-3 py-2 pr-10 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                        type="text"
+                        value={db2.db2Database}
+                        placeholder="RWS4"
+                        onChange={e => setDb2(p => ({ ...p, db2Database: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(v => !v)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                        tabIndex={-1}
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">Will be replaced by Keeper when integrated. Leave blank to clear.</p>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Schema</label>
+                      <input
+                        type="text"
+                        value={db2.db2Schema}
+                        placeholder="RWSUSER"
+                        onChange={e => setDb2(p => ({ ...p, db2Schema: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Username</label>
+                      <input
+                        type="text"
+                        value={db2.db2Username}
+                        placeholder="datareader"
+                        onChange={e => setDb2(p => ({ ...p, db2Username: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          value={db2.db2Password}
+                          placeholder={client?.db2PasswordSet ? '••••••••' : 'Enter password'}
+                          onChange={e => setDb2(p => ({ ...p, db2Password: e.target.value }))}
+                          className="w-full px-3 py-1.5 pr-9 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(v => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          tabIndex={-1}
+                        >
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4 pt-0.5">
+                    <div className="flex items-center gap-3 select-none">
+                      <span className="text-xs font-medium text-gray-600">JDBC SSL</span>
+                      <ToggleSwitch
+                        enabled={db2.db2SslEnabled}
+                        onChange={() => setDb2(p => ({ ...p, db2SslEnabled: !p.db2SslEnabled }))}
+                        label="JDBC SSL"
+                      />
+                    </div>
+                    <button
+                      onClick={() => db2Mut.mutate()}
+                      disabled={db2Mut.isPending}
+                      className="flex items-center gap-2 px-4 py-1.5 bg-zebra-600 text-white rounded-lg hover:bg-zebra-700 text-sm font-medium disabled:opacity-50"
+                    >
+                      <Save className="w-4 h-4" />
+                      {db2Mut.isPending ? 'Saving…' : 'Save'}
+                    </button>
                   </div>
 
                   {db2Mut.isError && (
                     <p className="text-sm text-red-600">{(db2Mut.error as Error).message}</p>
                   )}
-                  <div className="flex justify-end pt-2">
-                    <button
-                      onClick={() => db2Mut.mutate()}
-                      disabled={db2Mut.isPending}
-                      className="flex items-center gap-2 px-4 py-2 bg-zebra-600 text-white rounded-lg hover:bg-zebra-700 text-sm font-medium disabled:opacity-50"
-                    >
-                      <Save className="w-4 h-4" />
-                      {db2Mut.isPending ? 'Saving…' : 'Save DB2 Config'}
-                    </button>
-                  </div>
                 </div>
               )}
 
               {/* SERVERS TAB */}
               {tab === 'servers' && (
                 <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-4 p-3 border border-gray-200 rounded-xl bg-gray-50">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-800">Remote log tail</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When off, Cron Jobs log viewer and automated SSH log checks are disabled for this client (data sovereignty).
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0 pt-0.5">
+                      <ToggleSwitch
+                        enabled={remoteLogTailEnabled}
+                        onChange={() => setRemoteLogTailEnabled(v => !v)}
+                        label="Remote log tail"
+                      />
+                      <button
+                        onClick={() => logTailMut.mutate(remoteLogTailEnabled)}
+                        disabled={logTailMut.isPending || remoteLogTailEnabled === (client?.remoteLogTailEnabled ?? true)}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-zebra-600 text-white rounded-lg hover:bg-zebra-700 text-xs font-medium disabled:opacity-50"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        {logTailMut.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                  {logTailMut.isError && (
+                    <p className="text-sm text-red-600">{(logTailMut.error as Error).message}</p>
+                  )}
+
                   {(client?.appServers ?? []).map(s => {
                     const edit = serverEdits[s.id] ?? { dns: s.dns, sshPort: String(s.sshPort), environment: s.environment, serverNum: s.serverNum };
                     return (
@@ -471,7 +577,7 @@ export default function EditClientDialog({ clientId, onClose }: Props) {
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-gray-100 flex justify-end">
+        <div className="shrink-0 px-6 py-3 border-t border-gray-100 flex justify-end">
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"

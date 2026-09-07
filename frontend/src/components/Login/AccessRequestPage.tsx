@@ -1,7 +1,7 @@
 import React from 'react';
 import { Activity, Clock, ShieldCheck, ShieldX, Mail } from 'lucide-react';
-import { useAppName } from '../../contexts/ConfigContext';
-import { instanceUrlHint } from '../DeploymentBadge';
+import { useAppName, useDeploymentLabel } from '../../contexts/ConfigContext';
+import { deploymentHint } from '../DeploymentBadge';
 
 export interface SsoAccessStatus {
   ssoEnabled: boolean;
@@ -18,6 +18,7 @@ interface Props {
 
 export default function AccessRequestPage({ status }: Props) {
   const appName = useAppName();
+  const deploymentLabel = useDeploymentLabel();
   const email = status.email || '';
   const isPending = status.status === 'PENDING';
   const isRejected = status.status === 'REJECTED';
@@ -32,7 +33,7 @@ export default function AccessRequestPage({ status }: Props) {
             <Activity className="w-10 h-10 text-zebra-400" />
             <div className="text-left">
               <h1 className="text-2xl font-bold text-white tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400 font-mono">{instanceUrlHint()}</p>
+              <p className="text-xs text-slate-400 font-mono">{deploymentHint(deploymentLabel)}</p>
             </div>
           </div>
         </div>

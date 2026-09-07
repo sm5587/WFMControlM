@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "sql:extract": "node scripts/extract-sql.js"
+    "sql:extract": "node scripts/extract-sql.js",
+    "ldap:test": "node scripts/test-ldap-connection.js"
   },
   "prisma": {
     "seed": "node_modules\\.bin\\ts-node prisma/seed.ts"
@@ -30,6 +31,7 @@
     "helmet": "^7.1.0",
     "ibm_db": "^3.3.4",
     "jsonwebtoken": "^9.0.2",
+    "ldapts": "^9.0.0",
     "morgan": "^1.10.0",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.8",

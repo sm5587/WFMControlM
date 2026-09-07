@@ -6,11 +6,44 @@
 
 import { Router, Request, Response } from 'express';
 import { db2DirectService } from '../services/db2-direct-service';
+import { configService } from '../services/config-service';
 import { prisma } from '../database/prisma';
 import { createServiceLogger } from '../utils/logger';
+import { requirePermission } from '../middleware';
 
 const router = Router();
 const logger = createServiceLogger('DBJobsAPI');
+
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('DBJOBS_VIEW', 'read')(req, res, next);
+  }
+  if (req.method === 'POST' || req.method === 'DELETE') {
+    return requirePermission('DBJOBS_VIEW', 'write')(req, res, next);
+  }
+  return next();
+});
+
+export class DbJobsSyncDisabledError extends Error {
+  constructor() {
+    super('DB Jobs sync is disabled (engine.dbJobsSyncEnabled=false). Re-enable in Admin → Config.');
+    this.name = 'DbJobsSyncDisabledError';
+  }
+}
+
+function assertDbJobsSyncEnabled(): void {
+  if (!configService.isDbJobsSyncEnabled()) {
+    throw new DbJobsSyncDisabledError();
+  }
+}
+
+function handleDbJobsSyncError(res: Response, error: unknown): boolean {
+  if (error instanceof DbJobsSyncDisabledError || (error as Error)?.name === 'DbJobsSyncDisabledError') {
+    res.status(503).json({ success: false, error: (error as Error).message });
+    return true;
+  }
+  return false;
+}
 
 // ============================================================
 // Helpers
@@ -59,6 +92,7 @@ async function getClientInfoList() {
 
 /** Fetch jobs from DB2 for a single client and cache them. */
 async function fetchAndCacheClient(clientId: string): Promise<{ jobs: any[]; error?: string }> {
+  assertDbJobsSyncEnabled();
   try {
     const result = await db2DirectService.getQueueJobs(clientId);
     if (result.success && result.rows) {
@@ -157,6 +191,7 @@ router.get('/queue-all', async (req: Request, res: Response) => {
 // Called explicitly by user clicking "Fetch All from DB2".
 router.post('/fetch-all', async (_req: Request, res: Response) => {
   try {
+    assertDbJobsSyncEnabled();
     logger.info('Bulk DB2 fetch triggered — fetching queue jobs from all clients');
     const result = await db2DirectService.getAllQueueJobs();
 
@@ -219,15 +254,16 @@ router.post('/fetch-all', async (_req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    if (handleDbJobsSyncError(res, error)) return;
     logger.error(`Bulk fetch error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // POST /api/db-jobs/:clientId/refresh
-// Force-refresh a single client from DB2, bypassing the daily cache.
 router.post('/:clientId/refresh', async (req: Request, res: Response) => {
   try {
+    assertDbJobsSyncEnabled();
     const { clientId } = req.params;
     logger.info(`On-demand refresh for client ${clientId}`);
     const result = await fetchAndCacheClient(clientId);
@@ -252,17 +288,17 @@ router.post('/:clientId/refresh', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    if (handleDbJobsSyncError(res, error)) return;
     logger.error(`Refresh error for ${req.params.clientId}: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET /api/db-jobs/:clientId/queue - Fetch queue jobs for a specific client (from cache or DB2)
+// GET /api/db-jobs/:clientId/queue
 router.get('/:clientId/queue', async (req: Request, res: Response) => {
   try {
     const { clientId } = req.params;
 
-    // Check cache first
     const cached = await prisma.cachedQueueJob.findUnique({ where: { clientId } });
     let jobs: any[];
     let fetchedAt: string;
@@ -270,6 +306,16 @@ router.get('/:clientId/queue', async (req: Request, res: Response) => {
     if (cached && isToday(cached.fetchedAt)) {
       jobs = JSON.parse(cached.jobData);
       fetchedAt = cached.fetchedAt.toISOString();
+    } else if (!configService.isDbJobsSyncEnabled()) {
+      if (cached) {
+        jobs = JSON.parse(cached.jobData);
+        fetchedAt = cached.fetchedAt.toISOString();
+      } else {
+        return res.status(503).json({
+          success: false,
+          error: 'DB Jobs sync is disabled and no cached data exists for this client.',
+        });
+      }
     } else {
       // Fetch and cache
       const result = await fetchAndCacheClient(clientId);

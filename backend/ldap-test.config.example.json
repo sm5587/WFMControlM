@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to ldap-test.config.json and fill in values. File is gitignored — for local LDAP testing only.",
+  "ldap.url": "ldap://usc1.rfx.zebra.com:389",
+  "ldap.userDn.pattern": "uid={0},cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com",
+  "ldap.userSearch.base": "dc=rfx,dc=zebra,dc=com",
+  "ldap.userSearchFilter.pattern": "(uid={0})",
+  "ldap.groupSearch.base": "dc=rfx,dc=zebra,dc=com",
+  "ldap.manager.dn": "uid=svc_wfmwatch,cn=users,cn=accounts,dc=rfx,dc=zebra,dc=com",
+  "ldap.manager.password": ""
+}

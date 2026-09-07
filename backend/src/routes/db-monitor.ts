@@ -12,8 +12,19 @@ import { prisma } from '../database/prisma';
 import { escalationService } from '../services/escalation-service';
 import { configService } from '../services/config-service';
 import { logger } from '../utils/logger';
+import { requirePermission } from '../middleware';
 
 const router = Router();
+
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('DBMONITOR_VIEW', 'read')(req, res, next);
+  }
+  if (req.method === 'POST') {
+    return requirePermission('DBMONITOR_VIEW', 'write')(req, res, next);
+  }
+  return next();
+});
 
 // ============================================================
 // DB2 Direct Connection Endpoints

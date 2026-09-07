@@ -5,9 +5,15 @@
 import { Client as SSH2Client } from 'ssh2';
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { requirePermission } from '../middleware';
+import { requirePermission, JwtUser } from '../middleware';
 import { createServiceLogger } from '../utils/logger';
-import { fetchUploadFileMonitor, getFileMonitorPaths, FileMonitorStreamEvent } from '../services/file-monitor-service';
+import {
+  fetchUploadFileMonitor,
+  getFileMonitorPaths,
+  FileMonitorStreamEvent,
+  resolveFileMonitorClients,
+  validateFileMonitorScanType,
+} from '../services/file-monitor-service';
 import { sshCredentialsUseTotp } from '../services/sync-service';
 
 const router = Router();
@@ -25,9 +31,31 @@ const FetchSchema = z.object({
 interface ActiveScan {
   cancelled: boolean;
   conn: SSH2Client | null;
+  /** Client IDs currently being scanned — at most one active scan per client box. */
+  clientIds: Set<string>;
+  startedBy: string;
 }
 
 let activeScan: ActiveScan | null = null;
+
+function scanOwnerLabel(user: JwtUser | undefined): string {
+  if (!user) return 'another user';
+  return user.displayName?.trim() || user.username || 'another user';
+}
+
+function scanInProgressError(overlap?: string[]): string {
+  const owner = activeScan?.startedBy ?? 'another user';
+  if (overlap && overlap.length > 0) {
+    const label = overlap.length === 1 ? overlap[0] : `${overlap.slice(0, 3).join(', ')}${overlap.length > 3 ? '…' : ''}`;
+    return `A scan is already in progress for client box${overlap.length > 1 ? 'es' : ''}: ${label} (started by ${owner})`;
+  }
+  return `Scan already in progress (started by ${owner})`;
+}
+
+function activeScanClientOverlap(clientIds: string[]): string[] {
+  if (!activeScan) return [];
+  return clientIds.filter(id => activeScan!.clientIds.has(id));
+}
 
 function requestScanCancel(): boolean {
   if (!activeScan) return false;
@@ -54,11 +82,40 @@ router.post('/cancel', requirePermission('FILE_MONITOR_VIEW', 'read'), (_req: Re
 });
 
 router.post('/fetch', requirePermission('FILE_MONITOR_VIEW', 'read'), async (req: Request, res: Response) => {
-  if (activeScan) {
-    return res.status(409).json({ success: false, error: 'Scan already in progress' });
+  const parsed = FetchSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: 'Invalid scan request' });
   }
 
-  activeScan = { cancelled: false, conn: null };
+  const scanTypeError = validateFileMonitorScanType(parsed.data);
+  if (scanTypeError) {
+    return res.status(400).json({ success: false, error: scanTypeError });
+  }
+
+  let plannedClientIds: string[] = [];
+  try {
+    const resolved = await resolveFileMonitorClients(parsed.data);
+    plannedClientIds = resolved.map(c => c.clientId);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message ?? 'Failed to resolve scan scope' });
+  }
+
+  if (plannedClientIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'No active clients match the selected scope' });
+  }
+
+  if (activeScan) {
+    const overlap = activeScanClientOverlap(plannedClientIds);
+    return res.status(409).json({
+      success: false,
+      error: scanInProgressError(overlap.length > 0 ? overlap : undefined),
+    });
+  }
+
+  const user = (req as Request & { user?: JwtUser }).user;
+  const startedBy = scanOwnerLabel(user);
+  activeScan = { cancelled: false, conn: null, clientIds: new Set(plannedClientIds), startedBy };
+  logger.info(`File monitor: scan started by ${startedBy} (${plannedClientIds.length} client(s))`);
   // Use res 'close' — req 'close' fires when the POST body is fully read, not on client disconnect.
   const onClientDisconnect = () => {
     if (!res.writableFinished) {
@@ -83,11 +140,6 @@ router.post('/fetch', requirePermission('FILE_MONITOR_VIEW', 'read'), async (req
   };
 
   try {
-    const parsed = FetchSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      return res.status(400).json({ success: false, error: 'Invalid scan request' });
-    }
-
     const result = await fetchUploadFileMonitor(parsed.data, {
       isCancelled: () => activeScan!.cancelled,
       onConnection: (conn) => { activeScan!.conn = conn; },

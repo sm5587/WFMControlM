@@ -17,12 +17,40 @@ import { buildPunchNotifyEmail } from '../email/notify-email-templates';
 const router = Router();
 const logger = createServiceLogger('EscalationsAPI');
 
+router.use((req, res, next) => {
+  if (req.method === 'GET') {
+    return requirePermission('ALERTS_VIEW', 'read')(req, res, next);
+  }
+  return next();
+});
+
 // GET /api/escalations - Get all escalated alerts (red tab data)
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const alerts = await escalationService.getEscalatedAlerts();
     res.json({ success: true, data: alerts });
   } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const reportQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100),
+  month: z.coerce.number().int().min(1).max(12),
+  cluster: z.string().optional(),
+  clientId: z.string().optional(),
+});
+
+// GET /api/escalations/report - Monthly escalation report (queue buildup + punch alerts)
+router.get('/report', async (req: Request, res: Response) => {
+  try {
+    const { year, month, cluster, clientId } = reportQuerySchema.parse(req.query);
+    const report = await escalationService.getMonthlyReport({ year, month, cluster, clientId });
+    res.json({ success: true, data: report });
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({ success: false, error: 'Validation error', details: error.errors });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -150,7 +178,7 @@ router.post('/recipients/:id/toggle', requirePermission('RECIPIENTS_MANAGE', 'wr
 export default router;
 
 // POST /api/escalations/notify-punch — Email team about clients with >100 pending punches
-router.post('/notify-punch', async (req: Request, res: Response) => {
+router.post('/notify-punch', requirePermission('ALERTS_NOTIFY', 'write'), async (req: Request, res: Response) => {
   try {
     const rows: Array<{ clientId: string; name: string; cluster: string; punchCount: number; lastUpdateTime: string | null }> =
       req.body.rows ?? [];

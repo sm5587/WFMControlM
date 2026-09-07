@@ -10,6 +10,14 @@ import { configService } from './config-service';
 import { db2DirectService, BatchJobGroup } from './db2-direct-service';
 import { createServiceLogger } from '../utils/logger';
 import { buildQueueBuildupNotifyEmail, escHtml } from '../email/notify-email-templates';
+import {
+  computeDurationMins,
+  deriveQueueSeverity,
+  isCurrentMonthPeriod,
+  parseMonthPeriod,
+  type MonthPeriod,
+} from '../utils/escalation-report';
+import { unprocPunchAlertService } from './unproc-punch-alert-service';
 
 function getEscalationThresholdDate(): Date {
   const mins = configService.getInt('threshold.escalationMins');
@@ -22,6 +30,14 @@ function getNotifyCooldownDate(): Date {
 }
 
 const logger = createServiceLogger('EscalationService');
+
+/** User id recorded when the backend auto-acknowledges after sending escalation email. */
+export const SYSTEM_ESCALATION_ACTOR = 'system';
+
+function getAutoAckDurationMins(): number {
+  const mins = configService.getInt('threshold.defaultSuppressMins', 60);
+  return mins > 0 ? mins : 60;
+}
 
 export interface ImpactedJobRow {
   jobType: string;
@@ -49,6 +65,42 @@ export interface EscalatedAlertSummary {
   emailRecipients: string[] | null;
   firstSeenAt: string;
   lastSeenAt: string;
+}
+
+export interface EscalatedAlertHistoryRow extends EscalatedAlertSummary {
+  resolvedAt: string | null;
+  durationMins: number;
+  severity: 'CRITICAL' | 'WARNING';
+}
+
+export interface EscalationMonthlyReport {
+  period: MonthPeriod;
+  queueBuildup: {
+    summary: {
+      total: number;
+      critical: number;
+      warning: number;
+      open: number;
+      acknowledged: number;
+      suppressed: number;
+      resolved: number;
+      clientsAffected: number;
+      avgDurationMins: number;
+      byCluster: Record<string, number>;
+    };
+    rows: EscalatedAlertHistoryRow[];
+  };
+    punchAlerts: {
+    summary: {
+      total: number;
+      activeStale: number;
+      acknowledged: number;
+      suppressed: number;
+      notified: number;
+    };
+    rows: Awaited<ReturnType<typeof unprocPunchAlertService.getPunchAlertHistory>>['rows'];
+    liveDataAvailable: boolean;
+  };
 }
 
 class EscalationService {
@@ -155,6 +207,22 @@ class EscalationService {
           });
           logger.info(`Suppression expired for ${alert.clientId}, reopened`);
         }
+
+        // Auto-ack (system) expires after default suppress window → reopen for re-notification
+        if (
+          existing.status === 'ACKNOWLEDGED'
+          && existing.acknowledgedBy === SYSTEM_ESCALATION_ACTOR
+          && existing.acknowledgedAt
+        ) {
+          const ackExpiresAt = existing.acknowledgedAt.getTime() + getAutoAckDurationMins() * 60 * 1000;
+          if (now.getTime() >= ackExpiresAt) {
+            await prisma.escalatedAlert.update({
+              where: { id: existing.id },
+              data: { status: 'OPEN', acknowledgedBy: null, acknowledgedAt: null },
+            });
+            logger.info(`Auto-ack expired for ${alert.clientId}, reopened`);
+          }
+        }
       } else {
         // Create new escalated alert — but only if stale pending has been around for a while
         // We create it now and check firstSeenAt for the 1-hour threshold on the read side
@@ -187,6 +255,65 @@ class EscalationService {
         logger.info(`Escalated alert resolved for ${oa.clientId} — no longer pending`);
       }
     }
+
+    await this.processAutoEscalationNotifyAndAck();
+  }
+
+  /**
+   * When an escalated alert crosses the threshold, email recipients and auto-ack for 1 hour (default).
+   */
+  private async processAutoEscalationNotifyAndAck(): Promise<void> {
+    if (!configService.getBool('engine.autoEscalationNotifyEnabled', true)) {
+      return;
+    }
+
+    const threshold = getEscalationThresholdDate();
+    const notifyCooldownSince = getNotifyCooldownDate();
+
+    const eligible = await prisma.escalatedAlert.findMany({
+      where: {
+        resolvedAt: null,
+        status: 'OPEN',
+        firstSeenAt: { lte: threshold },
+        OR: [
+          { emailSentAt: null },
+          { emailSentAt: { lt: notifyCooldownSince } },
+        ],
+      },
+      orderBy: { stalePendingCount: 'desc' },
+    });
+
+    if (eligible.length === 0) return;
+
+    logger.info(`[AutoEscalation] ${eligible.length} alert(s) eligible for auto-notify + ack`);
+
+    const result = await this.sendEscalationEmails(eligible.map(a => a.id));
+    if (result.sent <= 0) {
+      if (result.error) {
+        logger.warn(`[AutoEscalation] Email not sent: ${result.error}`);
+      }
+      return;
+    }
+
+    const ackMins = getAutoAckDurationMins();
+    for (const alert of eligible) {
+      await this.autoAcknowledgeEscalation(alert.id);
+      logger.info(
+        `[AutoEscalation] Auto-ack ${alert.clientId} for ${ackMins} min after email notify`,
+      );
+    }
+  }
+
+  /** System auto-ack after escalation email — expires via processEscalations. */
+  private async autoAcknowledgeEscalation(alertId: string): Promise<void> {
+    await prisma.escalatedAlert.update({
+      where: { id: alertId },
+      data: {
+        status: 'ACKNOWLEDGED',
+        acknowledgedBy: SYSTEM_ESCALATION_ACTOR,
+        acknowledgedAt: new Date(),
+      },
+    });
   }
 
   /**
@@ -550,6 +677,121 @@ class EscalationService {
       where: { id },
       data: { isActive: !r.isActive },
     });
+  }
+
+  /**
+   * Monthly report: critical queue-buildup escalations + punch alert workflow activity.
+   */
+  async getMonthlyReport(options: {
+    year: number;
+    month: number;
+    cluster?: string;
+    clientId?: string;
+  }): Promise<EscalationMonthlyReport> {
+    const period = parseMonthPeriod(options.year, options.month);
+    const queueBuildup = await this.getQueueBuildupHistory({
+      start: period.start,
+      end: period.end,
+      cluster: options.cluster,
+      clientId: options.clientId,
+    });
+    const punchAlerts = await unprocPunchAlertService.getPunchAlertHistory({
+      start: period.start,
+      end: period.end,
+      cluster: options.cluster,
+      clientId: options.clientId,
+      includeLiveStale: isCurrentMonthPeriod(period),
+    });
+
+    return { period, queueBuildup, punchAlerts };
+  }
+
+  /**
+   * Historical critical queue-buildup escalations (firstSeenAt within range).
+   */
+  async getQueueBuildupHistory(options: {
+    start: Date;
+    end: Date;
+    cluster?: string;
+    clientId?: string;
+  }) {
+    const { start, end, cluster, clientId } = options;
+
+    const alerts = await prisma.escalatedAlert.findMany({
+      where: {
+        firstSeenAt: { gte: start, lte: end },
+      },
+      orderBy: { firstSeenAt: 'desc' },
+    });
+
+    const dbClients = await prisma.client.findMany({
+      select: { clientId: true, name: true, cluster: true },
+    });
+    const clientMap = new Map(
+      dbClients.map(c => [c.clientId.toUpperCase(), { name: c.name, cluster: c.cluster || '' }])
+    );
+
+    let rows: EscalatedAlertHistoryRow[] = alerts.map(a => {
+      const match =
+        clientMap.get(a.serverCode.toUpperCase()) || clientMap.get(a.clientId.toUpperCase());
+      const durationMins = computeDurationMins(a.firstSeenAt, a.resolvedAt, a.lastSeenAt);
+      return {
+        id: a.id,
+        clientId: a.clientId,
+        serverCode: a.serverCode,
+        clientName: match?.name || a.clientId,
+        cluster: match?.cluster || '',
+        stalePendingCount: a.stalePendingCount,
+        totalPending: a.totalPending,
+        status: a.status,
+        acknowledgedBy: a.acknowledgedBy,
+        acknowledgedAt: a.acknowledgedAt?.toISOString() || null,
+        suppressedBy: a.suppressedBy,
+        suppressedAt: a.suppressedAt?.toISOString() || null,
+        suppressUntil: a.suppressUntil?.toISOString() || null,
+        suppressReason: a.suppressReason,
+        emailSentAt: a.emailSentAt?.toISOString() || null,
+        emailRecipients: a.emailRecipients ? JSON.parse(a.emailRecipients) : null,
+        firstSeenAt: a.firstSeenAt.toISOString(),
+        lastSeenAt: a.lastSeenAt.toISOString(),
+        resolvedAt: a.resolvedAt?.toISOString() || null,
+        durationMins,
+        severity: deriveQueueSeverity(a.stalePendingCount),
+      };
+    });
+
+    if (clientId) {
+      rows = rows.filter(r => r.clientId.toUpperCase() === clientId.toUpperCase());
+    }
+    if (cluster) {
+      rows = rows.filter(r => r.cluster === cluster);
+    }
+
+    const byCluster: Record<string, number> = {};
+    for (const r of rows) {
+      const key = r.cluster || '(none)';
+      byCluster[key] = (byCluster[key] || 0) + 1;
+    }
+
+    const resolvedRows = rows.filter(r => r.resolvedAt);
+    const avgDurationMins = resolvedRows.length
+      ? Math.round(resolvedRows.reduce((s, r) => s + r.durationMins, 0) / resolvedRows.length)
+      : 0;
+
+    const summary = {
+      total: rows.length,
+      critical: rows.filter(r => r.severity === 'CRITICAL').length,
+      warning: rows.filter(r => r.severity === 'WARNING').length,
+      open: rows.filter(r => r.status === 'OPEN').length,
+      acknowledged: rows.filter(r => r.status === 'ACKNOWLEDGED').length,
+      suppressed: rows.filter(r => r.status === 'SUPPRESSED').length,
+      resolved: resolvedRows.length,
+      clientsAffected: new Set(rows.map(r => r.clientId)).size,
+      avgDurationMins,
+      byCluster,
+    };
+
+    return { summary, rows };
   }
 }
 
