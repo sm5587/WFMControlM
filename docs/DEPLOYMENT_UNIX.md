@@ -95,7 +95,7 @@ Then set in **Admin → Config** (or `AppConfig` rows after bootstrap):
 
 ## Option 1: Docker (recommended for UI + API)
 
-Includes `docker-compose.yml`, backend `Dockerfile`, and frontend `Dockerfile`.
+Uses `docker-compose.prod.yml` + `docker-compose.prod-hostdb.yml` and `Dockerfile.prod` images. See [DEPLOYMENT_DOCKER_LINUX.md](DEPLOYMENT_DOCKER_LINUX.md) or `./scripts/deploy-prod.sh`.
 
 ### Prerequisites (RHEL / CentOS / Amazon Linux)
 
@@ -120,13 +120,14 @@ vi .env
 # Generate key:
 #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-# 2. Build and start
-docker compose up -d --build
+# 2. Build and start (host SQLite bind mount)
+mkdir -p ./data/sqlite/prisma
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d --build
 
 # 3. Verify
-docker compose ps
-curl http://localhost:4000/health     # backend health
-curl -I http://localhost:3000         # frontend
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps
+curl http://localhost:4015/health     # backend health
+curl -I http://localhost:3015         # frontend
 ```
 
 ### What gets launched

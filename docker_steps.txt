@@ -36,7 +36,7 @@ Step 3 — Start containers
      docker compose -f docker-compose.prod.yml up -d
 
      If .env still uses a Windows absolute DATABASE_URL path, use:
-     docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
+     docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d
 
 Step 4 — Bootstrap database (first install only — pick ONE option)
 
@@ -83,7 +83,7 @@ Step 4 — Check status and logs
 Step 5 — Verify
      curl http://localhost:4005/health
 
-     Note: SQLite data in Docker volume backend_prisma is kept across rebuilds.
+     Note: SQLite data lives on the host at ./data/sqlite/prisma/dev.db (survives rebuilds and down -v).
      Do NOT run: docker compose -f docker-compose.prod.yml down -v
      (that deletes the database volume)
 
@@ -133,6 +133,6 @@ wfm-controlm-api   4005        http://localhost:4005/health
 wfm-controlm-ui    3005        http://localhost:3005
 
 SQLite file inside container: /app/prisma/dev.db
-Docker volume name: backend_prisma
+Host SQLite path: ./data/sqlite/prisma/dev.db (see WFM_SQLITE_HOST_DIR in .env)
 
 More detail: docs/DOCKER_INSTALLATION.md

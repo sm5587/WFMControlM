@@ -1,4 +1,4 @@
-# Host SQLite bind mount — use with docker-compose.prod.yml for production.
+# Host SQLite bind mount — required with docker-compose.prod.yml for SQLite persistence.
 #
 #   docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d
 #
@@ -6,10 +6,13 @@
 #
 # SQLite lives on the host at ${WFM_SQLITE_HOST_DIR}/prisma/dev.db (default ./data/sqlite/prisma/dev.db).
 # Mount only dev.db — not the whole prisma/ dir — so schema.prisma and migrations from the image remain available.
+# DATABASE_URL is container-relative (file:./dev.db) regardless of host path in .env.
 # This survives image rebuilds and `docker compose down -v` (the -v flag only removes Docker volumes).
 
 services:
   backend:
+    environment:
+      DATABASE_URL: file:./dev.db
     volumes: !override
       - backend_logs:/app/logs
       - ${WFM_SQLITE_HOST_DIR:-./data/sqlite}/prisma/dev.db:/app/prisma/dev.db

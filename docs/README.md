@@ -103,7 +103,7 @@ A **Control-M-like** job scheduling and orchestration platform built for **Workf
 - **Redis** 7+
 - **Docker** (optional, for containerized setup)
 
-### Option 1: Docker Compose (Recommended)
+### Option 1: Docker Compose
 
 ```bash
 # Clone and navigate to project
@@ -111,12 +111,13 @@ cd WFMControlM
 
 # Copy bootstrap env (DATABASE_URL + CONFIG_ENCRYPTION_KEY)
 cp .env.example .env
+mkdir -p ./data/sqlite/prisma
 
-# Start all services
-docker compose up -d
+# Start production stack (host SQLite + optional Mailpit)
+npm run docker:up
 
 # Access the UI
-open http://localhost:3000
+open http://localhost:3015
 ```
 
 ### Option 2: Local Development
@@ -148,11 +149,11 @@ The backend runs on **http://localhost:4000** and the frontend on **http://local
 ```
 WFMControlM/
 ├── package.json              # Root monorepo scripts
-├── docker-compose.yml        # Full stack deployment
+├── docker-compose.prod.yml   # Production Docker stack (use with prod-hostdb)
 ├── .env.example              # Environment template
 │
 ├── backend/
-│   ├── Dockerfile
+│   ├── Dockerfile.prod
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── prisma/
@@ -182,7 +183,7 @@ WFMControlM/
 │       └── utils/logger.ts    # Winston logging
 │
 └── frontend/
-    ├── Dockerfile
+    ├── Dockerfile.prod
     ├── nginx.conf             # Production reverse proxy
     ├── package.json
     ├── vite.config.ts

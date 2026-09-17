@@ -19,7 +19,6 @@ services:
       - "4015:4005"
     volumes:
       - backend_logs:/app/logs
-      - backend_prisma:/app/prisma
       - ./lib:/app/lib:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4005/health >/dev/null || exit 1"]
@@ -58,7 +57,6 @@ services:
 
 volumes:
   backend_logs:
-  backend_prisma:
 
 networks:
   app_net:

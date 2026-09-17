@@ -12,6 +12,7 @@ This runbook is for your exact workflow:
 - `backend/Dockerfile.prod`
 - `frontend/Dockerfile.prod`
 - `docker-compose.prod.yml` (build-capable production compose)
+- `docker-compose.prod-hostdb.yml` (host SQLite bind mount — required for DB persistence)
 - `docker-compose.registry.yml` (registry-ready override: pull prebuilt images, no local build)
 
 ---
@@ -69,7 +70,7 @@ Optional local smoke test (host SQLite bind mount):
 
 ```bash
 mkdir -p ./data/sqlite/prisma
-docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.smoke.override.yml up -d --build
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d --build
 docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps
 curl http://localhost:4015/health
 curl -I http://localhost:3015
@@ -122,9 +123,9 @@ Required in `.env`:
 ### 6.2 Pull and run images
 
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml pull
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml up -d
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml ps
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml pull
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml ps
 ```
 
 ### 6.3 First-time DB bootstrap only
@@ -132,8 +133,8 @@ docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml ps
 Run once for fresh environment:
 
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-ddl.sql
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-dml.sql
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-ddl.sql
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-dml.sql
 ```
 
 ---
@@ -143,8 +144,8 @@ docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec ba
 ```bash
 curl http://localhost:4000/health
 curl -I http://localhost:3000
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml logs --tail=200 backend
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml logs --tail=200 frontend
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml logs --tail=200 backend
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml logs --tail=200 frontend
 ```
 
 ---
@@ -162,8 +163,8 @@ cd /application/wfmwatch
 # update RELEASE_TAG in .env to new value
 vi .env
 
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml pull
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml pull
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml up -d
 ```
 
 ---
@@ -174,8 +175,8 @@ docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml up -d
 2. Re-pull and restart:
 
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml pull
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml pull
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml up -d
 ```
 
 This is why immutable tags are critical: rollback becomes a 1-line tag change.
@@ -200,7 +201,7 @@ This is why immutable tags are critical: rollback becomes a 1-line tag change.
 Use pattern:
 
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.registry.yml up -d
 ```
 
 Base file keeps runtime settings, volumes, healthchecks.

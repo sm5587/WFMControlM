@@ -42,7 +42,7 @@ Step-by-step guide: build images, run containers, manage SQLite data.
 ```
 Host (Windows + Docker Desktop)
 ├── wfm-controlm-api
-│   ├── /app/prisma/dev.db    ← SQLite (volume: backend_prisma)
+│   ├── /app/prisma/dev.db    ← SQLite (host bind mount via prod-hostdb)
 │   ├── /app/lib/             ← bind mount ./lib (DB2 jars)
 │   └── /app/logs/            ← volume: backend_logs
 └── wfm-controlm-ui
@@ -120,7 +120,7 @@ docker build -f frontend/Dockerfile.prod -t wfm-controlm-frontend:prod ./fronten
 | ------- | ----- |
 | Backend port | `4005:4005` |
 | Frontend port | `3005:8080` |
-| SQLite volume | `backend_prisma` → `/app/prisma` |
+| Host SQLite | `./data/sqlite/prisma/dev.db` → `/app/prisma/dev.db` |
 | DB2 lib mount | `./lib` → `/app/lib:ro` |
 | Migrations | `RUN_MIGRATIONS=true` on backend start |
 
@@ -139,7 +139,7 @@ docker compose -f docker-compose.prod.yml up -d
 **First-time Windows smoke test** (if `.env` has a Windows DB path):
 
 ```powershell
-docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d
 ```
 
 **Check:**
@@ -225,10 +225,10 @@ schtasks /Change /TN "\WFMControlM - Daily Start" /ENABLE
 | Location | Path |
 | -------- | ---- |
 | Inside container | `/app/prisma/dev.db` |
-| Docker volume | `backend_prisma` |
+| Host path | `./data/sqlite/prisma/dev.db` |
 
 ```powershell
-docker volume inspect wfmcontrolm_backend_prisma
+ls ./data/sqlite/prisma/dev.db
 ```
 
 Survives `docker compose down` — removed only with `down -v`.
@@ -290,15 +290,7 @@ docker cp .\dev.db.docker wfm-controlm-api:/app/prisma/dev.db
 docker compose -f docker-compose.prod.yml start backend
 ```
 
-**Optional dev override** — bind-mount host folder:
-
-```yaml
-# docker-compose.local-db.override.yml
-services:
-  backend:
-    volumes:
-      - ./backend/prisma:/app/prisma
-```
+**Host SQLite** — use `docker-compose.prod-hostdb.yml` (bind-mounts `./data/sqlite/prisma/dev.db`).
 
 ---
 
@@ -323,7 +315,7 @@ services:
 | Empty clients | Run bootstrap (Slide 9) or copy `dev.db` |
 | Port 4005/3005 in use | `.\start.ps1 stop` or change compose ports |
 | SQL file not found | Mount `database/` or `docker cp` |
-| Windows DB path in `.env` | Use `docker-compose.smoke.override.yml` |
+| Windows DB path in `.env` | Always add `docker-compose.prod-hostdb.yml` for Docker |
 
 ---
 
@@ -334,7 +326,7 @@ services:
 | `backend/Dockerfile.prod` | Prod backend build |
 | `frontend/Dockerfile.prod` | Prod frontend (Nginx) |
 | `docker-compose.prod.yml` | Main stack |
-| `docker-compose.smoke.override.yml` | Local `DATABASE_URL` override |
+| `docker-compose.prod-hostdb.yml` | Host SQLite bind mount + container `DATABASE_URL` |
 | `scripts/build-docker-wsl.sh` | Build from WSL |
 | `backend/scripts/apply-sql.js` | Apply SQL to SQLite |
 | `database/first-time-deployment-*.sql` | Schema + seed (first deploy only) |

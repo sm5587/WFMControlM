@@ -250,8 +250,9 @@ curl -I http://localhost:3000
 
 ```bash
 cd /application/wfmwatch
-docker compose up -d --build
-docker compose ps
+mkdir -p ./data/sqlite/prisma
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d --build
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps
 ```
 
 ---

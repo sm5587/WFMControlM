@@ -340,8 +340,8 @@ case "$MODE" in
     resolve_frontend_url
     require_cmd docker
     log "Starting frontend via Docker Compose"
-    docker compose up -d frontend
-    docker compose ps frontend
+    docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d frontend
+    docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps frontend
     if command -v curl >/dev/null 2>&1; then
       curl -I "$APP_URL" || true
     fi

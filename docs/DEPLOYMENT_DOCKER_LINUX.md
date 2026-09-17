@@ -391,7 +391,7 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml down
 ```
 
-**What it does:** Stops and removes containers and network. **Keeps** volumes (`backend_prisma`, `backend_logs`) — your SQLite DB survives.
+**What it does:** Stops and removes containers and network. **Keeps** host SQLite at `./data/sqlite/prisma/dev.db` and the `backend_logs` volume.
 
 ### View logs
 
@@ -512,7 +512,7 @@ You do **not** need to manually delete `wfm-controlm-backend:prod` before rebuil
 | `docker compose down -v` | **Deletes SQLite volume — destroys all data** |
 | Re-run `database/first-time-deployment-dml.sql` | Overwrites AppConfig / seed data |
 | Change `CONFIG_ENCRYPTION_KEY` in `.env` | Breaks decryption of existing secrets |
-| Delete `backend_prisma` volume | Destroys database |
+| Delete `./data/sqlite/prisma/dev.db` on host | Destroys database |
 
 ---
 
@@ -602,14 +602,14 @@ Same project on a Windows laptop:
 ```powershell
 cd "C:\Users\<you>\Desktop\Tools\WFMControlM"
 docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d
 # First time seed:
 docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 docker compose -f docker-compose.prod.yml restart backend
 docker compose -f docker-compose.prod.yml up -d frontend
 ```
 
-**Linux servers do NOT need** `docker-compose.smoke.override.yml` — use plain `docker-compose.prod.yml`.
+**Always use** `docker-compose.prod-hostdb.yml` with prod compose so SQLite persists on the host.
 
 See also: [DOCKER_INSTALLATION.md](DOCKER_INSTALLATION.md)
 

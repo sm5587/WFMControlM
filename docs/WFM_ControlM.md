@@ -51,7 +51,7 @@ WFMControlM/
 │   └── db2jcc4.jar       # IBM DB2 JDBC driver
 ├── dbconnections/
 │   └── Production/       # ~65 client DB2 connection files (JDBC URL, user, pass)
-├── docker-compose.yml
+├── docker-compose.prod.yml
 ├── start.ps1             # PowerShell startup script
 └── .saved_credentials.json  # SSH credentials (base64-encoded)
 ```
@@ -336,8 +336,8 @@ com.ibm.db2.jcc.DB2Driver
 |---|---|---|---|
 | `postgres` | postgres:15-alpine | 5432 | postgres_data |
 | `redis` | redis:7-alpine | 6379 | redis_data |
-| `backend` | Custom Dockerfile | 4000 | backend_logs |
-| `frontend` | Custom Dockerfile (Nginx) | 3000→80 | — |
+| `backend` | Dockerfile.prod | 4015→4005 | backend_logs + host SQLite |
+| `frontend` | Dockerfile.prod (Nginx) | 3015→8080 | — |
 
 ---
 

@@ -1,6 +1,0 @@
-# Local smoke-test override — use with docker-compose.prod-hostdb.yml.
-# Forces container-relative DATABASE_URL; host file is WFM_SQLITE_HOST_DIR/prisma/dev.db.
-services:
-  backend:
-    environment:
-      DATABASE_URL: file:./dev.db

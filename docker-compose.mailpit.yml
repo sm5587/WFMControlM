@@ -1,7 +1,7 @@
 # Optional local SMTP catcher — NOT for production (use real relay via Admin → Config).
 #
 # Usage (Windows smoke test):
-#   docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml -f docker-compose.smoke.override.yml up -d
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.mailpit.yml up -d
 #   npm run docker:up
 #
 # Web UI: http://localhost:8025   SMTP (from backend container): mailpit:1025
