@@ -18,7 +18,7 @@ if [[ -z "$CMD" ]]; then
   exit 1
 fi
 
-# Read-only monitoring commands issued by WFM Watch (see docs/SSH-Account-Hardening-Client-Servers.md)
+# Read-only monitoring commands issued by WFM Watch (must match backend validateRemoteCommand allowlist)
 ALLOWED='^(cat|tail|stat|find|pgrep|grep|journalctl|db2|timedatectl|readlink|date|bash -lc find )'
 
 if [[ ! "$CMD" =~ $ALLOWED ]]; then

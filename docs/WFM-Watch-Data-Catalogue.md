@@ -320,21 +320,8 @@ AppConfig categories: SECRETS, INFRA, POLLING, THRESHOLDS, ENGINE, DISPLAY.
 | Architecture & data flow | `docs/WFM_ControlM.md` |
 | Prisma schema | `backend/prisma/schema.prisma` |
 | DB2 query manifest | `database/client-db2-queries.sql` |
-| Security review responses | `docs/WFM-Watch-Security-Review-*.md` |
-| Security Q&A workbook | `docs/WFM-Watch-Security-Review-Response.xlsx` |
 | Production checklist | `docs/production-readiness-checklist.md` |
 | Bootstrap env template | `.env.example` |
-
----
-
-## 15. Approval Checklist (for Security Team)
-
-- [ ] Confirm WFM Watch scope is **operational monitoring only** — no banking core integration
-- [ ] Accept that **client employee PII is not queried or stored** by application code paths
-- [ ] Accept **internal operator PII** (Zebra staff emails) is required for auth/alerting
-- [ ] Review residual risks: ad-hoc DB2 query, remote log content
-- [ ] Confirm infra controls: private subnet, egress allowlist, TLS, credential management
-- [ ] Approve single-server aggregation of **operational metadata** across regions
 
 ---
 
