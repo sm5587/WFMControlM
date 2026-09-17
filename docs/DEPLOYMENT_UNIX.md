@@ -5,7 +5,7 @@ Install and run WFM Control-M on Linux from a **git clone**. The app uses **SQLi
 See also:
 
 - [production-readiness-checklist.md](production-readiness-checklist.md) — go-live checklist
-- [dbextract.md](dbextract.md) — regenerate `database/ddl.sql` / `dml.sql`
+- [dbextract.md](dbextract.md) — regenerate `database/first-time-deployment-*.sql`
 
 ---
 
@@ -150,8 +150,8 @@ The backend container runs `prisma migrate deploy` on startup. For reference dat
 
 ```bash
 # Option A — consolidated SQL (production-style)
-docker compose exec backend node scripts/apply-sql.js ../database/ddl.sql
-docker compose exec backend node scripts/apply-sql.js ../database/dml.sql
+docker compose exec backend node scripts/apply-sql.js ../database/first-time-deployment-ddl.sql
+docker compose exec backend node scripts/apply-sql.js ../database/first-time-deployment-dml.sql
 
 # Option B — Prisma seed (dev-style, includes sample clients if seed data present)
 docker compose exec backend npx prisma db seed
@@ -214,7 +214,7 @@ npm run build                # backend/dist + frontend/dist
 cd backend
 npx prisma migrate deploy
 cd ..
-npm run db:bootstrap         # database/ddl.sql + dml.sql (RBAC, AppConfig, pools)
+npm run db:bootstrap         # first-time-deployment-ddl.sql + first-time-deployment-dml.sql (RBAC, AppConfig, pools)
 # OR: npm run db:seed        # dev seed with sample clients (optional)
 
 # 4. Nginx — serve frontend, proxy API to backend
@@ -255,7 +255,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ## Application configuration (AppConfig / Admin → Config)
 
-SMTP, JWT, port, CORS, SSH credentials, DB2 paths, thresholds, polling, and engine tuning live in the **`AppConfig`** table. Defaults come from `database/dml.sql` or `npm run db:seed`. The backend loads them at startup via `configService.load()` — **not** from `.env`.
+SMTP, JWT, port, CORS, SSH credentials, DB2 paths, thresholds, polling, and engine tuning live in the **`AppConfig`** table. Defaults come from `database/first-time-deployment-dml.sql` or `npm run db:seed`. The backend loads them at startup via `configService.load()` — **not** from `.env`.
 
 After first login:
 
@@ -264,7 +264,7 @@ After first login:
 3. Set `infra.db2LibDir`, `infra.db2JavaPath` if using DB2 features.
 4. Set CORS origins to production hostnames only.
 
-Client/AppServer inventory is **environment-specific** — load via Admin or import scripts, not from `dml.sql`.
+Client/AppServer inventory is **environment-specific** — load via Admin or import scripts, not from first-time-deployment-dml.sql.
 
 ---
 
@@ -312,7 +312,7 @@ pm2 logs wfm-backend
 pm2 stop wfm-backend
 
 # --- SQL export (dev/release prep) ---
-npm run db:extract          # regenerate database/ddl.sql + dml.sql
+npm run db:extract          # dated snapshots under database/snapshots/
 
 # --- Deployed app version ---
 cat VERSION

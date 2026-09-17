@@ -31,9 +31,12 @@ model Client {
   remoteLogTailEnabled Boolean  @default(true)  // false = block SSH log tail + automated log checks (data sovereignty)
 
   // Payroll
-  payrollEnabled  Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
-  payrollCycle    String        @default("weekly") // weekly | bi-weekly | semi-monthly | monthly | quarterly
-  payrollSyncedAt DateTime?                        // Last time RTA_INTEGRATION was checked per client DB2
+  payrollEnabled       Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
+  payrollCycle         String        @default("WK")     // TA_PAY_FILE_GEN_PROCESS.FREQUENCY: WK | BW | SM | GM
+  payrollFileGen       String        @default("")       // PAYROLL_FILE_GEN PF: SINGLE_STORE | ALL_STORE
+  priorPeriodEdit      Boolean       @default(false)    // PRIOR_PERIOD_EDIT PF = Y
+  priorPeriodEditLimit Int           @default(0)        // PRIOR_PERIOD_EDIT_LIMIT PF (prior weeks eligible for adj)
+  payrollSyncedAt      DateTime?                        // Last time payroll PFs were checked per client DB2
 
   // Sync tracking
   lastCronSyncAt    DateTime?                      // Last successful cron sync (24h cooldown)

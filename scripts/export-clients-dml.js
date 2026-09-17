@@ -20,7 +20,7 @@ async function main() {
   const header = [
     '-- WFM Control-M client inventory DML',
     '--',
-    '-- Seeds Client + AppServer rows after database/dml.sql on fresh Unix/WSL deploys.',
+    '-- Seeds Client + AppServer rows after database/first-time-deployment-dml.sql on fresh deploys.',
     '-- Safe to rerun: uses INSERT OR IGNORE.',
     '--',
     '-- Apply manually:',

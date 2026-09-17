@@ -8,9 +8,10 @@
 
 ## Database
 - Apply Prisma migrations in production using `prisma migrate deploy`.
-- Run the config bootstrap DDL and DML files in `database/ddl.sql` and `database/dml.sql` if you are preparing the config database manually.
+- Run the config bootstrap DDL and DML files in `database/first-time-deployment-*.sql` if you are preparing the config database manually (first deploy only).
 - The DML file now includes the full AppConfig bootstrap set, including the missing `polling.punchCacheTtlMins` key.
-- If you stay on SQLite, put the DB on persistent storage and verify backup and restore.
+- If you stay on SQLite, use the host bind mount (`docker-compose.prod-hostdb.yml`, `WFM_SQLITE_HOST_DIR`) and verify backup/restore via `scripts/backup-sqlite.sh`.
+- Use `scripts/deploy-prod.sh` for routine production deploys (never `docker compose down -v`).
 - If you move to PostgreSQL later, update Prisma datasource, connection config, and deployment docs together.
 
 ## Secrets and identity

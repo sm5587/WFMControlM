@@ -17,7 +17,8 @@ Two separate Docker containers:
 | `wfm-controlm-api` | `wfm-controlm-backend:prod` | **4005** | Express API, SQLite, Prisma, DB2 bridge |
 | `wfm-controlm-ui` | `wfm-controlm-frontend:prod` | **3005** | Nginx serving React build |
 
-**Compose file:** `docker-compose.prod.yml`  
+**Compose files:** `docker-compose.prod.yml` + `docker-compose.prod-hostdb.yml` (recommended)  
+**Deploy script:** `scripts/deploy-prod.sh` (backs up SQLite, rebuilds, never runs bootstrap SQL)  
 **Standard deploy path:** `/application/wfmwatch` (set the same path in `.env` as `APP_DIR`)
 
 ---
@@ -28,7 +29,7 @@ Two separate Docker containers:
 Linux server
 ├── Docker Engine
 │   ├── wfm-controlm-api
-│   │   ├── /app/prisma/dev.db     ← SQLite (Docker volume: *_backend_prisma)
+│   │   ├── /app/prisma/dev.db     ← SQLite (host bind mount: ./data/sqlite/prisma/)
 │   │   ├── /app/lib/              ← bind mount from repo ./lib (DB2 jars)
 │   │   └── /app/logs/             ← Docker volume: *_backend_logs
 │   └── wfm-controlm-ui
@@ -259,9 +260,11 @@ ADMIN_PASSWORD=change-me-before-seed
 | Variable | Purpose |
 |----------|---------|
 | `APP_DIR` | Absolute path to this checkout on the server |
-| `DATABASE_URL` | SQLite file inside container volume (`file:./dev.db`) |
+| `DATABASE_URL` | SQLite path inside container (`file:./dev.db` → `/app/prisma/dev.db`) |
 | `CONFIG_ENCRYPTION_KEY` | Encrypts secrets in AppConfig — **keep safe, do not change** after go-live |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Used only for first-time seed (see dml.sql) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Used only for first-time seed (see first-time-deployment-dml.sql) |
+| `WFM_SQLITE_HOST_DIR` | Host path for SQLite bind mount (default `./data/sqlite`) |
+| `WFM_SQLITE_HOST_DIR` | Host bind mount for SQLite (default `./data/sqlite`) — see `docker-compose.prod-hostdb.yml` |
 
 **Do NOT commit `.env` to Git.**
 
@@ -298,26 +301,26 @@ This loads AppConfig defaults, RBAC, admin user, and sets `infra.port` to **4005
 cd /application/wfmwatch
 docker compose -f docker-compose.prod.yml run --rm \
   -v "$(pwd)/database:/app/database:ro" \
-  backend node scripts/apply-sql.js database/dml.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 ```
 
-**What it does:** Runs `database/dml.sql` against SQLite in the `backend_prisma` Docker volume via Prisma.
+**What it does:** Runs `database/first-time-deployment-dml.sql` against SQLite via Prisma (prefer `FIRST_TIME_DEPLOY=true ./scripts/deploy-prod.sh` on new servers).
 
 You should see:
 
 ```text
 [SQL] Applied statement ...
-[SQL] Completed: /app/database/dml.sql
+[SQL] Completed: /app/database/first-time-deployment-dml.sql
 ```
 
-**Do NOT run `dml.sql` again** on routine updates — it uses `INSERT OR REPLACE` and can overwrite config you changed in Admin → Config.
+**Do NOT run first-time-deployment-dml.sql again** on routine updates — it uses `INSERT OR REPLACE` and can overwrite config you changed in Admin → Config.
 
-Optional: for a completely fresh schema + seed on empty DB, run `ddl.sql` before `dml.sql` (usually migrations already created schema):
+Optional: for a completely fresh schema + seed on empty DB, run first-time-deployment-ddl.sql before first-time-deployment-dml.sql (usually migrations already created schema):
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm \
   -v "$(pwd)/database:/app/database:ro" \
-  backend node scripts/apply-sql.js database/ddl.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-ddl.sql
 ```
 
 ### 3.7 Restart backend and start frontend
@@ -444,27 +447,43 @@ Keep SSH open, then open in browser:
 
 Use this when new code is pushed to GitHub and the server already has a working deployment with **existing data**.
 
-### Do this
+### Recommended — use the deploy script
 
 ```bash
 cd /application/wfmwatch
-
-# 1. Pull latest code
 git pull
-
-# 2. Rebuild images with new code
-docker build -f backend/Dockerfile.prod -t wfm-controlm-backend:prod ./backend
-docker build -f frontend/Dockerfile.prod -t wfm-controlm-frontend:prod ./frontend
-
-# 3. Recreate containers with new images (data volumes preserved)
-docker compose -f docker-compose.prod.yml up -d --force-recreate
-
-# 4. Verify
-docker compose -f docker-compose.prod.yml ps
-curl http://localhost:4005/health
+chmod +x scripts/deploy-prod.sh scripts/backup-sqlite.sh
+./scripts/deploy-prod.sh
 ```
 
-**What `--force-recreate` does:** Stops old containers and starts new ones from rebuilt images. **Does not delete** `backend_prisma` volume — **your SQLite data is kept**.
+**What it does:**
+
+1. Backs up SQLite to `./data/backups/sqlite/` (host path)
+2. Builds images via `docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml build`
+3. Recreates containers with `--force-recreate` (never `down -v`)
+4. Waits for backend `/health`
+5. Does **not** run first-time bootstrap SQL
+
+SQLite lives on the host at `${WFM_SQLITE_HOST_DIR}/prisma/dev.db` (default `./data/sqlite/prisma/dev.db`). This survives image rebuilds **and** `docker compose down -v`.
+
+**First-time server only:**
+
+```bash
+FIRST_TIME_DEPLOY=true ./scripts/deploy-prod.sh
+```
+
+This applies `database/first-time-deployment-ddl.sql` and `database/first-time-deployment-dml.sql` only when the DB file is missing or tiny.
+
+### Manual deploy (equivalent)
+
+```bash
+cd /application/wfmwatch
+git pull
+./scripts/backup-sqlite.sh
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml build
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml up -d --force-recreate
+curl http://localhost:4005/health
+```
 
 Migrations run automatically on backend start (`RUN_MIGRATIONS=true` in compose).
 
@@ -491,7 +510,7 @@ You do **not** need to manually delete `wfm-controlm-backend:prod` before rebuil
 | Command | Why |
 |---------|-----|
 | `docker compose down -v` | **Deletes SQLite volume — destroys all data** |
-| Re-run `database/dml.sql` | Overwrites AppConfig / seed data |
+| Re-run `database/first-time-deployment-dml.sql` | Overwrites AppConfig / seed data |
 | Change `CONFIG_ENCRYPTION_KEY` in `.env` | Breaks decryption of existing secrets |
 | Delete `backend_prisma` volume | Destroys database |
 
@@ -505,7 +524,7 @@ You do **not** need to manually delete `wfm-controlm-backend:prod` before rebuil
 |--------|----------------|
 | Clone from Git | `git clone https://github.com/sm5587/WFMControlM.git .` |
 | Use `docker-compose.prod.yml` | Production stack with health checks |
-| Seed **once** on first install | `apply-sql.js database/dml.sql` |
+| Seed **once** on first install | `apply-sql.js database/first-time-deployment-dml.sql` |
 | Keep `.env` on server only | Never commit secrets |
 | Use `docker compose down` | Stops app, **keeps data** |
 | Use `up -d` after reboot | Brings app back |
@@ -520,7 +539,7 @@ You do **not** need to manually delete `wfm-controlm-backend:prod` before rebuil
 |--------|------|
 | `docker compose down -v` | **Wipes database volume** |
 | Copy Windows `node_modules/` or `dev.db` | Wrong platform / wrong port config |
-| Run `dml.sql` after go-live | Overwrites live AppConfig |
+| Run first-time-deployment-dml.sql after go-live | Overwrites live AppConfig |
 | Change `CONFIG_ENCRYPTION_KEY` after data exists | Secrets unreadable |
 | Delete `/application/wfmwatch/.env` casually | App won't start correctly |
 | Assume public IP works without firewall rules | UI unreachable from laptop |
@@ -540,7 +559,7 @@ You do **not** need to manually delete `wfm-controlm-backend:prod` before rebuil
 cd /application/wfmwatch
 docker compose -f docker-compose.prod.yml run --rm \
   -v "$(pwd)/database:/app/database:ro" \
-  backend node scripts/apply-sql.js database/dml.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 docker compose -f docker-compose.prod.yml restart backend
 ```
 
@@ -548,7 +567,7 @@ docker compose -f docker-compose.prod.yml restart backend
 
 **Cause:** Old `dev.db` baked into image or wrong AppConfig `infra.port`.
 
-**Fix:** Ensure `backend/.dockerignore` includes `dev.db`, rebuild, and/or run `dml.sql` (sets `infra.port` to 4005), then restart backend.
+**Fix:** Ensure `backend/.dockerignore` includes `dev.db`, rebuild, and/or run first-time-deployment-dml.sql on a **fresh** DB only (sets `infra.port` to 4005), then restart backend.
 
 ### Frontend not starting — waits for backend healthy
 
@@ -585,7 +604,7 @@ cd "C:\Users\<you>\Desktop\Tools\WFMControlM"
 docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
 # First time seed:
-docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/dml.sql
+docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 docker compose -f docker-compose.prod.yml restart backend
 docker compose -f docker-compose.prod.yml up -d frontend
 ```
@@ -606,7 +625,7 @@ cp .env.example .env && vi .env
 docker build -f backend/Dockerfile.prod -t wfm-controlm-backend:prod ./backend
 docker build -f frontend/Dockerfile.prod -t wfm-controlm-frontend:prod ./frontend
 docker compose -f docker-compose.prod.yml up -d backend
-docker compose -f docker-compose.prod.yml run --rm -v "$(pwd)/database:/app/database:ro" backend node scripts/apply-sql.js database/dml.sql
+docker compose -f docker-compose.prod.yml run --rm -v "$(pwd)/database:/app/database:ro" backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 docker compose -f docker-compose.prod.yml restart backend
 docker compose -f docker-compose.prod.yml up -d frontend
 

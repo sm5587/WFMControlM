@@ -117,7 +117,43 @@ describe('ldap-service', () => {
   it('returns error when LDAP disabled', async () => {
     const result = await authenticateLdap('user1', 'pass');
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toMatch(/not enabled/i);
+    if (!result.success) {
+      expect(result.error).toMatch(/not enabled/i);
+      expect(result.reason).toBe('NOT_ENABLED');
+    }
+  });
+
+  it('returns USER_NOT_FOUND when search returns no entries', async () => {
+    config['infra.ldapEnabled'] = 'true';
+    config['infra.ldapUrl'] = 'ldap://test.example.com:389';
+    config['infra.ldapBindDn'] = 'uid=svc,cn=users,dc=example,dc=com';
+    config['infra.ldapBindPassword'] = 'svc-pass';
+    config['infra.ldapBaseDn'] = 'dc=example,dc=com';
+    config['infra.ldapUserSearchBase'] = 'dc=example,dc=com';
+    mockSearch.mockResolvedValueOnce({ searchEntries: [] });
+
+    const result = await authenticateLdap('unknown', 'pass');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('USER_NOT_FOUND');
+      expect(result.mode).toBe('search+bind');
+      expect(result.phase).toBe('user-search');
+    }
+  });
+
+  it('returns UPN_BIND_FAILED when UPN bind is rejected', async () => {
+    config['infra.ldapEnabled'] = 'true';
+    config['infra.ldapUrl'] = 'ldap://test.example.com:389';
+    config['infra.ldapDomain'] = 'zebra.com';
+    mockBind.mockRejectedValueOnce(Object.assign(new Error('Invalid credentials'), { code: 49 }));
+
+    const result = await authenticateLdap('jdoe', 'wrong');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('UPN_BIND_FAILED');
+      expect(result.mode).toBe('upn-bind');
+      expect(result.ldapCode).toBe(49);
+    }
   });
 
   it('authenticates via UPN bind when domain configured', async () => {

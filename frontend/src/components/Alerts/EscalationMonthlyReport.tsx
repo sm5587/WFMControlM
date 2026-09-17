@@ -1,31 +1,49 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  AlertTriangle, BarChart3, ChevronLeft, ChevronRight, Download, Timer,
+  AlertTriangle, BarChart3, ChevronLeft, ChevronRight, Download, FileDown, Timer,
 } from 'lucide-react';
 import { escalationsApi } from '../../services/api';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
-import { useConfig } from '../../contexts/ConfigContext';
+import { exportReportPdf, reportDownloadStem, type DateFmt } from '../../utils/exportEscalationReportPdf';
+import { formatDurationMins } from '../../utils/formatDuration';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-function defaultReportMonth(): { year: number; month: number } {
+const QUARTERS = [
+  { value: 1, label: 'Q1 (Jan–Mar)' },
+  { value: 2, label: 'Q2 (Apr–Jun)' },
+  { value: 3, label: 'Q3 (Jul–Sep)' },
+  { value: 4, label: 'Q4 (Oct–Dec)' },
+] as const;
+
+type PeriodType = 'monthly' | 'quarterly';
+
+const selectCls =
+  'text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500';
+
+function currentQuarter(month: number): number {
+  return Math.ceil(month / 3);
+}
+
+function defaultReportPeriod(): { year: number; month: number; quarter: number } {
   const d = new Date();
-  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  const month = d.getMonth() + 1;
+  return { year: d.getFullYear(), month, quarter: currentQuarter(month) };
 }
 
 function csvEscape(v: string | number | boolean | null | undefined): string {
   return `"${String(v ?? '').replace(/"/g, '""')}"`;
 }
 
-function exportReportCsv(report: any, fmt: (iso: string, mode: string) => string) {
+function exportReportCsv(report: any, fmt: DateFmt) {
   const header = [
     'Alert Type', 'Client', 'Cluster', 'Server Code', 'Severity', 'Status',
-    'Stale Pending', 'Total Pending', 'Punch Count', 'Stale Age (mins)', 'First Seen', 'Resolved', 'Duration (mins)',
+    'Stale Pending', 'Total Pending', 'Punch Count', 'Stale Age', 'First Seen', 'Resolved', 'Duration',
     'Acknowledged By', 'Acknowledged At', 'Suppressed By', 'Suppress Until',
     'Email Sent At', 'Activities',
   ];
@@ -45,7 +63,7 @@ function exportReportCsv(report: any, fmt: (iso: string, mode: string) => string
       '',
       fmt(r.firstSeenAt, 'full'),
       r.resolvedAt ? fmt(r.resolvedAt, 'full') : '',
-      r.durationMins,
+      formatDurationMins(r.durationMins) || '',
       r.acknowledgedBy ?? '',
       r.acknowledgedAt ? fmt(r.acknowledgedAt, 'full') : '',
       r.suppressedBy ?? '',
@@ -66,7 +84,7 @@ function exportReportCsv(report: any, fmt: (iso: string, mode: string) => string
       '',
       '',
       r.punchCount ?? '',
-      r.staleAgeMins ?? '',
+      formatDurationMins(r.staleAgeMins) || '',
       '',
       '',
       '',
@@ -83,35 +101,40 @@ function exportReportCsv(report: any, fmt: (iso: string, mode: string) => string
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `escalation-report-${report.period.startDate}.csv`;
+  a.download = `${reportDownloadStem(report)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
 export default function EscalationMonthlyReport() {
   const { fmt } = useTimezone();
-  const { getInt } = useConfig();
-  const punchCountMin = getInt('threshold.punchCountMin', 100);
-  const staleHoursMins = getInt('threshold.staleHoursMins', 60);
   const { selectedCluster, selectedClientId, clients: globalClients } = useGlobalFilter();
 
-  const initial = defaultReportMonth();
+  const initial = defaultReportPeriod();
+  const [periodType, setPeriodType] = useState<PeriodType>('monthly');
   const [year, setYear] = useState(initial.year);
   const [month, setMonth] = useState(initial.month);
+  const [quarter, setQuarter] = useState(initial.quarter);
 
   const selectedClientCode = useMemo(() => {
     if (!selectedClientId) return undefined;
     return globalClients.find(c => c.id === selectedClientId)?.clientId;
   }, [selectedClientId, globalClients]);
 
-  const isCurrentMonth = year === new Date().getFullYear() && month === new Date().getMonth() + 1;
+  const isCurrentPeriod = useMemo(() => {
+    const now = new Date();
+    if (periodType === 'monthly') {
+      return year === now.getFullYear() && month === now.getMonth() + 1;
+    }
+    return year === now.getFullYear() && quarter === currentQuarter(now.getMonth() + 1);
+  }, [periodType, year, month, quarter]);
 
   const { data: report, isLoading, isFetching } = useQuery({
-    queryKey: ['escalation-report', year, month, selectedCluster, selectedClientCode],
+    queryKey: ['escalation-report', periodType, year, month, quarter, selectedCluster, selectedClientCode],
     queryFn: async () => {
       const res = await escalationsApi.getReport({
         year,
-        month,
+        ...(periodType === 'monthly' ? { month } : { quarter }),
         cluster: selectedCluster || undefined,
         clientId: selectedClientCode || undefined,
       });
@@ -119,12 +142,28 @@ export default function EscalationMonthlyReport() {
     },
   });
 
+  function setType(next: PeriodType) {
+    setPeriodType(next);
+    if (next === 'quarterly') {
+      setQuarter(currentQuarter(month));
+    }
+  }
+
   function shiftMonth(delta: number) {
     let m = month + delta;
     let y = year;
     if (m < 1) { m = 12; y -= 1; }
     if (m > 12) { m = 1; y += 1; }
     setMonth(m);
+    setYear(y);
+  }
+
+  function shiftQuarter(delta: number) {
+    let q = quarter + delta;
+    let y = year;
+    if (q < 1) { q = 4; y -= 1; }
+    if (q > 4) { q = 1; y += 1; }
+    setQuarter(q);
     setYear(y);
   }
 
@@ -136,28 +175,77 @@ export default function EscalationMonthlyReport() {
       {/* Period selector */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => shiftMonth(-1)}
-            className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
-            title="Previous month"
+          <select
+            value={periodType}
+            onChange={e => setType(e.target.value as PeriodType)}
+            className={selectCls}
+            aria-label="Report period type"
           >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <div className="px-4 py-2 bg-white border border-gray-200 rounded-lg min-w-[180px] text-center">
-            <p className="text-sm font-semibold text-gray-900">{MONTHS[month - 1]} {year}</p>
-            {report?.period && (
-              <p className="text-xs text-gray-500">{report.period.startDate} — {report.period.endDate}</p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => shiftMonth(1)}
-            className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
-            title="Next month"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+          </select>
+
+          {periodType === 'monthly' ? (
+            <>
+              <button
+                type="button"
+                onClick={() => shiftMonth(-1)}
+                className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+                title="Previous month"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <div className="px-4 py-2 bg-white border border-gray-200 rounded-lg min-w-[180px] text-center">
+                <p className="text-sm font-semibold text-gray-900">{MONTHS[month - 1]} {year}</p>
+                {report?.period && (
+                  <p className="text-xs text-gray-500">{report.period.startDate} — {report.period.endDate}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => shiftMonth(1)}
+                className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+                title="Next month"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => shiftQuarter(-1)}
+                className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+                title="Previous quarter"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <select
+                value={quarter}
+                onChange={e => setQuarter(Number(e.target.value))}
+                className={selectCls}
+                aria-label="Report quarter"
+              >
+                {QUARTERS.map(q => (
+                  <option key={q.value} value={q.value}>{q.label}</option>
+                ))}
+              </select>
+              <div className="px-4 py-2 bg-white border border-gray-200 rounded-lg min-w-[120px] text-center">
+                <p className="text-sm font-semibold text-gray-900">{year}</p>
+                {report?.period && (
+                  <p className="text-xs text-gray-500">{report.period.startDate} — {report.period.endDate}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => shiftQuarter(1)}
+                className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+                title="Next quarter"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </>
+          )}
           {(selectedCluster || selectedClientCode) && (
             <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">
               Filtered{selectedCluster ? ` · ${selectedCluster}` : ''}{selectedClientCode ? ` · ${selectedClientCode}` : ''}
@@ -166,25 +254,26 @@ export default function EscalationMonthlyReport() {
         </div>
 
         {report && (
-          <button
-            type="button"
-            onClick={() => exportReportCsv(report, fmt)}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
-          >
-            <Download className="w-4 h-4" /> Export CSV
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => exportReportPdf(report, fmt, {
+                filterLabel: [selectedCluster, selectedClientCode].filter(Boolean).join(' · ') || undefined,
+                generatedAt: fmt(new Date().toISOString(), 'full'),
+              })}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+            >
+              <FileDown className="w-4 h-4" /> Export PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => exportReportCsv(report, fmt)}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
+            >
+              <Download className="w-4 h-4" /> CSV
+            </button>
+          </div>
         )}
-      </div>
-
-      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-800">
-        <p>
-          Queue buildup rows are escalations that <strong>started</strong> in the selected month (critical DB jobs pending beyond the escalation threshold).
-          Punch alert rows include workflow activity (ack / suppress / notify) in the month, and for the <strong>current month</strong> also list clients with active stale unprocessed punches
-          (&gt;{punchCountMin} punches, stale &gt;{staleHoursMins} min) from the latest punch sync cache.
-        </p>
-        <p className="text-xs text-blue-600 mt-1">
-          Resolved queue-buildup records are retained for up to 90 days. Open Alerts once so punch cache is populated before viewing the current month.
-        </p>
       </div>
 
       {isLoading ? (
@@ -207,16 +296,16 @@ export default function EscalationMonthlyReport() {
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
               <SummaryCard label="Total Escalations" value={qs.total} />
-              <SummaryCard label="Critical (≥10 stale)" value={qs.critical} accent="text-red-600" />
+              <SummaryCard label="Critical (>=10 stale)" value={qs.critical} accent="text-red-600" />
               <SummaryCard label="Clients Affected" value={qs.clientsAffected} />
               <SummaryCard label="Resolved" value={qs.resolved} accent="text-green-600" />
-              <SummaryCard label="Avg Duration" value={qs.avgDurationMins ? `${qs.avgDurationMins}m` : '—'} />
+              <SummaryCard label="Avg Duration" value={formatDurationMins(qs.avgDurationMins) || '—'} />
               <SummaryCard label="Still Open" value={qs.open} accent="text-amber-600" />
             </div>
 
             {Object.keys(qs.byCluster).length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {Object.entries(qs.byCluster)
+                {Object.entries(qs.byCluster as Record<string, number>)
                   .sort((a, b) => b[1] - a[1])
                   .map(([cluster, count]) => (
                     <span key={cluster} className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
@@ -242,7 +331,6 @@ export default function EscalationMonthlyReport() {
                         <th className="px-4 py-3 text-left">First Seen</th>
                         <th className="px-4 py-3 text-left">Resolved</th>
                         <th className="px-4 py-3 text-right">Duration</th>
-                        <th className="px-4 py-3 text-left">Handled By</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
@@ -264,13 +352,7 @@ export default function EscalationMonthlyReport() {
                           <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">
                             {r.resolvedAt ? fmt(r.resolvedAt, 'full') : '—'}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-gray-600">{r.durationMins}m</td>
-                          <td className="px-4 py-2.5 text-xs text-gray-500">
-                            {r.acknowledgedBy && <div>Ack: {r.acknowledgedBy}</div>}
-                            {r.suppressedBy && <div>Sup: {r.suppressedBy}</div>}
-                            {r.emailSentAt && <div className="text-indigo-600">Email sent</div>}
-                            {!r.acknowledgedBy && !r.suppressedBy && !r.emailSentAt && '—'}
-                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-600">{formatDurationMins(r.durationMins) || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -286,9 +368,9 @@ export default function EscalationMonthlyReport() {
               <Timer className="w-4 h-4 text-amber-500" />
               Unprocessed Punch Alerts
             </h2>
-            {isCurrentMonth && !report.punchAlerts.liveDataAvailable && (
+            {isCurrentPeriod && !report.punchAlerts.liveDataAvailable && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                No punch sync cache yet for the current month. Open the Alerts page (Escalated tab) to refresh punch data, then reload this report.
+                No punch sync cache yet for the current period. Open the Alerts page (Escalated tab) to refresh punch data, then reload this report.
               </p>
             )}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -330,7 +412,7 @@ export default function EscalationMonthlyReport() {
                             {r.punchCount != null ? r.punchCount.toLocaleString() : '—'}
                           </td>
                           <td className="px-4 py-2.5 text-right text-gray-600">
-                            {r.staleAgeMins != null ? `${r.staleAgeMins}m` : '—'}
+                            {formatDurationMins(r.staleAgeMins) || '—'}
                           </td>
                           <td className="px-4 py-2.5">
                             <div className="flex flex-wrap gap-1">

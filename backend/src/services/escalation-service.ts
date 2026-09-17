@@ -13,8 +13,10 @@ import { buildQueueBuildupNotifyEmail, escHtml } from '../email/notify-email-tem
 import {
   computeDurationMins,
   deriveQueueSeverity,
-  isCurrentMonthPeriod,
+  isOpenAtPeriodEnd,
   parseMonthPeriod,
+  parseQuarterPeriod,
+  periodContainsNow,
   type MonthPeriod,
 } from '../utils/escalation-report';
 import { unprocPunchAlertService } from './unproc-punch-alert-service';
@@ -54,6 +56,8 @@ export interface EscalatedAlertSummary {
   cluster: string;
   stalePendingCount: number;
   totalPending: number;
+  /** JOB_TYPE names marked critical for this client (escalation is critical-only). */
+  criticalJobNames?: string[];
   status: string;
   acknowledgedBy: string | null;
   acknowledgedAt: string | null;
@@ -354,6 +358,20 @@ class EscalationService {
     });
     const clientMap = new Map(dbClients.map(c => [c.clientId.toUpperCase(), { name: c.name, cluster: c.cluster || '' }]));
 
+    const criticalByClient = new Map<string, string[]>();
+    if (alerts.length > 0) {
+      const criticalJobs = await prisma.criticalDbJob.findMany({
+        where: { clientId: { in: [...new Set(alerts.map(a => a.clientId))] } },
+        select: { clientId: true, jobName: true },
+      });
+      for (const cj of criticalJobs) {
+        const key = cj.clientId.toUpperCase();
+        const list = criticalByClient.get(key);
+        if (list) list.push(cj.jobName);
+        else criticalByClient.set(key, [cj.jobName]);
+      }
+    }
+
     return alerts.map(a => {
       const match = clientMap.get(a.serverCode.toUpperCase()) || clientMap.get(a.clientId.toUpperCase());
       return {
@@ -364,6 +382,7 @@ class EscalationService {
         cluster: match?.cluster || '',
         stalePendingCount: a.stalePendingCount,
         totalPending: a.totalPending,
+        criticalJobNames: criticalByClient.get(a.clientId.toUpperCase()) ?? [],
         status: a.status,
         acknowledgedBy: a.acknowledgedBy,
         acknowledgedAt: a.acknowledgedAt?.toISOString() || null,
@@ -680,18 +699,23 @@ class EscalationService {
   }
 
   /**
-   * Monthly report: critical queue-buildup escalations + punch alert workflow activity.
+   * Escalation report for a month or quarter: critical queue-buildup + punch alert workflow activity.
    */
   async getMonthlyReport(options: {
     year: number;
-    month: number;
+    month?: number;
+    quarter?: number;
     cluster?: string;
     clientId?: string;
   }): Promise<EscalationMonthlyReport> {
-    const period = parseMonthPeriod(options.year, options.month);
+    const period = options.quarter != null
+      ? parseQuarterPeriod(options.year, options.quarter)
+      : parseMonthPeriod(options.year, options.month!);
+    const asOf = periodContainsNow(period) ? new Date() : period.end;
     const queueBuildup = await this.getQueueBuildupHistory({
       start: period.start,
       end: period.end,
+      asOf,
       cluster: options.cluster,
       clientId: options.clientId,
     });
@@ -700,26 +724,32 @@ class EscalationService {
       end: period.end,
       cluster: options.cluster,
       clientId: options.clientId,
-      includeLiveStale: isCurrentMonthPeriod(period),
+      includeLiveStale: periodContainsNow(period),
     });
 
     return { period, queueBuildup, punchAlerts };
   }
 
   /**
-   * Historical critical queue-buildup escalations (firstSeenAt within range).
+   * Critical queue-buildup escalations active during the report window.
+   * Includes alerts that started before the period but were still open, or resolved during it.
    */
   async getQueueBuildupHistory(options: {
     start: Date;
     end: Date;
+    asOf?: Date;
     cluster?: string;
     clientId?: string;
   }) {
-    const { start, end, cluster, clientId } = options;
+    const { start, end, cluster, clientId, asOf = end } = options;
 
     const alerts = await prisma.escalatedAlert.findMany({
       where: {
-        firstSeenAt: { gte: start, lte: end },
+        firstSeenAt: { lte: end },
+        OR: [
+          { resolvedAt: null },
+          { resolvedAt: { gte: start } },
+        ],
       },
       orderBy: { firstSeenAt: 'desc' },
     });
@@ -782,7 +812,10 @@ class EscalationService {
       total: rows.length,
       critical: rows.filter(r => r.severity === 'CRITICAL').length,
       warning: rows.filter(r => r.severity === 'WARNING').length,
-      open: rows.filter(r => r.status === 'OPEN').length,
+      open: rows.filter(r => isOpenAtPeriodEnd(
+        r.resolvedAt ? new Date(r.resolvedAt) : null,
+        asOf,
+      )).length,
       acknowledged: rows.filter(r => r.status === 'ACKNOWLEDGED').length,
       suppressed: rows.filter(r => r.status === 'SUPPRESSED').length,
       resolved: resolvedRows.length,

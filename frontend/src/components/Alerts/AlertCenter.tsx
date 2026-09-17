@@ -22,6 +22,40 @@ interface Recipient {
   isActive: boolean;
 }
 
+function PendingJobTypeChip({
+  type,
+  planType,
+  description,
+  pending,
+  stale,
+}: {
+  type: string;
+  planType?: string;
+  description?: string;
+  pending: number;
+  stale: number;
+}) {
+  const name = (type || '').trim() || '(no JOB_TYPE)';
+  const hint = (description || '').trim();
+  const showHint = !!hint && hint.toLowerCase() !== name.toLowerCase();
+  const title = [name, planType && `Plan: ${planType}`, hint].filter(Boolean).join(' · ');
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200 max-w-full"
+    >
+      <span className="truncate">
+        {name}
+        {showHint ? ` — ${hint}` : ''}
+        {planType ? ` (${planType})` : ''}
+      </span>
+      {stale > 0
+        ? <span className="text-red-500 font-bold flex-shrink-0">{stale}</span>
+        : <span className="text-amber-500 font-bold flex-shrink-0">{pending}</span>}
+    </span>
+  );
+}
+
 // Re-export for any legacy imports.
 export { useEscalatedAlerts } from '../../hooks/useEscalatedAlerts';
 export type { EscalatedAlert } from '../../hooks/useEscalatedAlerts';
@@ -147,6 +181,7 @@ export default function AlertCenter() {
   const openAlerts = filteredEscalated.filter(a => a.status === 'OPEN');
   const ackedAlerts = filteredEscalated.filter(a => a.status === 'ACKNOWLEDGED');
   const suppressedAlerts = filteredEscalated.filter(a => a.status === 'SUPPRESSED');
+  const activeEscalatedCount = openAlerts.length + ackedAlerts.length;
 
   const notifiableOpenAlerts = useMemo(
     () => openAlerts.filter(a => isNotifyEligible(a.emailSentAt, notifyCooldownMins)),
@@ -325,9 +360,9 @@ export default function AlertCenter() {
         >
           <AlertTriangle className="w-4 h-4" />
           Escalated (&gt;{getInt('threshold.escalationMins', 60)} min)
-          {(openAlerts.length + punchStatusCounts.open + punchStatusCounts.acked) > 0 && (
+          {(activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked) > 0 && (
             <span className="px-1.5 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-600">
-              {openAlerts.length + punchStatusCounts.open + punchStatusCounts.acked}
+              {activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked}
             </span>
           )}
         </button>
@@ -356,7 +391,7 @@ export default function AlertCenter() {
           }`}
         >
           <BarChart3 className="w-4 h-4" />
-          Monthly Report
+          Report
         </button>
       </div>
 
@@ -482,7 +517,7 @@ export default function AlertCenter() {
             <div className="flex items-center gap-3">
               <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
               <div>
-                <p className="text-sm font-medium text-gray-700">Alerts pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
+                <p className="text-sm font-medium text-gray-700">Critical stuck jobs pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   Acknowledge, suppress, or notify your team via email.
                   Escalated alerts are emailed automatically and system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
@@ -537,7 +572,7 @@ export default function AlertCenter() {
             <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
               <CheckCircle className="w-10 h-10 mx-auto mb-3 text-green-300" />
               <p className="text-lg font-medium text-gray-500">No escalated alerts</p>
-              <p className="text-sm mt-1">No alerts have been pending for more than 1 hour</p>
+              <p className="text-sm mt-1">No critical stuck jobs have been pending for more than 1 hour</p>
             </div>
           ) : (
             <>
@@ -564,7 +599,7 @@ export default function AlertCenter() {
                     <tr className="bg-gray-50 border-b">
                       <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase" style={{ width: '15%' }}>Client</th>
                       <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase" style={{ width: '8%' }}>Cluster</th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase" style={{ width: '22%' }}>Pending Job Types</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase" style={{ width: '22%' }}>Critical Pending Jobs</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase" style={{ width: '8%' }}>Stale</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase" style={{ width: '7%' }}>Total</th>
                       <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase" style={{ width: '13%' }}>Status</th>
@@ -576,9 +611,16 @@ export default function AlertCenter() {
                   <tbody className="divide-y divide-gray-50">
                     {escalated.map(a => {
                       const clientGroups = allBatchData?.clients?.[a.clientId]?.groups ?? [];
+                      const criticalNames = new Set((a.criticalJobNames ?? []).map(n => n.trim()));
                       const pendingTypes = clientGroups
-                        .filter(g => g.stalePending > 0)
-                        .map(g => ({ type: g.jobType, pending: g.pending, stale: g.stalePending }));
+                        .filter(g => g.stalePending > 0 && criticalNames.has((g.jobType || '').trim()))
+                        .map(g => ({
+                          type: g.jobType,
+                          planType: g.planType,
+                          description: g.description,
+                          pending: g.pending,
+                          stale: g.stalePending,
+                        }));
                       return (
                       <tr
                         key={a.id}
@@ -603,13 +645,14 @@ export default function AlertCenter() {
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1">
                             {pendingTypes.length > 0 ? pendingTypes.map(t => (
-                              <span key={t.type} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                                {t.type}
-                                {t.stale > 0
-                                  ? <span className="text-red-500 font-bold">{t.stale}</span>
-                                  : <span className="text-amber-500 font-bold">{t.pending}</span>
-                                }
-                              </span>
+                              <PendingJobTypeChip
+                                key={`${t.type}|${t.planType || ''}`}
+                                type={t.type}
+                                planType={t.planType}
+                                description={t.description}
+                                pending={t.pending}
+                                stale={t.stale}
+                              />
                             )) : (
                               <span className="text-xs text-gray-300">—</span>
                             )}
@@ -995,7 +1038,7 @@ export default function AlertCenter() {
         </div>
       )}
 
-      {/* ================ MONTHLY REPORT TAB ================ */}
+      {/* ================ REPORT TAB ================ */}
       {activeTab === 'report' && (
         <EscalationMonthlyReport />
       )}

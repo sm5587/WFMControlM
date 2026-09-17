@@ -175,6 +175,9 @@ export interface BatchStatusDetail {
   successCount: number;
   failCount: number;
   otherCount: number;
+  isPending: boolean;
+  isStale: boolean;
+  ageMins: number | null;
 }
 
 export interface DB2QueryOutput {
@@ -328,15 +331,19 @@ class DB2DirectService {
   async getBatchStatusDetails(clientId: string, jobType: string, planType: string, days: number = configService.getInt('engine.batchQueryDays')): Promise<BatchStatusDetail[]> {
     const safeJobType = jobType.trim().replace(/[^a-zA-Z0-9_]/g, '');
     const planFilter = this.buildBatchPlanTypeFilter(planType);
+    const staleMins = configService.getInt('threshold.stalePendingDbMins');
 
     const sql = `SELECT bs.BATCH_STATUS_ID, bs.JOB_TYPE, bs.STATUS, bs.START_DATE_SKEY, ` +
       `bs.TIME_SUBMITTED, bs.TIME_COMPLETED, bs.DESCRIPTION, bs.TOTAL_JOBS, bs.PENDING_JOBS, bs.UNIT_SKEY, ` +
+      `CASE WHEN bs.STATUS IN ('N','I') THEN 1 ELSE 0 END AS IS_PENDING, ` +
+      `CASE WHEN bs.STATUS IN ('N','I') AND bs.TIME_SUBMITTED IS NOT NULL AND bs.TIME_SUBMITTED < CURRENT TIMESTAMP - ${staleMins} MINUTES THEN 1 ELSE 0 END AS IS_STALE, ` +
+      `TIMESTAMPDIFF(4, CHAR(CURRENT TIMESTAMP - bs.TIME_SUBMITTED)) AS AGE_MINS, ` +
       `(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS='S') AS SUCCESS_COUNT, ` +
       `(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS='F') AS FAIL_COUNT, ` +
       `(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS NOT IN ('S','F')) AS OTHER_COUNT ` +
       `FROM RWSUSER.BATCH_STATUS bs ` +
       `WHERE bs.JOB_TYPE = '${safeJobType}' AND ${planFilter} AND bs.TIME_SUBMITTED >= CURRENT TIMESTAMP - ${days} DAYS ` +
-      `ORDER BY bs.TIME_SUBMITTED DESC ` +
+      `ORDER BY CASE WHEN bs.STATUS IN ('N','I') AND bs.TIME_SUBMITTED IS NOT NULL AND bs.TIME_SUBMITTED < CURRENT TIMESTAMP - ${staleMins} MINUTES THEN 0 WHEN bs.STATUS IN ('N','I') THEN 1 ELSE 2 END, bs.TIME_SUBMITTED DESC ` +
       `FETCH FIRST ${configService.getInt('engine.maxBatchDetailRows')} ROWS ONLY`;
 
     const result = await this.runConnector('query', clientId, sql, 'BatchStatusDetails');
@@ -355,6 +362,7 @@ class DB2DirectService {
       }
 
       const statusCode = (row.STATUS || '').trim();
+      const ageMinsRaw = parseInt(String(row.AGE_MINS ?? ''), 10);
       return {
         batchStatusId: (row.BATCH_STATUS_ID || '').trim(),
         jobType: (row.JOB_TYPE || '').trim(),
@@ -371,6 +379,9 @@ class DB2DirectService {
         successCount: parseInt(row.SUCCESS_COUNT || '0', 10),
         failCount: parseInt(row.FAIL_COUNT || '0', 10),
         otherCount: parseInt(row.OTHER_COUNT || '0', 10),
+        isPending: parseInt(String(row.IS_PENDING ?? '0'), 10) === 1,
+        isStale: parseInt(String(row.IS_STALE ?? '0'), 10) === 1,
+        ageMins: Number.isFinite(ageMinsRaw) ? ageMinsRaw : null,
       };
     });
   }

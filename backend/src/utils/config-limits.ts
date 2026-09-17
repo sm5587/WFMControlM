@@ -13,6 +13,7 @@ const BOOL_CONFIG_KEYS = new Set([
   'engine.autoEscalationNotifyEnabled',
   'display.maintenanceAdHocWindows',
   'display.payrollEnabled',
+  'display.payrollMonitorEnabled',
   'display.showUnprocPunchTab',
   'infra.trustProxy',
   'infra.requireHttps',

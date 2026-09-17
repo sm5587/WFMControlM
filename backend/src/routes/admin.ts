@@ -366,7 +366,7 @@ router.post('/purge/run/:id', requirePermission('DATA_PURGE_RUN', 'write'), asyn
 });
 
 // ────────────────────────────────────────────────────────────
-// SQL EXPORT — regenerate database/ddl.sql and database/dml.sql
+// SQL EXPORT — dated snapshots + optional first-time bootstrap refresh
 // ────────────────────────────────────────────────────────────
 
 // GET /api/admin/sql-export?type=ddl|dml|all
@@ -388,13 +388,15 @@ router.get('/sql-export', requirePermission('PERMISSIONS_EDIT', 'read'), async (
   }
 });
 
-// POST /api/admin/sql-export/write?type=ddl|dml|all
+// POST /api/admin/sql-export/write?type=ddl|dml|all&mode=snapshot|first-time|both
 router.post('/sql-export/write', requirePermission('PERMISSIONS_EDIT', 'write'), async (req: Request, res: Response) => {
   try {
     const rawType = String(req.query.type || 'all').toLowerCase();
     const type: SqlExportType = rawType === 'ddl' || rawType === 'dml' ? rawType : 'all';
+    const rawMode = String(req.query.mode || 'snapshot').toLowerCase();
+    const mode = rawMode === 'first-time' || rawMode === 'both' ? rawMode : 'snapshot';
     const payload = await exportSql(type);
-    const paths = writeSqlFiles(payload);
+    const paths = writeSqlFiles(payload, { mode });
     res.json({
       success: true,
       data: {

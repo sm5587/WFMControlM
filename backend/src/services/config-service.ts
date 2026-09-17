@@ -68,6 +68,8 @@ class ConfigService {
     await this.ensureNotifyCooldownConfig();
     await this.ensureMaintenanceAdHocWindowsConfig();
     await this.ensurePayrollEnabledConfig();
+    await this.ensurePayrollMonitorEnabledConfig();
+    await this.ensurePayrollStalledGraceConfig();
     await this.ensureShowUnprocPunchTabConfig();
     await this.ensureMasterAccountConfig();
     await this.ensureFileMonitorConfig();
@@ -187,6 +189,62 @@ class ConfigService {
       category: 'DISPLAY',
       label: 'Payroll Jobs Menu',
       description: 'Show Payroll Jobs screen and API (true/false)',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert display.payrollMonitorEnabled when upgrading an older database. */
+  private async ensurePayrollMonitorEnabledConfig(): Promise<void> {
+    const key = 'display.payrollMonitorEnabled';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: 'false',
+        category: 'DISPLAY',
+        label: 'Payroll Monitor Menu',
+        description: 'Show Payroll Monitor screen and API (true/false)',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: 'false',
+      category: 'DISPLAY',
+      label: 'Payroll Monitor Menu',
+      description: 'Show Payroll Monitor screen and API (true/false)',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert threshold.payrollStalledGraceMins when upgrading an older database. */
+  private async ensurePayrollStalledGraceConfig(): Promise<void> {
+    const key = 'threshold.payrollStalledGraceMins';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: '30',
+        category: 'THRESHOLDS',
+        label: 'Payroll Stalled Grace (min)',
+        description: 'After pay release time, flag store group as stalled when generator is idle and units still pending for X mins',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: '30',
+      category: 'THRESHOLDS',
+      label: 'Payroll Stalled Grace (min)',
+      description: 'After pay release time, flag store group as stalled when generator is idle and units still pending for X mins',
       isSecret: false,
       updatedBy: 'system',
       updatedAt: new Date(),

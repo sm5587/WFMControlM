@@ -15,6 +15,7 @@ export const BOOLEAN_APP_CONFIG_KEYS = new Set<string>([
   'engine.autoEscalationNotifyEnabled',
   'display.maintenanceAdHocWindows',
   'display.payrollEnabled',
+  'display.payrollMonitorEnabled',
   'display.showUnprocPunchTab',
   'infra.trustProxy',
   'infra.requireHttps',

@@ -1,8 +1,9 @@
--- WFM Control-M consolidated production DML
+-- WFM Control-M — FIRST-TIME DEPLOYMENT DML
 --
--- This script seeds baseline reference/config data after database/ddl.sql.
--- It is safe to rerun because statements use INSERT OR IGNORE / OR REPLACE.
--- Regenerate: npm run db:extract
+-- Seeds baseline reference/config data after database/first-time-deployment-ddl.sql
+-- on a fresh database only. Do NOT re-run on live production.
+-- Regenerate: npm run db:extract:first-time
+-- Dated snapshots: npm run db:extract  -> database/snapshots/dml-YYYYMMDD.sql
 --
 -- NOTE:
 -- 1) Client/AppServer inventory is environment-specific and should be loaded
@@ -37,7 +38,9 @@ INSERT OR IGNORE INTO "AppFunction" ("id", "module", "name", "description", "sor
   ('OUTAGE_VIEW', 'OUTAGE', 'View Outage Impact Calculator', NULL, 57),
   ('FILE_MONITOR_VIEW', 'MONITOR', 'View Upload File Monitor', NULL, 58),
   ('MONITOR_VIEW', 'MONITOR', 'View Monitor', NULL, 60),
-  ('PAYROLL_VIEW', 'PAYROLL', 'View Payroll', NULL, 70),
+  ('PAYROLL_VIEW', 'Payroll Jobs', 'Payroll Jobs', NULL, 70),
+  ('PAYROLL_MONITOR_VIEW', 'Payroll Monitor', 'Payroll Monitor', NULL, 71),
+  ('PAYROLL_SYNC', 'Payroll Jobs', 'Payroll Jobs — Sync Clients', 'Sync payroll product features from DB2', 72),
   ('UNPROC_PUNCH_VIEW', 'UNPROC_PUNCH', 'View Unprocessed Punches', NULL, 75),
   ('USERS_VIEW', 'ADMIN', 'View Users', NULL, 80),
   ('USERS_MANAGE', 'ADMIN', 'Create / Edit / Deactivate Users', NULL, 81),
@@ -100,6 +103,7 @@ INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWr
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'MONITOR_VIEW', 0, 0),
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'OUTAGE_VIEW', 1, 0),
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'PAYROLL_VIEW', 1, 0),
+  ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'PAYROLL_MONITOR_VIEW', 1, 0),
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'PROFILES_VIEW', 1, 0),
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'RECIPIENTS_MANAGE', 1, 0),
   ('889daec3-6c8e-421b-b6aa-1ae99e6d7d1e', 'UNPROC_PUNCH_VIEW', 1, 0),
@@ -128,6 +132,7 @@ INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWr
   ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'MONITOR_VIEW', 0, 0),
   ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'OUTAGE_VIEW', 1, 0),
   ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'PAYROLL_VIEW', 1, 0),
+  ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'PAYROLL_MONITOR_VIEW', 1, 0),
   ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'RECIPIENTS_MANAGE', 1, 0),
   ('97e85fe1-6fb2-4b16-92eb-42ad62e6a756', 'UNPROC_PUNCH_VIEW', 1, 0),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'ALERTS_ACK', 1, 1),
@@ -155,7 +160,9 @@ INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWr
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'MAINTENANCE_VIEW', 1, 1),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'MONITOR_VIEW', 1, 1),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'OUTAGE_VIEW', 1, 1),
-  ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PAYROLL_VIEW', 0, 0),
+  ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PAYROLL_VIEW', 1, 1),
+  ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PAYROLL_MONITOR_VIEW', 1, 1),
+  ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PAYROLL_SYNC', 1, 1),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PERMISSIONS_EDIT', 1, 1),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PROFILES_MANAGE', 1, 1),
   ('d0532f26-8b3a-463f-81a2-825e56a8cd32', 'PROFILES_VIEW', 1, 1),
@@ -202,6 +209,7 @@ INSERT OR REPLACE INTO "AppConfig" ("key", "value", "category", "label", "descri
   ('display.panelMaxWidth', '700', 'DISPLAY', 'Panel Max Width (px)', 'Resizable panel max width in pixels', 0, 'seed', 1781078694000),
   ('display.panelMinWidth', '160', 'DISPLAY', 'Panel Min Width (px)', 'Resizable panel min width in pixels', 0, 'seed', 1781078694000),
   ('display.payrollEnabled', 'false', 'DISPLAY', 'Payroll Jobs Menu', 'Show Payroll Jobs screen and API (true/false)', 0, 'system', 1787122108661),
+  ('display.payrollMonitorEnabled', 'false', 'DISPLAY', 'Payroll Monitor Menu', 'Show Payroll Monitor screen and API (true/false)', 0, 'system', 1787122108662),
   ('display.showUnprocPunchTab', 'false', 'DISPLAY', 'Unprocessed Punch Alerts Tab', 'Show Unprocessed Punch tab on Alerts page (true/false)', 0, 'admin', 1787552595619),
   ('display.wsReconnectAttempts', '10', 'DISPLAY', 'WS Reconnect Attempts', 'WebSocket max reconnection attempts', 0, 'seed', 1781078694000),
   ('display.wsReconnectDelayMs', '1000', 'DISPLAY', 'WS Reconnect Delay (ms)', 'WebSocket reconnect delay in ms', 0, 'seed', 1781078694000),

@@ -1,24 +1,26 @@
 # DDL / DML Extraction
 
-This project keeps consolidated SQL bootstrap files under `database/`:
+This project keeps SQL bootstrap and snapshot files under `database/`:
 
 | File | Purpose |
 |------|---------|
-| `database/ddl.sql` | Schema (tables, indexes, constraints) — apply on a **fresh** database |
-| `database/dml.sql` | Reference/seed data (RBAC, config, pools, etc.) — apply **after** DDL |
+| `database/first-time-deployment-ddl.sql` | Schema — apply on a **fresh** database only |
+| `database/first-time-deployment-dml.sql` | Reference/seed data — apply **once** after DDL on first deploy |
+| `database/snapshots/ddl-YYYYMMDD.sql` | Dated DDL export (reference backup, not used on deploy) |
+| `database/snapshots/dml-YYYYMMDD.sql` | Dated DML export (reference backup, not used on deploy) |
 | `database/sql-export-manifest.json` | Defines which tables are exported into DML |
 
 Apply scripts (reverse direction):
 
 ```bash
-npm run db:bootstrap:ddl   # apply ddl.sql
-npm run db:bootstrap:dml   # apply dml.sql
-npm run db:bootstrap       # both
+npm run db:bootstrap:ddl   # apply first-time-deployment-ddl.sql
+npm run db:bootstrap:dml   # apply first-time-deployment-dml.sql
+npm run db:bootstrap       # both + clients
 ```
 
 ---
 
-## Quick extract (DDL + DML)
+## Quick extract (dated snapshot)
 
 From the **project root**:
 
@@ -26,7 +28,25 @@ From the **project root**:
 npm run db:extract
 ```
 
-This regenerates both `database/ddl.sql` and `database/dml.sql`.
+This writes dated files under `database/snapshots/` (e.g. `dml-20260913.sql`). It does **not** overwrite the first-time deployment files.
+
+---
+
+## Refresh first-time bootstrap files (rare)
+
+Only when you intentionally update the committed bootstrap scripts:
+
+```bash
+npm run db:extract:first-time
+```
+
+This updates `database/first-time-deployment-ddl.sql` and `database/first-time-deployment-dml.sql`.
+
+To update both bootstrap files **and** write a dated snapshot:
+
+```bash
+cd backend && node scripts/extract-sql.js --update-first-time
+```
 
 ---
 
@@ -35,13 +55,13 @@ This regenerates both `database/ddl.sql` and `database/dml.sql`.
 ```bash
 npm run db:migrate          # apply Prisma schema changes to dev DB
 npm run db:seed             # optional: reload reference/seed data in DB
-npm run db:extract          # regenerate ddl.sql + dml.sql
+npm run db:extract          # dated snapshot only
 ```
 
 Verify on a clean database:
 
 ```bash
-npm run db:bootstrap        # applies ddl.sql then dml.sql
+npm run db:bootstrap        # applies first-time-deployment-*.sql
 ```
 
 One-liner after a schema change:
@@ -55,105 +75,30 @@ npm run db:migrate && npm run db:seed && npm run db:extract
 ## Extract options
 
 ```bash
-npm run db:extract -- --ddl       # DDL only
-npm run db:extract -- --dml       # DML only
+npm run db:extract -- --ddl       # DDL snapshot only
+npm run db:extract -- --dml       # DML snapshot only
 npm run db:extract -- --stdout    # print to console (no files written)
-npm run db:extract -- --dry-run   # show what would be written
-```
-
-From `backend/` directly:
-
-```bash
-cd backend
-npm run sql:extract
-node scripts/extract-sql.js --help
+npm run db:extract -- --dry-run   # show paths that would be written
+npm run db:extract:first-time     # refresh first-time-deployment-*.sql only
 ```
 
 ---
 
-## How it works
+## Production note
 
-### DDL
-
-- **Source:** `backend/prisma/schema.prisma`
-- **Tool:** `prisma migrate diff --from-empty --to-schema-datamodel`
-- **Output:** Idempotent SQL (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`)
-- **Fully automatic** — new models/columns in Prisma are picked up on the next extract; no manifest edit needed.
-
-### DML
-
-- **Source:** Live SQLite database (`DATABASE_URL` / `backend/prisma/dev.db`)
-- **Config:** `database/sql-export-manifest.json` — table list, insert mode, filters, ordering
-- **Secret handling:** `AppConfig` rows with `isSecret = 1` export with an empty `value`
-- **Reflects current DB state** — run `npm run db:seed` first if you want seed data exported.
+- **First-time deploy:** `database/first-time-deployment-*.sql` or `./scripts/deploy-prod.sh` with `FIRST_TIME_DEPLOY=true`
+- **Routine deploy:** `./scripts/deploy-prod.sh` only — never re-run first-time DML on live production
+- **Dated snapshots:** for audit/reference; stored in `database/snapshots/` (gitignored)
 
 ---
 
-## Admin HTTP API
+## Related files
 
-When the backend is running (requires `PERMISSIONS_EDIT`):
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/admin/sql-export?type=ddl\|dml\|all` | Returns SQL in JSON response |
-| `POST` | `/api/admin/sql-export/write?type=...` | Writes files under `database/` |
-
-Example:
-
-```http
-GET /api/admin/sql-export?type=all
-Authorization: Bearer <token>
-```
-
----
-
-## Adding a new reference table to DML export
-
-1. Add the model to `backend/prisma/schema.prisma` and migrate.
-2. Seed the table (via `seed.ts`, Admin UI, or manual insert).
-3. Add a section to `database/sql-export-manifest.json`:
-
-```json
-{
-  "title": "MY NEW TABLE",
-  "table": "MyTable",
-  "insertMode": "ignore",
-  "orderBy": ["id"]
-}
-```
-
-| Field | Values | Notes |
-|-------|--------|-------|
-| `insertMode` | `ignore` \| `replace` | Maps to `INSERT OR IGNORE` / `INSERT OR REPLACE` |
-| `where` | SQL fragment | Optional filter, e.g. `"isSystem = 1"` |
-| `orderBy` | column array | Stable row order in output |
-| `maskSecretValues` | `true` | Clears `value` when `isSecret` is set (for config-like tables) |
-| `notes` | string array | Comment lines written above the INSERT block |
-
-4. Run:
-
-```bash
-npm run db:extract -- --dml
-```
-
-Place new sections **after** tables they depend on (foreign keys).
-
----
-
-## Implementation files
-
-| Path | Role |
+| File | Role |
 |------|------|
 | `backend/scripts/extract-sql.js` | CLI entry point |
-| `backend/scripts/lib/sql-export-core.js` | Shared extraction logic |
-| `backend/scripts/apply-sql.js` | Applies ddl.sql / dml.sql to the DB |
-| `backend/src/services/sql-export-service.ts` | Used by admin API routes |
-| `backend/src/routes/admin.ts` | `/api/admin/sql-export` endpoints |
+| `backend/scripts/lib/sql-export-core.js` | Shared export logic |
+| `backend/scripts/apply-sql.js` | Applies SQL files to the DB |
+| `backend/src/services/sql-export-service.ts` | Admin API SQL export |
 
----
-
-## Notes
-
-- **Client / AppServer inventory** is environment-specific and is **not** included in `dml.sql` — load via import scripts or Admin APIs.
-- **Runtime/cache tables** (e.g. `CachedQueueJob`, `JobExecution`) are intentionally excluded from the DML manifest.
-- After `db:seed`, profile/user IDs may be UUIDs in exported DML; the hand-maintained bootstrap file used fixed IDs (`SYS_ADMIN_PROFILE`, etc.). Review exported DML before production rollout if stable IDs matter.
+- **Client / AppServer inventory** is environment-specific and is **not** included in first-time DML — load via `database/clients-dml.sql`, import scripts, or Admin APIs.

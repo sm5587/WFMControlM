@@ -12,6 +12,8 @@
     "@tanstack/react-query": "^5.17.0",
     "axios": "^1.6.5",
     "dayjs": "^1.11.10",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

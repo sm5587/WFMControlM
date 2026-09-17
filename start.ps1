@@ -79,7 +79,7 @@ function Initialize-Environment {
         Invoke-Step "Applying database DDL bootstrap" {
             Push-Location $Backend
             try {
-                node scripts\apply-sql.js ..\database\ddl.sql
+                node scripts\apply-sql.js ..\database\first-time-deployment-ddl.sql
             }
             finally {
                 Pop-Location
@@ -89,7 +89,7 @@ function Initialize-Environment {
         Invoke-Step "Applying database DML bootstrap" {
             Push-Location $Backend
             try {
-                node scripts\apply-sql.js ..\database\dml.sql
+                node scripts\apply-sql.js ..\database\first-time-deployment-dml.sql
             }
             finally {
                 Pop-Location

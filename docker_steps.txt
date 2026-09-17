@@ -51,8 +51,8 @@ Step 4 — Bootstrap database (first install only — pick ONE option)
        docker compose -f docker-compose.prod.yml exec backend npx prisma db seed
 
      Option C — SQL bootstrap files
-       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/ddl.sql
-       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/dml.sql
+       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/first-time-deployment-ddl.sql
+       docker compose -f docker-compose.prod.yml run --rm -v "${PWD}/database:/app/database:ro" backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 
 Step 5 — Verify
      docker compose -f docker-compose.prod.yml ps

@@ -10,6 +10,7 @@ export interface EscalatedAlert {
   cluster: string;
   stalePendingCount: number;
   totalPending: number;
+  criticalJobNames?: string[];
   status: string; // OPEN | ACKNOWLEDGED | SUPPRESSED
   acknowledgedBy: string | null;
   acknowledgedAt: string | null;

@@ -11,7 +11,7 @@ Workforce Management job scheduling, monitoring, and orchestration platform.
 | [docs/DEPLOYMENT_UNIX.md](docs/DEPLOYMENT_UNIX.md) | Unix / Linux install and production deployment |
 | [docs/DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) | Docker Desktop install (Windows) and SQLite data changes |
 | [docs/DOCKER_INSTALLATION_Presentation.md](docs/DOCKER_INSTALLATION_Presentation.md) | Docker install — slide-style presentation |
-| [docs/dbextract.md](docs/dbextract.md) | Regenerate `database/ddl.sql` and `dml.sql` |
+| [docs/dbextract.md](docs/dbextract.md) | SQL bootstrap files and dated snapshots |
 | [docs/production-readiness-checklist.md](docs/production-readiness-checklist.md) | Go-live checklist |
 | [docs/WFM_ControlM_Presentation.md](docs/WFM_ControlM_Presentation.md) | Presentation / overview slides (markdown) |
 

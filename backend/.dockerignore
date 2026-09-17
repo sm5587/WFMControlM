@@ -3,3 +3,5 @@ dist
 logs
 .env
 *.log
+prisma/dev.db
+prisma/*.db-journal

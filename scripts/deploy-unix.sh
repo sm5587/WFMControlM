@@ -17,7 +17,7 @@ source "$SCRIPT_DIR/lib/dotenv.sh"
 #   BUILD_APP=true|false
 #
 # Notes:
-# - BOOTSTRAP_DB=true applies database/ddl.sql and database/dml.sql (fresh setup mode).
+# - BOOTSTRAP_DB=true applies database/first-time-deployment-*.sql (fresh setup mode).
 # - For existing environments where you must preserve DB/AppConfig values, set BOOTSTRAP_DB=false.
 # - Ensure .env is configured (DATABASE_URL, CONFIG_ENCRYPTION_KEY) before first run.
 # - Pass -h or --help to print this help.
@@ -146,7 +146,7 @@ npm --prefix backend run prisma:generate
 npm run db:deploy
 
 if [[ "$BOOTSTRAP_DB" == "true" ]]; then
-  log "Applying DDL/DML bootstrap (database/ddl.sql + database/dml.sql)"
+  log "Applying DDL/DML bootstrap (database/first-time-deployment-*.sql)"
   if npm run db:bootstrap; then
     log "SQL bootstrap via Node/Prisma succeeded"
   else
@@ -155,8 +155,8 @@ if [[ "$BOOTSTRAP_DB" == "true" ]]; then
       echo "[deploy-unix] sqlite3 fallback is only supported for SQLite DATABASE_URL values" >&2
       exit 1
     fi
-    sqlite3 "$DB_PATH" < "$APP_DIR/database/ddl.sql"
-    sqlite3 "$DB_PATH" < "$APP_DIR/database/dml.sql"
+    sqlite3 "$DB_PATH" < "$APP_DIR/database/first-time-deployment-ddl.sql"
+    sqlite3 "$DB_PATH" < "$APP_DIR/database/first-time-deployment-dml.sql"
     apply_clients_dml_sql "$APP_DIR" "$DB_PATH"
     log "SQL bootstrap via sqlite3 fallback succeeded"
   fi

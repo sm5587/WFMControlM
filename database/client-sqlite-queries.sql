@@ -156,24 +156,20 @@ SELECT clientId, name, cluster FROM Client;
 
 SELECT clientId, jobName FROM CriticalDbJob;
 
--- Batch views use client DB2 (client-db2-queries.sql); SQLite only for names/critical flags above
-
--- Optional SSH monitor paths (same menu, legacy endpoints):
-SELECT * FROM Client WHERE id = {id} INCLUDE AppServer;
-SELECT * FROM Client WHERE isActive = 1 ORDER BY clientId ASC;
+-- Batch views use client DB2 via JDBC (client-db2-queries.sql); SQLite only for names/critical flags above
 
 -- ---------- Payroll Jobs (/payroll) ----------
 
-SELECT clientId, name, payrollCycle, payrollSyncedAt FROM Client
+SELECT clientId, name, payrollCycle, payrollFileGen, priorPeriodEdit, priorPeriodEditLimit, payrollSyncedAt FROM Client
 WHERE payrollEnabled = 1
 ORDER BY clientId ASC;
 
--- sync-clients background (updates local flags after DB2 PRODUCT_FEATURE query)
+-- sync-clients background (updates local flags after DB2 PRODUCT_FEATURE + FREQUENCY query)
 SELECT clientId FROM Client;
-UPDATE Client SET payrollEnabled = {bool}, payrollSyncedAt = {now} WHERE clientId = {id};
-INSERT INTO Client (...) ON CONFLICT(clientId) DO UPDATE SET payrollEnabled = ...;
+UPDATE Client SET payrollEnabled = {bool}, payrollCycle = {freq}, payrollFileGen = {fileGen},
+  priorPeriodEdit = {bool}, priorPeriodEditLimit = {n}, payrollSyncedAt = {now} WHERE clientId = {id};
 
--- Payroll detail uses client DB2 only (TA_UNIT_PAY_STATUS)
+-- Payroll detail uses client DB2 (RWS_CALENDAR, TA_UNIT_PAY_STATUS, RFX_QUEUE, adj counts)
 
 -- ---------- Unprocessed Punch (/unprocessed-punch) ----------
 

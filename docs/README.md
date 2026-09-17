@@ -312,7 +312,7 @@ WFMControlM/
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Seed only | One-time `prisma db seed` bootstrap user |
 | `KEEPER_CONFIG_FILE` | Optional | Keeper `ksm-config.json` path on disk |
 
-**Runtime (AppConfig / Admin → Config)** — SMTP, JWT, port, CORS, SSH, DB2 paths, thresholds, polling, and engine settings. Seeded by `database/dml.sql` or `npm run db:seed`; editable in the UI after login.
+**Runtime (AppConfig / Admin → Config)** — SMTP, JWT, port, CORS, SSH, DB2 paths, thresholds, polling, and engine settings. Seeded by `database/first-time-deployment-dml.sql` or `npm run db:seed`; editable in the UI after login.
 
 ---
 

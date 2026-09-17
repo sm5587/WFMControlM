@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Briefcase,
-  Bell, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play,
+  Bell, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play, Radio,
   LogOut, Shield, Eye, Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -12,7 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
 import { useAppName, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
 import { deploymentHint } from './DeploymentBadge';
-import { PAYROLL_ENABLED_KEY } from '../constants/app-display';
+import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
 
 const navItems = [
   { path: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, permission: null },
@@ -23,6 +23,7 @@ const navItems = [
   { path: '/file-monitor', label: 'Upload Monitor', icon: FolderSearch, permission: 'FILE_MONITOR_VIEW' },
   { path: '/db-monitor',  label: 'DB Jobs Monitor', icon: Database,      permission: 'DBMONITOR_VIEW' },
   { path: '/payroll',     label: 'Payroll Jobs',       icon: DollarSign,      permission: 'PAYROLL_VIEW' },
+  { path: '/payroll-monitor', label: 'Payroll Monitor', icon: Radio,           permission: 'PAYROLL_MONITOR_VIEW' },
   { path: '/unprocessed-punch', label: 'Unprocessed Punch', icon: Timer,        permission: 'UNPROC_PUNCH_VIEW' },
   { path: '/alerts',      label: 'Alerts',             icon: Bell,            permission: 'ALERTS_VIEW' },
 ];
@@ -39,6 +40,7 @@ export default function Layout() {
   const deploymentLabel = useDeploymentLabel();
   const { getBool } = useConfig();
   const payrollEnabled = getBool(PAYROLL_ENABLED_KEY, false);
+  const payrollMonitorEnabled = getBool(PAYROLL_MONITOR_ENABLED_KEY, false);
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const { isConnected } = useWebSocket();
@@ -60,11 +62,11 @@ export default function Layout() {
   }, [clients, selectedCluster]);
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen min-h-0 overflow-hidden bg-gray-50">
       {/* Sidebar */}
-      <aside className={`${collapsed ? 'w-16' : 'w-60'} bg-slate-900 text-white transition-all duration-300 flex flex-col`}>
+      <aside className={`${collapsed ? 'w-16' : 'w-60'} h-full min-h-0 bg-slate-900 text-white transition-all duration-300 flex flex-col overflow-hidden`}>
         {/* Logo */}
-        <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-700">
+        <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-700 flex-shrink-0">
           <Activity className="w-8 h-8 text-zebra-400 flex-shrink-0" />
           {!collapsed && (
             <div>
@@ -74,65 +76,68 @@ export default function Layout() {
           )}
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 py-4">
-          {navItems.map(({ path, label, icon: Icon, permission }) => {
-            // Hide nav item if user lacks the required read permission
-            if (permission && !canRead(permission)) return null;
-            if (path === '/payroll' && !payrollEnabled) return null;
-            const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
-            const showRedBadge = path === '/alerts' && showAlertsBadge;
-            return (
-              <Link
-                key={path}
-                to={path}
-                className={`flex items-center gap-3 px-4 py-3 mx-2 rounded-lg transition-colors ${
-                  isActive
-                    ? 'bg-zebra-600 text-white'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <div className="relative flex-shrink-0">
-                  <Icon className="w-5 h-5" />
-                  {showRedBadge && (
-                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900" />
-                  )}
-                </div>
-                {!collapsed && <span className="text-sm font-medium">{label}</span>}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* Admin Section */}
-        {showAdminSection && (
-          <nav className="py-2 border-t border-slate-700">
-            {!collapsed && (
-              <p className="px-4 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Admin</p>
-            )}
-            {adminNavItems.map(({ path, label, icon: Icon, permission }) => {
-              if (!canRead(permission)) return null;
-              const isActive = location.pathname.startsWith(path);
+        {/* Navigation — scrolls when the menu is taller than the viewport */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <nav className="py-4">
+            {navItems.map(({ path, label, icon: Icon, permission }) => {
+              // Hide nav item if user lacks the required read permission
+              if (permission && !canRead(permission)) return null;
+              if (path === '/payroll' && !payrollEnabled) return null;
+              if (path === '/payroll-monitor' && !payrollMonitorEnabled) return null;
+              const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
+              const showRedBadge = path === '/alerts' && showAlertsBadge;
               return (
                 <Link
                   key={path}
                   to={path}
-                  className={`flex items-center gap-3 px-4 py-2.5 mx-2 rounded-lg transition-colors ${
+                  className={`flex items-center gap-3 px-4 py-3 mx-2 rounded-lg transition-colors ${
                     isActive
                       ? 'bg-zebra-600 text-white'
                       : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
-                  <Icon className="w-5 h-5 flex-shrink-0" />
+                  <div className="relative flex-shrink-0">
+                    <Icon className="w-5 h-5" />
+                    {showRedBadge && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900" />
+                    )}
+                  </div>
                   {!collapsed && <span className="text-sm font-medium">{label}</span>}
                 </Link>
               );
             })}
           </nav>
-        )}
+
+          {/* Admin Section */}
+          {showAdminSection && (
+            <nav className="py-2 border-t border-slate-700">
+              {!collapsed && (
+                <p className="px-4 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Admin</p>
+              )}
+              {adminNavItems.map(({ path, label, icon: Icon, permission }) => {
+                if (!canRead(permission)) return null;
+                const isActive = location.pathname.startsWith(path);
+                return (
+                  <Link
+                    key={path}
+                    to={path}
+                    className={`flex items-center gap-3 px-4 py-2.5 mx-2 rounded-lg transition-colors ${
+                      isActive
+                        ? 'bg-zebra-600 text-white'
+                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5 flex-shrink-0" />
+                    {!collapsed && <span className="text-sm font-medium">{label}</span>}
+                  </Link>
+                );
+              })}
+            </nav>
+          )}
+        </div>
 
         {/* User Info + Connection Status */}
-        <div className="px-4 py-3 border-t border-slate-700 space-y-2">
+        <div className="px-4 py-3 border-t border-slate-700 space-y-2 flex-shrink-0 bg-slate-900">
           {/* Role badge */}
           {!collapsed && user && (
             <div className="flex items-center gap-2">
@@ -172,7 +177,7 @@ export default function Layout() {
         {/* Collapse Toggle */}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="flex items-center justify-center py-3 border-t border-slate-700 hover:bg-slate-800 transition-colors"
+          className="flex items-center justify-center py-3 border-t border-slate-700 hover:bg-slate-800 transition-colors flex-shrink-0 bg-slate-900"
         >
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
         </button>

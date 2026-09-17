@@ -27,7 +27,9 @@ export default function DBMonitor() {
   const batchCacheTtlMins = getInt('polling.batchCacheTtlMins', 30);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [expandedJob, setExpandedJob] = useState<{ jobType: string; planType: string } | null>(null);
+  const [detailView, setDetailView] = useState<'open' | 'all'>('open');
   const [searchTerm, setSearchTerm] = useState('');
+  const [jobFilter, setJobFilter] = useState('');
   const configBatchDays = useBatchLookbackDays();
   const [days, setDays] = useState(configBatchDays);
   const [clusterFilter, setClusterFilter] = useState('');
@@ -49,6 +51,10 @@ export default function DBMonitor() {
     // clients from useDbClientConnections keyed by clientId short code
     setSelectedClient((prev: any) => prev?.clientId === gc.clientId ? prev : { clientId: gc.clientId, name: gc.name, cluster: gc.cluster });
   }, [selectedClientId, globalClients]);
+
+  useEffect(() => {
+    setJobFilter('');
+  }, [selectedClient?.clientId]);
 
   // Cached client list + connection status (30 min)
   const {
@@ -191,13 +197,22 @@ export default function DBMonitor() {
   // Get batch data for selected client from the global cache
   const selectedClientGroups = selectedClient && allBatchData?.clients?.[selectedClient.clientId];
   const jobGroups = selectedClientGroups?.groups || [];
+  const visibleJobGroups = useMemo(() => {
+    const q = jobFilter.trim().toLowerCase();
+    if (!q) return jobGroups;
+    return jobGroups.filter((g: any) =>
+      (g.jobType || '').toLowerCase().includes(q)
+      || (g.planType || '').toLowerCase().includes(q)
+      || (g.description || '').toLowerCase().includes(q)
+    );
+  }, [jobGroups, jobFilter]);
   const batchLoading = allBatchLoading && !allBatchData;
   const clientStillLoading = selectedClientGroups?.loading === true;
   const batchError = selectedClientGroups?.error;
 
   // Fetch details when a job group is expanded — cached 30 min
   const { data: detailsData, isLoading: detailsLoading, isError: detailsError, error: detailsErrorObj } = useQuery({
-    queryKey: ['batch-details', selectedClient?.clientId, expandedJob?.jobType, expandedJob?.planType, days],
+    queryKey: ['batch-details', 'wait-flags', selectedClient?.clientId, expandedJob?.jobType, expandedJob?.planType, days],
     queryFn: () => dbMonitorApi.getBatchDetails(selectedClient!.clientId, expandedJob!.jobType, expandedJob!.planType, days),
     enabled: !!selectedClient && !!expandedJob,
     staleTime: THIRTY_MINUTES,
@@ -219,7 +234,12 @@ export default function DBMonitor() {
 
   const toggleExpand = (group: any) => {
     setExpandedJob(isExpanded(group) ? null : { jobType: group.jobType, planType: group.planType });
+    setDetailView('open');
   };
+
+  const openDetails = jobDetails.filter((d: any) => d.isStale || d.isPending);
+  const shownDetails = detailView === 'open' && openDetails.length > 0 ? openDetails : jobDetails;
+  const staleMins = getInt('threshold.stalePendingDbMins', 30);
 
   return (
     <div className="p-6 space-y-6">
@@ -514,16 +534,31 @@ export default function DBMonitor() {
               {/* Job Groups */}
               <div className="bg-white rounded-xl border">
                 <div className="px-4 py-3 border-b">
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between mb-1 gap-3">
                     <h3 className="text-sm font-medium text-gray-700">
                       Batch Jobs — Last {days} {days === 1 ? 'Day' : 'Days'}
                     </h3>
-                    <span className="text-xs text-gray-400">{jobGroups.length} job types</span>
+                    <span className="text-xs text-gray-400">
+                      {jobFilter.trim()
+                        ? `${visibleJobGroups.length} of ${jobGroups.length} job types`
+                        : `${jobGroups.length} job types`}
+                    </span>
                   </div>
                   {jobGroups.length > 0 && (
-                    <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="relative flex-1 min-w-[180px]">
+                        <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={jobFilter}
+                          onChange={e => setJobFilter(e.target.value)}
+                          placeholder="Filter by job type, plan, or description…"
+                          className="w-full pl-7 pr-3 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] text-gray-400">
                       Sort:
-                      {(['jobType','totalRuns','completed','failed','active'] as const).map(col => (
+                      {(['jobType','totalRuns','completed','failed','active','stalePending'] as const).map(col => (
                         <button
                           key={col}
                           onClick={() => handleGrpSort(col)}
@@ -531,10 +566,11 @@ export default function DBMonitor() {
                             grpSort === col ? 'bg-indigo-100 text-indigo-700 font-medium' : 'hover:bg-gray-100'
                           }`}
                         >
-                          {col === 'jobType' ? 'Name' : col === 'totalRuns' ? 'Runs' : col.charAt(0).toUpperCase() + col.slice(1)}
+                          {col === 'jobType' ? 'Name' : col === 'totalRuns' ? 'Runs' : col === 'stalePending' ? 'Stale' : col.charAt(0).toUpperCase() + col.slice(1)}
                           {grpSort === col ? (grpDir === 'asc' ? ' ↑' : ' ↓') : ''}
                         </button>
                       ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -579,9 +615,11 @@ export default function DBMonitor() {
                     <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
                     <span className="ml-2 text-sm text-gray-400">Loading batch data...</span>
                   </div>
+                ) : visibleJobGroups.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-8">No job types match “{jobFilter}”</p>
                 ) : (
                   <div className="divide-y">
-                    {[...jobGroups]
+                    {[...visibleJobGroups]
                       .sort((a: any, b: any) => {
                         const dir = grpDir === 'asc' ? 1 : -1;
                         switch (grpSort) {
@@ -590,6 +628,7 @@ export default function DBMonitor() {
                           case 'completed': return dir * (a.completed - b.completed);
                           case 'failed': return dir * (a.failed - b.failed);
                           case 'active': return dir * ((a.active + a.pending) - (b.active + b.pending));
+                          case 'stalePending': return dir * ((a.stalePending || 0) - (b.stalePending || 0));
                           default: return 0;
                         }
                       })
@@ -608,7 +647,7 @@ export default function DBMonitor() {
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-3">
-                              <span className="font-semibold text-sm text-gray-900">{group.jobType}</span>
+                              <span className="font-semibold text-sm text-gray-900">{group.jobType || '(no JOB_TYPE)'}</span>
                               {group.planType && (
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-medium">{group.planType}</span>
                               )}
@@ -637,6 +676,14 @@ export default function DBMonitor() {
                                 <Activity className="w-3 h-3" /> {(group.active + group.pending).toLocaleString()}
                               </span>
                             )}
+                            {group.stalePending > 0 && (
+                              <span
+                                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700 font-medium"
+                                title={`${group.stalePending} pending > 30 min`}
+                              >
+                                <Clock className="w-3 h-3" /> {group.stalePending} stale
+                              </span>
+                            )}
                           </div>
                         </button>
 
@@ -656,8 +703,7 @@ export default function DBMonitor() {
                               <p className="text-sm text-gray-400 text-center py-4">No detail records in the last {days} day{days !== 1 ? 's' : ''}</p>
                             ) : (
                               <>
-                              {/* RFX Queue Job Summary */}
-                              <div className="flex items-center gap-4 mb-3 px-1">
+                              <div className="flex items-center gap-3 mb-3 px-1 flex-wrap">
                                 <span className="text-xs font-medium text-gray-500">RFX Queue Jobs:</span>
                                 <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 font-medium">
                                   <CheckCircle className="w-3 h-3" />
@@ -673,12 +719,40 @@ export default function DBMonitor() {
                                     {jobDetails.reduce((s: number, d: any) => s + (d.otherCount || 0), 0).toLocaleString()} Other
                                   </span>
                                 )}
+                                {openDetails.length > 0 && (
+                                  <>
+                                    <span className="text-xs text-gray-300">|</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setDetailView('open')}
+                                      className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium ${
+                                        detailView === 'open' ? 'bg-amber-100 text-amber-800' : 'bg-white text-gray-500 border'
+                                      }`}
+                                    >
+                                      <Clock className="w-3 h-3" />
+                                      {openDetails.filter((d: any) => d.isStale).length} stale
+                                      {openDetails.filter((d: any) => d.isPending && !d.isStale).length > 0 && (
+                                        <> · {openDetails.filter((d: any) => d.isPending && !d.isStale).length} pending</>
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setDetailView('all')}
+                                      className={`text-xs px-2 py-1 rounded-full font-medium ${
+                                        detailView === 'all' ? 'bg-gray-200 text-gray-800' : 'bg-white text-gray-500 border'
+                                      }`}
+                                    >
+                                      All {jobDetails.length} runs
+                                    </button>
+                                  </>
+                                )}
                               </div>
                               <div className="overflow-auto max-h-96 rounded-lg border bg-white">
                                 <table className="w-full text-sm resizable-cols">
                                   <thead className="bg-gray-100 sticky top-0">
                                     <tr>
                                       <th className="text-left px-3 py-2 font-medium text-gray-600">ID</th>
+                                      <th className="text-left px-3 py-2 font-medium text-gray-600">Wait</th>
                                       <th className="text-left px-3 py-2 font-medium text-gray-600">Status</th>
                                       <th className="text-right px-3 py-2 font-medium text-gray-600">Total Jobs</th>
                                       <th className="text-left px-3 py-2 font-medium text-gray-600">Unit SKEY</th>
@@ -692,9 +766,32 @@ export default function DBMonitor() {
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y">
-                                    {jobDetails.map((detail: any) => (
-                                      <tr key={detail.batchStatusId} className="hover:bg-gray-50">
+                                    {shownDetails.map((detail: any) => (
+                                      <tr
+                                        key={detail.batchStatusId}
+                                        className={
+                                          detail.isStale ? 'bg-amber-50 hover:bg-amber-100/70' :
+                                          detail.isPending ? 'bg-blue-50/70 hover:bg-blue-50' :
+                                          'hover:bg-gray-50'
+                                        }
+                                      >
                                         <td className="px-3 py-2 font-mono text-xs text-gray-500">{detail.batchStatusId}</td>
+                                        <td className="px-3 py-2">
+                                          {detail.isStale ? (
+                                            <span
+                                              className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium"
+                                              title={`Pending longer than ${staleMins} min`}
+                                            >
+                                              <Clock className="w-3 h-3" /> Stale {formatAgeMins(detail.ageMins)}
+                                            </span>
+                                          ) : detail.isPending ? (
+                                            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                                              Pending {formatAgeMins(detail.ageMins)}
+                                            </span>
+                                          ) : (
+                                            <span className="text-xs text-gray-300">—</span>
+                                          )}
+                                        </td>
                                         <td className="px-3 py-2">
                                           <StatusBadge status={detail.status} label={detail.statusLabel} />
                                         </td>
@@ -763,4 +860,15 @@ function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   return `${h}h ${m}m`;
+}
+
+function formatAgeMins(mins: number | null | undefined): string {
+  if (mins == null || !Number.isFinite(mins) || mins < 0) return '';
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (h < 24) return rem ? `${h}h ${rem}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh ? `${d}d ${rh}h` : `${d}d`;
 }

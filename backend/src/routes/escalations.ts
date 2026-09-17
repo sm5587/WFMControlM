@@ -36,16 +36,20 @@ router.get('/', async (_req: Request, res: Response) => {
 
 const reportQuerySchema = z.object({
   year: z.coerce.number().int().min(2020).max(2100),
-  month: z.coerce.number().int().min(1).max(12),
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  quarter: z.coerce.number().int().min(1).max(4).optional(),
   cluster: z.string().optional(),
   clientId: z.string().optional(),
-});
+}).refine(
+  (d) => (d.month != null) !== (d.quarter != null),
+  { message: 'Provide either month or quarter' }
+);
 
-// GET /api/escalations/report - Monthly escalation report (queue buildup + punch alerts)
+// GET /api/escalations/report - Escalation report (queue buildup + punch alerts) for a month or quarter
 router.get('/report', async (req: Request, res: Response) => {
   try {
-    const { year, month, cluster, clientId } = reportQuerySchema.parse(req.query);
-    const report = await escalationService.getMonthlyReport({ year, month, cluster, clientId });
+    const { year, month, quarter, cluster, clientId } = reportQuerySchema.parse(req.query);
+    const report = await escalationService.getMonthlyReport({ year, month, quarter, cluster, clientId });
     res.json({ success: true, data: report });
   } catch (error: any) {
     if (error.name === 'ZodError') {

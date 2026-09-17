@@ -3,6 +3,42 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const DEFAULT_MANIFEST = path.resolve(__dirname, '../../../database/sql-export-manifest.json');
+const FIRST_TIME_DDL_FILENAME = 'first-time-deployment-ddl.sql';
+const FIRST_TIME_DML_FILENAME = 'first-time-deployment-dml.sql';
+const SNAPSHOTS_SUBDIR = 'snapshots';
+
+function formatSnapshotDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+function snapshotFilename(type, dateStr) {
+  return `${type}-${dateStr}.sql`;
+}
+
+function resolveExportTargets(outputDir, options = {}) {
+  const {
+    updateFirstTime = false,
+    firstTimeOnly = false,
+    dateStr = formatSnapshotDate(),
+  } = options;
+  const targets = { ddl: [], dml: [] };
+
+  if (updateFirstTime || firstTimeOnly) {
+    targets.ddl.push(path.join(outputDir, FIRST_TIME_DDL_FILENAME));
+    targets.dml.push(path.join(outputDir, FIRST_TIME_DML_FILENAME));
+  }
+
+  if (!firstTimeOnly) {
+    const snapDir = path.join(outputDir, SNAPSHOTS_SUBDIR);
+    targets.ddl.push(path.join(snapDir, snapshotFilename('ddl', dateStr)));
+    targets.dml.push(path.join(snapDir, snapshotFilename('dml', dateStr)));
+  }
+
+  return targets;
+}
 
 function loadManifest(manifestPath = DEFAULT_MANIFEST) {
   const absolute = path.resolve(manifestPath);
@@ -21,8 +57,9 @@ function postProcessDdl(rawSql) {
   return [
     '-- WFM Control-M consolidated production DDL',
     '-- Generated from current Prisma schema (all tables/indexes/constraints).',
-    '-- Apply on a fresh database before running database/dml.sql.',
-    '-- Regenerate: npm run db:extract',
+    '-- Apply on a fresh database before running database/first-time-deployment-dml.sql.',
+    '-- Regenerate first-time file: npm run db:extract:first-time',
+    '-- Regenerate dated snapshot: npm run db:extract',
     '',
     'PRAGMA foreign_keys = ON;',
     '',
@@ -117,9 +154,11 @@ function buildDmlHeader() {
   return [
     '-- WFM Control-M consolidated production DML',
     '--',
-    '-- This script seeds baseline reference/config data after database/ddl.sql.',
-    '-- It is safe to rerun because statements use INSERT OR IGNORE / OR REPLACE.',
-    '-- Regenerate: npm run db:extract',
+    '-- FIRST-TIME DEPLOYMENT ONLY — seeds baseline reference/config data after',
+    '-- database/first-time-deployment-ddl.sql on a fresh database.',
+    '-- Do NOT re-run on live production (uses INSERT OR REPLACE and can overwrite AppConfig).',
+    '-- Regenerate first-time file: npm run db:extract:first-time',
+    '-- Regenerate dated snapshot: npm run db:extract',
     '--',
     '-- NOTE:',
     '-- 1) Client/AppServer inventory is environment-specific and should be loaded',
@@ -173,6 +212,12 @@ function writeFileSafe(filePath, content) {
 
 module.exports = {
   DEFAULT_MANIFEST,
+  FIRST_TIME_DDL_FILENAME,
+  FIRST_TIME_DML_FILENAME,
+  SNAPSHOTS_SUBDIR,
+  formatSnapshotDate,
+  snapshotFilename,
+  resolveExportTargets,
   loadManifest,
   postProcessDdl,
   extractDdlFromPrisma,

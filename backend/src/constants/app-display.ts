@@ -5,3 +5,6 @@ export const DEFAULT_APP_NAME = 'WFM Watch';
 
 /** Admin → Config: set to true to show Payroll Jobs menu and API (initial rollout: false). */
 export const PAYROLL_ENABLED_KEY = 'display.payrollEnabled';
+
+/** Admin → Config: set to true to show Payroll Monitor menu and API (initial rollout: false). */
+export const PAYROLL_MONITOR_ENABLED_KEY = 'display.payrollMonitorEnabled';

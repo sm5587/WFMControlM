@@ -1,7 +1,8 @@
--- WFM Control-M consolidated production DDL
+-- WFM Control-M — FIRST-TIME DEPLOYMENT DDL
 -- Generated from current Prisma schema (all tables/indexes/constraints).
--- Apply on a fresh database before running database/dml.sql.
--- Regenerate: npm run db:extract
+-- Apply on a fresh database before running database/first-time-deployment-dml.sql.
+-- Regenerate: npm run db:extract:first-time
+-- Dated snapshots: npm run db:extract  -> database/snapshots/ddl-YYYYMMDD.sql
 
 PRAGMA foreign_keys = ON;
 
@@ -19,7 +20,10 @@ CREATE TABLE IF NOT EXISTS "Client" (
     "db2Password" TEXT,
     "db2SslEnabled" BOOLEAN NOT NULL DEFAULT false,
     "payrollEnabled" BOOLEAN NOT NULL DEFAULT false,
-    "payrollCycle" TEXT NOT NULL DEFAULT 'weekly',
+    "payrollCycle" TEXT NOT NULL DEFAULT 'WK',
+    "payrollFileGen" TEXT NOT NULL DEFAULT '',
+    "priorPeriodEdit" BOOLEAN NOT NULL DEFAULT false,
+    "priorPeriodEditLimit" INTEGER NOT NULL DEFAULT 0,
     "payrollSyncedAt" DATETIME,
     "lastCronSyncAt" DATETIME,
     "lastCronAttemptAt" DATETIME,

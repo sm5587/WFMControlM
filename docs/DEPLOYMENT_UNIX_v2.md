@@ -14,8 +14,8 @@ This version keeps the existing `DEPLOYMENT_UNIX.md` intact and provides a clear
    - Do **not** `scp -r` your Windows dev folder.
    - Rebuild dependencies on Unix (`npm install` / image build).
 
-2. **Use bootstrap (`ddl.sql` + `dml.sql`) only when intended**
-   - `dml.sql` seeds defaults and may reset config values if used carelessly.
+2. **Use bootstrap (`first-time-deployment-*.sql`) only when intended**
+   - `first-time-deployment-dml.sql` seeds defaults and may reset config values if used carelessly.
    - Use bootstrap for fresh environment setup, not routine restarts.
 
 3. **Runtime config lives in AppConfig**

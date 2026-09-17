@@ -113,8 +113,8 @@ if npm run db:bootstrap; then
   log "SQL bootstrap via Node/Prisma succeeded"
 else
   log "Node/Prisma SQL bootstrap failed; applying DDL/DML/clients directly with sqlite3 fallback"
-  sqlite3 "$DB_PATH" < "$APP_DIR/database/ddl.sql"
-  sqlite3 "$DB_PATH" < "$APP_DIR/database/dml.sql"
+  sqlite3 "$DB_PATH" < "$APP_DIR/database/first-time-deployment-ddl.sql"
+  sqlite3 "$DB_PATH" < "$APP_DIR/database/first-time-deployment-dml.sql"
   apply_clients_dml_sql "$APP_DIR" "$DB_PATH"
   log "SQL bootstrap via sqlite3 fallback succeeded"
 fi

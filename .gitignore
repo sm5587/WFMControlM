@@ -25,7 +25,11 @@ backend/coverage/
 
 # Regenerated analysis outputs (see scripts/)
 /Watcher_Analysis.xlsx
+*.xlsx.bak
 reports/
+
+# Local LDAP / infra notes
+LDAP.txt
 
 .DS_Store
 prisma/migrations/
@@ -36,13 +40,22 @@ deprecated/
 # Local SQLite databases (environment-specific; seed via database/*.sql)
 backend/prisma/dev.db
 backend/prisma/*.db-journal
+data/sqlite/
+data/backups/
+database/snapshots/*.sql
 *.db-journal
 
 # Deploy/runtime artifacts
 VERSION
 
+# Ad-hoc DB2 probe scripts (dev only)
+backend/scripts/probe-*.ts
+backend/scripts/scan-*.ts
+backend/scripts/test-payroll-flow.ts
+
 # Local Confluence scripts (one-time use; may contain PAT)
 scripts/upload-confluence-page.py
 scripts/generate-phase1-cluster-page.py
 scripts/publish-data-catalogue-confluence.py
+scripts/publish-sql-reference-confluence.py
 scripts/__pycache__/

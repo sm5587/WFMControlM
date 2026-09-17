@@ -382,6 +382,7 @@ async function main() {
     { key: 'threshold.purgeRowsAmber',       value: '1000',  category: 'THRESHOLDS', label: 'Purge Rows Amber',       description: 'Admin purge count > X → amber highlight' },
     { key: 'threshold.defaultSuppressMins',  value: '60',    category: 'THRESHOLDS', label: 'Default Suppress (min)',  description: 'Default suppress duration in modal' },
     { key: 'threshold.stalePendingDbMins',   value: '30',    category: 'THRESHOLDS', label: 'DB Stale Pending (min)',  description: 'DB2 SQL: pending older than X mins = stale' },
+    { key: 'threshold.payrollStalledGraceMins', value: '30', category: 'THRESHOLDS', label: 'Payroll Stalled Grace (min)', description: 'After pay release time, flag store group as stalled when generator is idle and units still pending for X mins' },
 
     // ---- ENGINE ----
     { key: 'engine.pollIntervalMs',       value: '5000',    category: 'ENGINE', label: 'Poll Interval (ms)',       description: 'Pending job check interval' },
@@ -414,6 +415,7 @@ async function main() {
     { key: 'display.wsReconnectDelayMs',     value: '1000',         category: 'DISPLAY', label: 'WS Reconnect Delay (ms)', description: 'WebSocket reconnect delay in ms' },
     { key: 'display.maintenanceAdHocWindows', value: 'false',        category: 'DISPLAY', label: 'Maintenance Ad-hoc Windows Tab', description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)' },
     { key: 'display.payrollEnabled',          value: 'false',        category: 'DISPLAY', label: 'Payroll Jobs Menu',              description: 'Show Payroll Jobs screen and API (true/false)' },
+    { key: 'display.payrollMonitorEnabled',   value: 'false',        category: 'DISPLAY', label: 'Payroll Monitor Menu',           description: 'Show Payroll Monitor screen and API (true/false)' },
     { key: 'display.showUnprocPunchTab',      value: 'false',        category: 'DISPLAY', label: 'Unprocessed Punch Alerts Tab',   description: 'Show Unprocessed Punch tab on Alerts page (true/false)' },
   ];
 

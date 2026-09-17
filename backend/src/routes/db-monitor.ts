@@ -6,7 +6,6 @@
 import { Router, Request, Response } from 'express';
 import { dbMonitorService } from '../services/db-monitor-service';
 import { keeperService } from '../services/keeper-service';
-import { db2Pool } from '../services/db2-connection-pool';
 import { db2DirectService } from '../services/db2-direct-service';
 import { prisma } from '../database/prisma';
 import { escalationService } from '../services/escalation-service';
@@ -204,10 +203,6 @@ router.get('/db-clients/:clientId/batch-status/:jobType', async (req: Request, r
   }
 });
 
-// ============================================================
-// Existing SSH-based DB Monitor Endpoints
-// ============================================================
-
 // GET /api/db-monitor/status - Overview of all clients' DB2 configuration
 router.get('/status', async (_req: Request, res: Response) => {
   try {
@@ -231,75 +226,6 @@ router.get('/status', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /api/db-monitor/:id/test - Test DB2 connection for a client
-router.post('/:id/test', async (req: Request, res: Response) => {
-  try {
-    const result = await dbMonitorService.testConnection(req.params.id);
-    res.json({ success: true, data: result });
-  } catch (error: any) {
-    logger.error(`DB connection test error: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET /api/db-monitor/:id/jobs - Get job statuses from DB2
-router.get('/:id/jobs', async (req: Request, res: Response) => {
-  try {
-    const results = await dbMonitorService.getJobStatuses(req.params.id);
-    res.json({
-      success: true,
-      data: {
-        jobs: results,
-        total: results.length,
-      },
-    });
-  } catch (error: any) {
-    logger.error(`DB job status error: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET /api/db-monitor/:id/tables - Get table info from DB2
-router.get('/:id/tables', async (req: Request, res: Response) => {
-  try {
-    const tables = await dbMonitorService.getTableInfo(req.params.id);
-    res.json({ success: true, data: tables });
-  } catch (error: any) {
-    logger.error(`DB table info error: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// POST /api/db-monitor/:id/query - Execute a read-only query on client DB2
-router.post('/:id/query', async (req: Request, res: Response) => {
-  try {
-    const { sql } = req.body;
-    if (!sql || typeof sql !== 'string') {
-      return res.status(400).json({ success: false, error: 'SQL query is required' });
-    }
-
-    // Safety: only allow SELECT statements
-    const trimmed = sql.trim().toUpperCase();
-    if (!trimmed.startsWith('SELECT')) {
-      return res.status(400).json({ success: false, error: 'Only SELECT queries are allowed' });
-    }
-
-    // Block dangerous keywords
-    const blocked = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE'];
-    for (const kw of blocked) {
-      if (trimmed.includes(kw)) {
-        return res.status(400).json({ success: false, error: `${kw} statements are not allowed` });
-      }
-    }
-
-    const result = await dbMonitorService.executeQuery(req.params.id, sql);
-    res.json({ success: true, data: result });
-  } catch (error: any) {
-    logger.error(`DB query error: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 // GET /api/db-monitor/keeper - Get Keeper integration status
 router.get('/keeper', async (_req: Request, res: Response) => {
   try {
@@ -316,16 +242,6 @@ router.post('/keeper/clear-cache', async (req: Request, res: Response) => {
     const { clientId } = req.body || {};
     keeperService.clearCache(clientId);
     res.json({ success: true, message: clientId ? `Cache cleared for ${clientId}` : 'All cache cleared' });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET /api/db-monitor/pool - Connection pool statistics
-router.get('/pool', async (_req: Request, res: Response) => {
-  try {
-    const stats = db2Pool.getStats();
-    res.json({ success: true, data: stats });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

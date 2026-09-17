@@ -1,0 +1,263 @@
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Document purpose:</strong> Exact DB2 SQL statements executed by <strong>WFM Watch</strong>, organized by application menu.</p>
+<p><strong>Scope:</strong> Client DB2 only (<code>RWSUSER</code> schema and <code>SYSCAT</code>). No SQLite / local app database queries.</p>
+<p><strong>Last updated:</strong> September 2026</p>
+<p><strong>Source code:</strong> <code>backend/src/services/db2-direct-service.ts</code>, <code>payroll-service.ts</code>, <code>unprocessed-punch-service.ts</code>, <code>lib/DB2Connector.java</code></p>
+<p><strong>Repository copy:</strong> <code>database/client-db2-queries.sql</code></p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h1>WFM Watch — DB2 SQL Reference (by menu)</h1>
+
+<h2>How queries reach DB2</h2>
+<p>All production monitoring uses <strong>JDBC</strong> via <code>db2DirectService</code> → <code>DB2Connector.java</code> (direct connection to each client DB2).</p>
+
+<p>Runtime placeholders (values from Admin → Config unless noted):</p>
+<ul>
+<li><code>{days}</code> — <code>engine.batchQueryDays</code> (default 7) or <code>engine.dbMonitorBatchDays</code> (default 2) on DB Monitor</li>
+<li><code>{stalePendingDbMins}</code> — <code>threshold.stalePendingDbMins</code> (default 30)</li>
+<li><code>{maxBatchDetailRows}</code> — <code>engine.maxBatchDetailRows</code> (default 500)</li>
+<li><code>{punchLookbackDays}</code> — <code>engine.punchLookbackDays</code> (default 2)</li>
+<li><code>{weekEndDate}</code> — integer <code>yyyyMMdd</code> (user-selected or computed previous week)</li>
+<li><code>{distListId}</code> — store group from <code>STD_QUEUE_JOB.PARAM_3</code> (Payroll Monitor)</li>
+<li><code>{jobType}</code> — sanitized alphanumeric job type from UI drill-down</li>
+<li><code>{planTypeFilter}</code> — see Batch Status Details below</li>
+</ul>
+
+<h2>Menu index — DB2 usage</h2>
+<table><tbody>
+<tr><th>Menu</th><th>Route</th><th>DB2 queries</th></tr>
+<tr><td>Dashboard</td><td><code>/dashboard</code></td><td>Unprocessed punch count (widget)</td></tr>
+<tr><td>Clients</td><td><code>/clients</code></td><td>Connection test</td></tr>
+<tr><td>Cron Jobs</td><td><code>/jobs</code></td><td><em>None</em></td></tr>
+<tr><td>DB Jobs</td><td><code>/db-jobs</code></td><td>Running queue jobs</td></tr>
+<tr><td>Maintenance</td><td><code>/maintenance</code></td><td><em>None</em></td></tr>
+<tr><td>Upload Monitor</td><td><code>/file-monitor</code></td><td><em>None</em> (SSH file scan only)</td></tr>
+<tr><td>DB Jobs Monitor</td><td><code>/db-monitor</code></td><td>Batch status grouped + details</td></tr>
+<tr><td>Payroll Jobs</td><td><code>/payroll</code></td><td>Features, frequencies, calendar, generators, unit status, adj counts</td></tr>
+<tr><td>Payroll Monitor</td><td><code>/payroll-monitor</code></td><td>Queue + calendar + scoped unit counts/status</td></tr>
+<tr><td>Unprocessed Punch</td><td><code>/unprocessed-punch</code></td><td>TA_UNPROC_PUNCH aggregate count</td></tr>
+<tr><td>Alerts</td><td><code>/alerts</code></td><td>Same batch + punch queries (background engine)</td></tr>
+<tr><td>Admin</td><td><code>/admin/*</code></td><td><em>None</em></td></tr>
+</tbody></table>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Shared — Connection test</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>DB2Connector.java</code> (action <code>test</code>) · <strong>Menus:</strong> Clients (test DB2), DB Jobs Monitor (<code>GET /api/db-monitor/clients/:clientId/test</code>)</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT CURRENT TIMESTAMP AS TS FROM SYSIBM.SYSDUMMY1]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Dashboard — Unprocessed punch widget</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>UnprocessedPunch</code> · <strong>Service:</strong> <code>unprocessed-punch-service.ts</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT COUNT(1) AS PUNCH_COUNT, MIN(LAST_UPDATE_TIME) AS LAST_UPDATE_TIME, CURRENT TIMESTAMP AS DB_CURRENT_TS
+FROM RWSUSER.TA_UNPROC_PUNCH
+WHERE PROCESS_FLAG = 'N'
+AND INTEGER(PUNCH_DATE) >= INTEGER(VARCHAR_FORMAT(CURRENT DATE - {punchLookbackDays} DAYS, 'yyyyMMdd'))]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">DB Jobs — Running queue jobs</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>QueueJobs</code> · <strong>Service:</strong> <code>db2-direct-service.ts</code> → <code>getQueueJobs()</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT q.JOB_TYPE, COALESCE(EXEC_CRON, CHAR(QUEUE_SLEEP)) JOB_INTERVAL, PARAM_2, LAST_JOB_TIME, JOBS_PENDING
+FROM RWSUSER.RFX_QUEUE q
+LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID
+WHERE q.QUEUE_STATUS = 'R'
+ORDER BY JOBS_PENDING DESC, LAST_JOB_TIME]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">DB Jobs Monitor — Batch status grouped (JDBC)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>BatchStatusGrouped</code> · <strong>Service:</strong> <code>db2-direct-service.ts</code> → <code>getBatchStatusGrouped()</code></p>
+<p>Also used by: background polling (<code>index.ts</code>), Alerts escalation engine (<code>escalation-service.ts</code>).</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT JOB_TYPE, PLAN_TYPE, COUNT(*) AS CNT,
+SUM(CASE WHEN STATUS='C' THEN 1 ELSE 0 END) AS COMPLETED,
+SUM(CASE WHEN STATUS IN ('E','F') THEN 1 ELSE 0 END) AS FAILED,
+SUM(CASE WHEN STATUS='A' THEN 1 ELSE 0 END) AS ACTIVE,
+SUM(CASE WHEN STATUS IN ('N','I') THEN 1 ELSE 0 END) AS PENDING,
+SUM(CASE WHEN STATUS IN ('N','I') AND TIME_SUBMITTED IS NOT NULL AND TIME_SUBMITTED < CURRENT TIMESTAMP - {stalePendingDbMins} MINUTES THEN 1 ELSE 0 END) AS STALE_PENDING,
+MAX(TIME_SUBMITTED) AS LATEST_RUN,
+MAX(DESCRIPTION) AS DESCR
+FROM RWSUSER.BATCH_STATUS
+WHERE TIME_SUBMITTED >= CURRENT TIMESTAMP - {days} DAYS
+GROUP BY JOB_TYPE, PLAN_TYPE
+ORDER BY CNT DESC]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">DB Jobs Monitor — Batch status details (JDBC)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>BatchStatusDetails</code> · <strong>Service:</strong> <code>db2-direct-service.ts</code> → <code>getBatchStatusDetails()</code></p>
+<p><code>{planTypeFilter}</code> is built at runtime:</p>
+<ul>
+<li>Non-empty plan type: <code>RTRIM(LTRIM(CHAR(bs.PLAN_TYPE))) = '{planType}'</code> (single quotes escaped)</li>
+<li>Empty / blank group: <code>(bs.PLAN_TYPE IS NULL OR RTRIM(LTRIM(CHAR(bs.PLAN_TYPE))) = '')</code></li>
+</ul>
+<p><code>{jobType}</code> is sanitized to alphanumeric + underscore only.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT bs.BATCH_STATUS_ID, bs.JOB_TYPE, bs.STATUS, bs.START_DATE_SKEY,
+bs.TIME_SUBMITTED, bs.TIME_COMPLETED, bs.DESCRIPTION, bs.TOTAL_JOBS, bs.PENDING_JOBS, bs.UNIT_SKEY,
+CASE WHEN bs.STATUS IN ('N','I') THEN 1 ELSE 0 END AS IS_PENDING,
+CASE WHEN bs.STATUS IN ('N','I') AND bs.TIME_SUBMITTED IS NOT NULL AND bs.TIME_SUBMITTED < CURRENT TIMESTAMP - {stalePendingDbMins} MINUTES THEN 1 ELSE 0 END AS IS_STALE,
+TIMESTAMPDIFF(4, CHAR(CURRENT TIMESTAMP - bs.TIME_SUBMITTED)) AS AGE_MINS,
+(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS='S') AS SUCCESS_COUNT,
+(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS='F') AS FAIL_COUNT,
+(SELECT COUNT(1) FROM RWSUSER.RFX_QUEUE_JOB q WHERE q.BATCH_STATUS_ID = bs.BATCH_STATUS_ID AND q.JOB_ESTATUS NOT IN ('S','F')) AS OTHER_COUNT
+FROM RWSUSER.BATCH_STATUS bs
+WHERE bs.JOB_TYPE = '{jobType}' AND {planTypeFilter}
+AND bs.TIME_SUBMITTED >= CURRENT TIMESTAMP - {days} DAYS
+ORDER BY CASE WHEN bs.STATUS IN ('N','I') AND bs.TIME_SUBMITTED IS NOT NULL AND bs.TIME_SUBMITTED < CURRENT TIMESTAMP - {stalePendingDbMins} MINUTES THEN 0 WHEN bs.STATUS IN ('N','I') THEN 1 ELSE 2 END, bs.TIME_SUBMITTED DESC
+FETCH FIRST {maxBatchDetailRows} ROWS ONLY]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Product features (sync)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/Features</code> · <strong>Service:</strong> <code>payroll-service.ts</code> → <code>syncClientFeatures()</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT FEATURE_ID, FEATURE_VALUE FROM RWSUSER.PRODUCT_FEATURE
+WHERE FEATURE_ID IN ('RTA_INTEGRATION', 'PRIOR_PERIOD_EDIT', 'PRIOR_PERIOD_EDIT_LIMIT', 'PAYROLL_FILE_GEN')]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Pay frequencies</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/Frequency</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT DISTINCT FREQUENCY FROM RWSUSER.TA_PAY_FILE_GEN_PROCESS
+WHERE FREQUENCY IS NOT NULL]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Pay file generation processes</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/Processes</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT FREQUENCY, UNIT_GRP_ID, FILE_TYPE, SPLIT_PAYFILE, PRIOR_PERIOD_ADJ_LIMIT,
+REOPEN_FOR_EDITS, PAY_CONFIG_NAME
+FROM RWSUSER.TA_PAY_FILE_GEN_PROCESS]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Calendar / pay weeks</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/Calendar</code> · Built by <code>calendarPeriodsSql()</code> in <code>constants/payroll.ts</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT DISTINCT VARCHAR_FORMAT(WEEK_START_DATE, 'yyyyMMdd') AS WEEK_START_DATE,
+VARCHAR_FORMAT(WEEK_END_DATE, 'yyyyMMdd') AS WEEK_END_DATE,
+VARCHAR_FORMAT(CURRENT DATE, 'yyyyMMdd') AS TODAY_YMD
+FROM RWSUSER.RWS_CALENDAR
+WHERE YEAR_NO = YEAR(CURRENT DATE)
+OR YEAR(WEEK_END_DATE) = YEAR(CURRENT DATE)
+ORDER BY 1]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Running generators</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/Queue</code> · App filters <code>JOB_TYPE</code> in memory for regular vs adjustment job names.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT JOB_TYPE FROM RWSUSER.RFX_QUEUE
+WHERE QUEUE_STATUS = 'R']]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Unit pay file status (primary)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/UnitStatus</code> · Week filter: <code>INTEGER(u.WEEK_END_DATE) = {weekEndDate}</code></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT u.UNIT_ID, u.WEEK_START_DATE, u.WEEK_END_DATE, u.FILE_STATUS, u.FILE_ID,
+f.CREATION_TIME, f.LAST_UPDATE_TIME, f.FILE_NAME
+FROM RWSUSER.TA_UNIT_PAY_STATUS u
+LEFT JOIN RWSUSER.TA_PAY_FILE f ON f.FILE_ID = u.FILE_ID
+WHERE INTEGER(u.WEEK_END_DATE) = {weekEndDate}
+ORDER BY u.UNIT_ID]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Unit pay file status (fallback)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/UnitStatusFallback</code> · Used when the join to <code>TA_PAY_FILE</code> fails.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT UNIT_ID, WEEK_START_DATE, WEEK_END_DATE, FILE_STATUS, FILE_ID
+FROM RWSUSER.TA_UNIT_PAY_STATUS
+WHERE INTEGER(WEEK_END_DATE) = {weekEndDate}
+ORDER BY UNIT_ID]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Jobs — Adjustment outstanding counts</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/AdjDelta</code> · Record counts only; no pay amounts.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT
+(SELECT COUNT(*) FROM RWSUSER.TA_COST_SEG_DIFF WHERE INTEGER(PAY_WEEK_END_DATE) = {weekEndDate}) AS COST_SEG_CNT,
+(SELECT COUNT(*) FROM RWSUSER.TA_DIFF_PAY_DETAIL WHERE INTEGER(PAY_WEEK_END_DATE) = {weekEndDate}) AS DIFF_PAY_CNT
+FROM SYSIBM.SYSDUMMY1]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Monitor — Running pay generators (with store group)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/MonitorQueue</code> · App keeps regular jobs with non-empty <code>PARAM_3</code> (<code>DIST_LIST_ID</code>).</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT q.QUEUE_ID, q.JOB_TYPE, q.EXEC_CRON, q.QUEUE_SLEEP,
+q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS, s.PARAM_3 AS DIST_LIST_ID
+FROM RWSUSER.RFX_QUEUE q
+LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID
+WHERE q.QUEUE_STATUS = 'R']]></ac:plain-text-body></ac:structured-macro>
+<p>Calendar query is identical to Payroll Jobs (above). Runs in parallel with this query per client.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Monitor — Scoped unit counts (per store group)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/MonitorCounts</code> · Uses previous completed pay week as <code>{weekEndDate}</code>.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT COUNT(*) AS TOTAL_CNT,
+SUM(CASE WHEN UPPER(FILE_STATUS) = 'F' THEN 1 ELSE 0 END) AS GENERATED_CNT
+FROM RWSUSER.TA_UNIT_PAY_STATUS u
+WHERE INTEGER(u.WEEK_END_DATE) = {weekEndDate}
+AND EXISTS (SELECT 1 FROM RWSUSER.RWS_DIST_STORE_MAP m
+WHERE m.UNIT_ID = u.UNIT_ID
+AND INTEGER(m.DIST_LIST_ID) = {distListId}
+AND INTEGER(m.EFF_DATESKEY) <= {weekEndDate} AND INTEGER(m.END_DATESKEY) >= {weekEndDate})]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Monitor — Scoped unit detail (primary + fallback)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>Payroll/UnitStatus</code> / <code>Payroll/UnitStatusFallback</code> · Detail pane for one store group.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT u.UNIT_ID, u.WEEK_START_DATE, u.WEEK_END_DATE, u.FILE_STATUS, u.FILE_ID,
+f.CREATION_TIME, f.LAST_UPDATE_TIME, f.FILE_NAME
+FROM RWSUSER.TA_UNIT_PAY_STATUS u
+LEFT JOIN RWSUSER.TA_PAY_FILE f ON f.FILE_ID = u.FILE_ID
+WHERE INTEGER(u.WEEK_END_DATE) = {weekEndDate}
+AND EXISTS (SELECT 1 FROM RWSUSER.RWS_DIST_STORE_MAP m
+WHERE m.UNIT_ID = u.UNIT_ID
+AND INTEGER(m.DIST_LIST_ID) = {distListId}
+AND INTEGER(m.EFF_DATESKEY) <= {weekEndDate} AND INTEGER(m.END_DATESKEY) >= {weekEndDate})
+ORDER BY u.UNIT_ID
+
+-- Fallback (no TA_PAY_FILE join):
+SELECT UNIT_ID, WEEK_START_DATE, WEEK_END_DATE, FILE_STATUS, FILE_ID
+FROM RWSUSER.TA_UNIT_PAY_STATUS u
+WHERE INTEGER(u.WEEK_END_DATE) = {weekEndDate}
+AND EXISTS (SELECT 1 FROM RWSUSER.RWS_DIST_STORE_MAP m
+WHERE m.UNIT_ID = u.UNIT_ID
+AND INTEGER(m.DIST_LIST_ID) = {distListId}
+AND INTEGER(m.EFF_DATESKEY) <= {weekEndDate} AND INTEGER(m.END_DATESKEY) >= {weekEndDate})
+ORDER BY u.UNIT_ID]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Unprocessed Punch — Aggregate count</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>UnprocessedPunch</code> · Same SQL as Dashboard widget and Alerts live tab.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT COUNT(1) AS PUNCH_COUNT, MIN(LAST_UPDATE_TIME) AS LAST_UPDATE_TIME, CURRENT TIMESTAMP AS DB_CURRENT_TS
+FROM RWSUSER.TA_UNPROC_PUNCH
+WHERE PROCESS_FLAG = 'N'
+AND INTEGER(PUNCH_DATE) >= INTEGER(VARCHAR_FORMAT(CURRENT DATE - {punchLookbackDays} DAYS, 'yyyyMMdd'))]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Alerts — Background engine (no extra SQL)</ac:parameter><ac:rich-text-body>
+<p>The escalation engine reuses:</p>
+<ul>
+<li><strong>Batch status grouped</strong> — same SQL as DB Jobs Monitor</li>
+<li><strong>Unprocessed punch count</strong> — same SQL as Unprocessed Punch menu (from in-memory cache when available)</li>
+</ul>
+</ac:rich-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Connector only — WFM table discovery (not wired to API)</ac:parameter><ac:rich-text-body>
+<p><strong>Caller:</strong> <code>DB2Connector.java</code> action <code>tables</code> — available in connector, not exposed via a menu route today.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT TABSCHEMA, TABNAME, CARD AS ROW_COUNT
+FROM SYSCAT.TABLES
+WHERE TYPE = 'T'
+AND (TABNAME LIKE '%JOB%' OR TABNAME LIKE '%BATCH%'
+  OR TABNAME LIKE '%SCHEDULE%' OR TABNAME LIKE '%TASK%'
+  OR TABNAME LIKE '%WFM%' OR TABNAME LIKE '%CRON%')
+ORDER BY TABSCHEMA, TABNAME
+FETCH FIRST 100 ROWS ONLY]]></ac:plain-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>
+
+<h2>DB2 tables referenced</h2>
+<table><tbody>
+<tr><th>Table</th><th>Menu(s)</th></tr>
+<tr><td><code>RWSUSER.BATCH_STATUS</code></td><td>DB Jobs Monitor, Alerts</td></tr>
+<tr><td><code>RWSUSER.RFX_QUEUE_JOB</code></td><td>DB Jobs Monitor (detail subqueries)</td></tr>
+<tr><td><code>RWSUSER.RFX_QUEUE</code></td><td>DB Jobs, Payroll Jobs, Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.STD_QUEUE_JOB</code></td><td>DB Jobs, Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.PRODUCT_FEATURE</code></td><td>Payroll Jobs</td></tr>
+<tr><td><code>RWSUSER.TA_PAY_FILE_GEN_PROCESS</code></td><td>Payroll Jobs</td></tr>
+<tr><td><code>RWSUSER.RWS_CALENDAR</code></td><td>Payroll Jobs, Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.TA_UNIT_PAY_STATUS</code></td><td>Payroll Jobs, Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.TA_PAY_FILE</code></td><td>Payroll Jobs, Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.TA_COST_SEG_DIFF</code></td><td>Payroll Jobs</td></tr>
+<tr><td><code>RWSUSER.TA_DIFF_PAY_DETAIL</code></td><td>Payroll Jobs</td></tr>
+<tr><td><code>RWSUSER.RWS_DIST_STORE_MAP</code></td><td>Payroll Monitor</td></tr>
+<tr><td><code>RWSUSER.TA_UNPROC_PUNCH</code></td><td>Dashboard, Unprocessed Punch, Alerts</td></tr>
+<tr><td><code>SYSCAT.TABLES</code></td><td>Connector only (not API-wired)</td></tr>
+<tr><td><code>SYSIBM.SYSDUMMY1</code></td><td>Connection test, Payroll adj counts</td></tr>
+</tbody></table>
+
+<ac:structured-macro ac:name="note"><ac:rich-text-body>
+<p>All DB2 access is <strong>read-only SELECT</strong>. WFM Watch does not INSERT, UPDATE, or DELETE on client DB2.</p>
+</ac:rich-text-body></ac:structured-macro>

@@ -484,28 +484,6 @@ export const clientsApi = {
 
 // ---- DB Monitor ----
 export const dbMonitorApi = {
-  getStatus: (): Promise<ApiResponse<any>> =>
-    api.get('/db-monitor/status'),
-
-  testConnection: (id: string): Promise<ApiResponse<any>> =>
-    api.post(`/db-monitor/${id}/test`),
-
-  getJobs: (id: string): Promise<ApiResponse<any>> =>
-    api.get(`/db-monitor/${id}/jobs`),
-
-  getTables: (id: string): Promise<ApiResponse<any>> =>
-    api.get(`/db-monitor/${id}/tables`),
-
-  executeQuery: (id: string, sql: string): Promise<ApiResponse<any>> =>
-    api.post(`/db-monitor/${id}/query`, { sql }),
-
-  getKeeperStatus: (): Promise<ApiResponse<any>> =>
-    api.get('/db-monitor/keeper'),
-
-  clearKeeperCache: (clientId?: string): Promise<ApiResponse<any>> =>
-    api.post('/db-monitor/keeper/clear-cache', { clientId }),
-
-  // Direct DB2 connection endpoints
   getDbClients: (): Promise<ApiResponse<any>> =>
     api.get('/db-monitor/db-clients'),
 
@@ -527,11 +505,26 @@ export const payrollApi = {
   getClients: (): Promise<ApiResponse<any>> =>
     api.get('/payroll/clients'),
 
-  getPayrollStatus: (clientId: string): Promise<ApiResponse<any>> =>
-    api.get(`/payroll/${clientId}`, { timeout: 120000 }),
+  getPayrollStatus: (clientId: string, weekEnd?: string, frequency?: string): Promise<ApiResponse<any>> =>
+    api.get(`/payroll/${encodeURIComponent(clientId)}`, {
+      timeout: 120000,
+      params: {
+        ...(weekEnd ? { weekEnd } : {}),
+        ...(frequency ? { frequency } : {}),
+      },
+    }),
 
   syncClients: (): Promise<ApiResponse<any>> =>
     api.post('/payroll/sync-clients'),
+
+  getMonitorSnapshot: (): Promise<ApiResponse<any>> =>
+    api.get('/payroll/monitor', { timeout: 180000 }),
+
+  getMonitorDetail: (clientId: string, distListId: string): Promise<ApiResponse<any>> =>
+    api.get(`/payroll/monitor/${encodeURIComponent(clientId)}`, {
+      timeout: 120000,
+      params: { distListId },
+    }),
 };
 
 // ---- DB Jobs (RFX_QUEUE) ----
@@ -566,7 +559,7 @@ export const escalationsApi = {
   getAll: (): Promise<ApiResponse<any[]>> =>
     api.get('/escalations'),
 
-  getReport: (params: { year: number; month: number; cluster?: string; clientId?: string }): Promise<ApiResponse<any>> =>
+  getReport: (params: { year: number; month?: number; quarter?: number; cluster?: string; clientId?: string }): Promise<ApiResponse<any>> =>
     api.get('/escalations/report', { params }),
 
   acknowledge: (id: string, userId?: string): Promise<ApiResponse> =>

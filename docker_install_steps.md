@@ -65,14 +65,15 @@ docker build -f backend/Dockerfile.prod -t "$REGISTRY/wfm-controlm-backend:$RELE
 docker build -f frontend/Dockerfile.prod -t "$REGISTRY/wfm-controlm-frontend:$RELEASE_TAG" ./frontend
 ```
 
-Optional local smoke test:
+Optional local smoke test (host SQLite bind mount):
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml ps
-curl http://localhost:4000/health
-curl -I http://localhost:3000
-docker compose -f docker-compose.prod.yml down
+mkdir -p ./data/sqlite/prisma
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.smoke.override.yml up -d --build
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps
+curl http://localhost:4015/health
+curl -I http://localhost:3015
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml down
 ```
 
 ---
@@ -131,8 +132,8 @@ docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml ps
 Run once for fresh environment:
 
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/ddl.sql
-docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/dml.sql
+docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-ddl.sql
+docker compose -f docker-compose.prod.yml -f docker-compose.registry.yml exec backend node scripts/apply-sql.js ../database/first-time-deployment-dml.sql
 ```
 
 ---

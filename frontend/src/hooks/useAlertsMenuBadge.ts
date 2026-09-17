@@ -7,7 +7,7 @@ import { useStalePunchRows } from './useStalePunchRows';
 
 /**
  * Whether the Alerts nav item should show its attention indicator.
- * Matches the Escalated tab badge: open job escalations + open/acked punch alerts.
+ * Active = open or acknowledged (not suppressed/resolved). Matches Escalated tab badge.
  */
 export function useAlertsMenuBadge() {
   const { getInt } = useConfig();
@@ -25,7 +25,9 @@ export function useAlertsMenuBadge() {
   });
 
   const count = useMemo(() => {
-    const openEscalated = escalated.filter(a => a.status === 'OPEN').length;
+    const activeEscalated = escalated.filter(
+      a => a.status === 'OPEN' || a.status === 'ACKNOWLEDGED',
+    ).length;
 
     let punchOpen = 0;
     let punchAcked = 0;
@@ -35,7 +37,7 @@ export function useAlertsMenuBadge() {
       else if (st?.status !== 'SUPPRESSED') punchOpen++;
     }
 
-    return openEscalated + punchOpen + punchAcked;
+    return activeEscalated + punchOpen + punchAcked;
   }, [escalated, stalePunchRows, punchAlertStatuses]);
 
   return { showBadge: count > 0, count };

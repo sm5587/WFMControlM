@@ -70,12 +70,13 @@ Edit `.env` and set at minimum:
 
 | Variable | Example | Notes |
 | -------- | ------- | ----- |
-| `DATABASE_URL` | `file:./dev.db` | Relative to `backend/prisma/` (inside container: `/app/prisma/dev.db`) |
+| `DATABASE_URL` | `file:../../data/sqlite/prisma/dev.db` | Native dev path (relative to `backend/prisma/`). Docker uses smoke override → `file:./dev.db` in container |
+| `WFM_SQLITE_HOST_DIR` | `./data/sqlite` | Host bind mount; DB file at `./data/sqlite/prisma/dev.db` |
 | `CONFIG_ENCRYPTION_KEY` | 64-char hex | Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 
 Other runtime settings (SMTP, JWT, ports, DB2 paths) live in **AppConfig** in the database and are edited via **Admin → Config** after first login.
 
-> **Windows path note:** If your `.env` uses a full Windows path for `DATABASE_URL`, use the smoke override when starting (Step 4) so the container uses `file:./dev.db` inside the volume instead.
+> **Host DB:** SQLite lives on the host at `./data/sqlite/prisma/dev.db`, not inside the Docker image or a named volume. Use `docker-compose.prod-hostdb.yml` (Step 4).
 
 ---
 
@@ -135,32 +136,36 @@ docker compose -f docker-compose.prod.yml -f docker-compose.mailpit.yml up -d
 
 ## Step 4 — Start the stack
 
-### Standard start (production compose)
+### Recommended — host SQLite bind mount (local and production)
+
+Ensure the host DB directory exists (first time only):
 
 ```powershell
-docker compose -f docker-compose.prod.yml up -d
+New-Item -ItemType Directory -Force -Path .\data\sqlite\prisma
+# Optional: copy an existing dev DB
+Copy-Item .\backend\prisma\dev.db .\data\sqlite\prisma\dev.db -ErrorAction SilentlyContinue
 ```
 
-### Local smoke test on Windows (recommended first time)
-
-If `.env` has a Windows-style `DATABASE_URL`, add the override so SQLite uses the container volume:
+Start with host DB + smoke override (forces `DATABASE_URL=file:./dev.db` inside the container):
 
 ```powershell
-docker compose -f docker-compose.prod.yml -f docker-compose.smoke.override.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.smoke.override.yml up -d --build
 ```
 
 Check status:
 
 ```powershell
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f backend
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml ps
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml logs -f backend
 ```
+
+Host DB path: `./data/sqlite/prisma/dev.db` (set `WFM_SQLITE_HOST_DIR` in `.env` to change the parent folder).
 
 ---
 
 ## Step 5 — First-time database bootstrap
 
-On **first install**, the backend creates an empty SQLite file in the `backend_prisma` volume and applies Prisma migrations automatically.
+On **first install**, the backend creates an empty SQLite file at `./data/sqlite/prisma/dev.db` (when using hostdb compose) and applies Prisma migrations automatically.
 
 You still need **seed / reference data** (RBAC, AppConfig defaults, admin user) once.
 
@@ -172,11 +177,11 @@ The production image does **not** include the `database/` folder. Mount it for o
 # One-time: add to compose or run with an extra mount (PowerShell, repo root)
 docker compose -f docker-compose.prod.yml run --rm `
   -v "${PWD}/database:/app/database:ro" `
-  backend node scripts/apply-sql.js database/ddl.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-ddl.sql
 
 docker compose -f docker-compose.prod.yml run --rm `
   -v "${PWD}/database:/app/database:ro" `
-  backend node scripts/apply-sql.js database/dml.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 ```
 
 ### Option B — Prisma seed (dev-style, may include sample data)
@@ -189,19 +194,16 @@ Requires `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env` for the seed script.
 
 ### Option C — Reuse an existing Windows `dev.db`
 
-If you already have data in `backend\prisma\dev.db` from native dev:
+If you already have data in `backend\prisma\dev.db` from older native dev:
 
 ```powershell
-# Start backend once so the volume exists, then stop it
-docker compose -f docker-compose.prod.yml up -d backend
-docker compose -f docker-compose.prod.yml stop backend
+New-Item -ItemType Directory -Force -Path .\data\sqlite\prisma
+Copy-Item .\backend\prisma\dev.db .\data\sqlite\prisma\dev.db
 
-# Copy your existing database into the container volume
-docker cp backend\prisma\dev.db wfm-controlm-api:/app/prisma/dev.db
-
-# Start everything
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml -f docker-compose.smoke.override.yml up -d
 ```
+
+Native dev and Docker then share the same file when `.env` uses `DATABASE_URL="file:../../data/sqlite/prisma/dev.db"`.
 
 ---
 
@@ -387,7 +389,7 @@ Replace `wfmcontrolm_backend_prisma` with the actual volume name from `docker vo
 | Import client rows | `database/clients-dml.sql` via apply-sql (Step 5 pattern) |
 | Fix DateTime-as-TEXT on Linux/Docker | `database/fix-client-datetimes.sql` |
 | Regenerate ddl/dml from schema | On dev machine: `npm run db:extract` — see [dbextract.md](dbextract.md) |
-| Full schema + defaults refresh | `ddl.sql` then `dml.sql` (fresh DB only; `dml.sql` uses `INSERT OR REPLACE`) |
+| Full schema + defaults refresh | `first-time-deployment-ddl.sql` then `first-time-deployment-dml.sql` (fresh DB only) |
 
 ---
 
@@ -400,7 +402,8 @@ Replace `wfmcontrolm_backend_prisma` with the actual volume name from `docker vo
 | Empty clients / config | Fresh volume, no bootstrap | Run Step 5 (ddl/dml or copy existing dev.db) |
 | Port conflict on 3015/4015 | Local dev already on 3005/4005, or another app | Stop the other stack or change compose port mapping |
 | `apply-sql.js` file not found | `database/` not in image | Mount `./database:/app/database:ro` or `docker cp` the file |
-| Windows `.env` DB path breaks container | Host path not visible in Linux container | Use `docker-compose.smoke.override.yml` or `file:./dev.db` |
+| Windows `.env` DB path breaks container | Host path not visible in Linux container | Use `docker-compose.prod-hostdb.yml` + `docker-compose.smoke.override.yml` |
+| `schema.prisma` not found on start | Whole `prisma/` dir was bind-mounted | Hostdb compose mounts only `dev.db`, not the full `prisma/` folder |
 
 ---
 
@@ -411,11 +414,12 @@ Replace `wfmcontrolm_backend_prisma` with the actual volume name from `docker vo
 | `backend/Dockerfile.prod` | Production backend multi-stage build |
 | `frontend/Dockerfile.prod` | Production frontend (Nginx) |
 | `docker-compose.prod.yml` | Main production stack |
+| `docker-compose.prod-hostdb.yml` | Host bind mount for `./data/sqlite/prisma/dev.db` |
 | `docker-compose.smoke.override.yml` | Forces `DATABASE_URL=file:./dev.db` for local smoke test |
 | `docker-compose.mailpit.yml` | Optional local SMTP catcher |
 | `scripts/build-docker-wsl.sh` | Build images from WSL |
 | `backend/scripts/apply-sql.js` | Apply `.sql` files to SQLite via Prisma |
-| `database/ddl.sql`, `database/dml.sql` | Schema + seed SQL |
+| `database/first-time-deployment-ddl.sql`, `database/first-time-deployment-dml.sql` | Schema + seed SQL |
 | `.env` | Bootstrap only (`DATABASE_URL`, `CONFIG_ENCRYPTION_KEY`) |
 
 ---

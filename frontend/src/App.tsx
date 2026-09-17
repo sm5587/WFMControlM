@@ -13,6 +13,7 @@ import AlertCenter from './components/Alerts/AlertCenter';
 import ClientsList from './components/Clients/ClientsList';
 import DBMonitor from './components/DBMonitor/DBMonitor';
 import PayrollJobs from './components/Payroll/PayrollJobs';
+import PayrollMonitor from './components/Payroll/PayrollMonitor';
 import DBJobs from './components/DBJobs/DBJobs';
 import AdminUsers from './components/Admin/AdminUsers';
 import AdminProfiles from './components/Admin/AdminProfiles';
@@ -43,7 +44,7 @@ class RouteErrorBoundary extends React.Component<
 }
 import UnprocessedPunch from './components/UnprocessedPunch/UnprocessedPunch';
 import { ConfigProvider, useConfig } from './contexts/ConfigContext';
-import { PAYROLL_ENABLED_KEY } from './constants/app-display';
+import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from './constants/app-display';
 
 /** Allowed routes (must be accessed through menu only) */
 const ALLOWED_ROUTES = [
@@ -55,6 +56,7 @@ const ALLOWED_ROUTES = [
   '/maintenance',
   '/file-monitor',
   '/payroll',
+  '/payroll-monitor',
   '/unprocessed-punch',
   '/alerts',
   '/admin/users',
@@ -135,7 +137,15 @@ function UnauthenticatedGate() {
   return <LoginPage ssoEmail={ssoStatus?.email || undefined} />;
 }
 
-function PayrollRoute() {
+function PayrollGate({
+  configKey,
+  permission,
+  children,
+}: {
+  configKey: string;
+  permission: string;
+  children: React.ReactNode;
+}) {
   const { getBool, loaded } = useConfig();
   if (!loaded) {
     return (
@@ -144,12 +154,12 @@ function PayrollRoute() {
       </div>
     );
   }
-  if (!getBool(PAYROLL_ENABLED_KEY, false)) {
+  if (!getBool(configKey, false)) {
     return <Navigate to="/dashboard" replace />;
   }
   return (
-    <PermissionRoute permission="PAYROLL_VIEW">
-      <PayrollJobs />
+    <PermissionRoute permission={permission}>
+      {children}
     </PermissionRoute>
   );
 }
@@ -211,7 +221,8 @@ function AppRoutes() {
               </RouteErrorBoundary>
             </PermissionRoute>
           } />
-          <Route path="payroll" element={<PayrollRoute />} />
+          <Route path="payroll" element={<PayrollGate configKey={PAYROLL_ENABLED_KEY} permission="PAYROLL_VIEW"><PayrollJobs /></PayrollGate>} />
+          <Route path="payroll-monitor" element={<PayrollGate configKey={PAYROLL_MONITOR_ENABLED_KEY} permission="PAYROLL_MONITOR_VIEW"><PayrollMonitor /></PayrollGate>} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />
           <Route path="alerts" element={<PermissionRoute permission="ALERTS_VIEW"><AlertCenter /></PermissionRoute>} />
           <Route path="admin/users" element={<PermissionRoute permission="USERS_VIEW"><AdminUsers /></PermissionRoute>} />

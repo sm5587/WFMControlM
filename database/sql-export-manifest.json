@@ -1,5 +1,5 @@
 {
-  "description": "Tables exported into database/dml.sql. Add a section here when seeding a new reference table.",
+  "description": "Tables exported into database/first-time-deployment-dml.sql and dated database/snapshots/dml-*.sql. Add a section here when seeding a new reference table.",
   "dml": {
     "sections": [
       {

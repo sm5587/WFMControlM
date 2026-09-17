@@ -266,9 +266,26 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response) => {
         }
         const done = await completeUserLogin(user, ip, res, 'ldap');
         if (done) return done;
-      } else if (!configService.getBool('infra.ldapAllowLocalFallback', true)) {
-        logger.warn(`[LOGIN] LDAP failed, local fallback disabled user=${username} ip=${ip}`);
-        return res.status(401).json({ success: false, error: 'Invalid credentials' });
+      } else {
+        const ldapFail = ldapResult;
+        const failDetail = [
+          ldapFail.reason && `reason=${ldapFail.reason}`,
+          ldapFail.mode && `mode=${ldapFail.mode}`,
+          ldapFail.phase && `phase=${ldapFail.phase}`,
+          ldapFail.ldapCode != null && `ldapCode=${ldapFail.ldapCode}`,
+          ldapFail.detail && `detail=${ldapFail.detail}`,
+        ].filter(Boolean).join(' ');
+
+        if (!configService.getBool('infra.ldapAllowLocalFallback', true)) {
+          logger.warn(
+            `[LOGIN] LDAP failed, local fallback disabled user=${username} ip=${ip} ${failDetail}`,
+          );
+          return res.status(401).json({ success: false, error: 'Invalid credentials' });
+        }
+
+        logger.warn(
+          `[LOGIN] LDAP failed, falling back to local auth user=${username} ip=${ip} ${failDetail}`,
+        );
       }
     }
     // ────────────────────────────────────────────────────────────────────────

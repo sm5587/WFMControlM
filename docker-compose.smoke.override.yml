@@ -1,4 +1,5 @@
-# Local smoke-test override (Windows host .env uses a Windows SQLite path).
+# Local smoke-test override — use with docker-compose.prod-hostdb.yml.
+# Forces container-relative DATABASE_URL; host file is WFM_SQLITE_HOST_DIR/prisma/dev.db.
 services:
   backend:
     environment:

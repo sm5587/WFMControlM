@@ -49,7 +49,9 @@ export const APP_FUNCTIONS: Record<string, FunctionDef> = {
   MONITOR_VIEW:       { id: 'MONITOR_VIEW',       module: 'Monitor',   name: 'Monitor',                         sortOrder: 60 },
 
   // ── Payroll Jobs (menu: Payroll Jobs) ───────────────────
-  PAYROLL_VIEW:       { id: 'PAYROLL_VIEW',       module: 'Payroll Jobs', name: 'Payroll Jobs',               sortOrder: 70 },
+  PAYROLL_VIEW:         { id: 'PAYROLL_VIEW',         module: 'Payroll Jobs',    name: 'Payroll Jobs',              sortOrder: 70 },
+  PAYROLL_MONITOR_VIEW: { id: 'PAYROLL_MONITOR_VIEW', module: 'Payroll Monitor', name: 'Payroll Monitor',           sortOrder: 71 },
+  PAYROLL_SYNC:         { id: 'PAYROLL_SYNC',         module: 'Payroll Jobs',    name: 'Payroll Jobs — Sync Clients', description: 'Sync payroll product features from DB2', sortOrder: 72 },
 
   // ── Unprocessed Punch (menu: Unprocessed Punch) ─────────
   UNPROC_PUNCH_VIEW:         { id: 'UNPROC_PUNCH_VIEW',         module: 'Unprocessed Punch', name: 'Unprocessed Punch',                      sortOrder: 75 },

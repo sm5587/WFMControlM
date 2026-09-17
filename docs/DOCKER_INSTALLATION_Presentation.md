@@ -157,7 +157,7 @@ Backend auto-runs **Prisma migrations** on start. You still need **seed data** o
 
 | Option | Command / action |
 | ------ | ---------------- |
-| **A — SQL files** | Mount `database/`, run `apply-sql.js` for `ddl.sql` + `dml.sql` |
+| **A — SQL files** | Mount `database/`, run `apply-sql.js` for first-time-deployment-*.sql |
 | **B — Prisma seed** | `docker compose exec backend npx prisma db seed` |
 | **C — Copy existing DB** | `docker cp backend\prisma\dev.db wfm-controlm-api:/app/prisma/dev.db` |
 
@@ -166,7 +166,7 @@ Example (Option A):
 ```powershell
 docker compose -f docker-compose.prod.yml run --rm `
   -v "${PWD}/database:/app/database:ro" `
-  backend node scripts/apply-sql.js database/dml.sql
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
 ```
 
 ---
@@ -310,7 +310,7 @@ services:
 | Import clients | `database/clients-dml.sql` via apply-sql |
 | Fix DateTime-as-TEXT | `database/fix-client-datetimes.sql` |
 | Regenerate ddl/dml | `npm run db:extract` (see dbextract.md) |
-| Fresh schema + defaults | `ddl.sql` then `dml.sql` (new DB only) |
+| Fresh schema + defaults | first-time-deployment-*.sql (new DB only) |
 
 ---
 
@@ -337,7 +337,7 @@ services:
 | `docker-compose.smoke.override.yml` | Local `DATABASE_URL` override |
 | `scripts/build-docker-wsl.sh` | Build from WSL |
 | `backend/scripts/apply-sql.js` | Apply SQL to SQLite |
-| `database/ddl.sql`, `dml.sql` | Schema + seed |
+| `database/first-time-deployment-*.sql` | Schema + seed (first deploy only) |
 
 ---
 

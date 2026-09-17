@@ -12,7 +12,6 @@ import { connectDatabase, disconnectDatabase } from './database/prisma';
 import { configService } from './services/config-service';
 import { scheduler } from './engine/scheduler';
 import { alertService } from './services/alert-service';
-import { db2Pool } from './services/db2-connection-pool';
 import { db2DirectService } from './services/db2-direct-service';
 import { keeperService } from './services/keeper-service';
 import { purgeService } from './services/purge-service';
@@ -330,7 +329,6 @@ ${config.nodeEnv !== 'production' ? `║   Email preview: http://localhost:${con
     
     await scheduler.stop();
     await db2DirectService.shutdown();
-    await db2Pool.shutdown();
     await disconnectDatabase();
     
     httpServer.close(() => {

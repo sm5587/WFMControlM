@@ -1,7 +1,6 @@
 // ============================================================
 // Payroll Routes
-// Endpoints for querying TA_UNIT_PAY_STATUS per client
-// Uses db2DirectService (Java JDBC) — same as DB Monitor
+// Regular / adjustment pay-file tracking per client
 // ============================================================
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -10,39 +9,49 @@ import { db2DirectService } from '../services/db2-direct-service';
 import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
 import { configService } from '../services/config-service';
-import { PAYROLL_ENABLED_KEY } from '../constants/app-display';
+import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
+import { parseFrequencies } from '../constants/payroll';
 import { requirePermission } from '../middleware';
 
 const router = Router();
 
-function requirePayrollEnabled(req: Request, res: Response, next: NextFunction): void {
+function requirePayrollJobsEnabled(req: Request, res: Response, next: NextFunction): void {
   if (!configService.getBool(PAYROLL_ENABLED_KEY, false)) {
-    res.status(404).json({ success: false, error: 'Payroll feature is disabled' });
+    res.status(404).json({ success: false, error: 'Payroll Jobs feature is disabled' });
     return;
   }
   next();
 }
 
-router.use(requirePayrollEnabled);
-router.use(requirePermission('PAYROLL_VIEW', 'read'));
+function requirePayrollMonitorEnabled(req: Request, res: Response, next: NextFunction): void {
+  if (!configService.getBool(PAYROLL_MONITOR_ENABLED_KEY, false)) {
+    res.status(404).json({ success: false, error: 'Payroll Monitor feature is disabled' });
+    return;
+  }
+  next();
+}
 
-// ============================================================
-// Background sync: query each client DB2 for RTA_INTEGRATION
-// feature flag, persist results so clients list is served locally
-// ============================================================
+const serverCodeAliases: Record<string, string> = {
+  HMG: 'HNMG',
+};
+
+function resolveClientId(
+  c: { clientId: string; serverCode: string },
+  existingIds: Set<string>,
+): string | null {
+  const resolvedCode = serverCodeAliases[c.serverCode.toUpperCase()] || c.serverCode.toUpperCase();
+  if (existingIds.has(resolvedCode)) return resolvedCode;
+  if (existingIds.has(c.serverCode.toUpperCase())) return c.serverCode.toUpperCase();
+  if (existingIds.has(c.clientId.toUpperCase())) return c.clientId.toUpperCase();
+  return null;
+}
+
 async function syncPayrollClients(): Promise<void> {
   const allClients = await db2DirectService.getAvailableClients();
-  logger.info(`Payroll sync: checking ${allClients.length} clients for RTA_INTEGRATION`);
+  logger.info(`Payroll sync: checking ${allClients.length} clients for payroll PFs`);
 
-  // Build a lookup of existing clients by clientId so we can match
-  // DB connection file serverCodes (WAW, BLK) to seeded records
   const dbClients = await prisma.client.findMany({ select: { clientId: true } });
   const existingIds = new Set(dbClients.map(c => c.clientId.toUpperCase()));
-
-  // Alias map for serverCodes that differ from seed cids
-  const serverCodeAliases: Record<string, string> = {
-    'HMG': 'HNMG',
-  };
 
   const CONCURRENCY = 5;
   let idx = 0;
@@ -52,41 +61,30 @@ async function syncPayrollClients(): Promise<void> {
     const c = allClients[idx++];
 
     try {
-      // Resolve the correct clientId: prefer serverCode match, then alias, then filename
-      const resolvedCode = serverCodeAliases[c.serverCode.toUpperCase()] || c.serverCode.toUpperCase();
-      const matchedId = existingIds.has(resolvedCode)
-        ? resolvedCode
-        : existingIds.has(c.serverCode.toUpperCase())
-          ? c.serverCode.toUpperCase()
-          : existingIds.has(c.clientId.toUpperCase())
-            ? c.clientId.toUpperCase()
-            : null;
-
-      const sql = `SELECT FEATURE_VALUE FROM RWSUSER.PRODUCT_FEATURE ` +
-        `WHERE feature_id LIKE 'RTA_INTEGRATION' FETCH FIRST 1 ROW ONLY`;
-      const result = await db2DirectService.queryClient(c.clientId, sql, 'Payroll/Route');
-
-      const enabled =
-        result.success && result.rows && result.rows.length > 0
-          ? (result.rows[0].FEATURE_VALUE || '').trim().toUpperCase() === 'Y'
-          : false;
+      const matchedId = resolveClientId(c, existingIds);
+      const features = await payrollService.syncClientFeatures(c.clientId);
+      const data = {
+        payrollEnabled: features.payrollEnabled,
+        payrollCycle: features.payrollCycle,
+        payrollFileGen: features.payrollFileGen,
+        priorPeriodEdit: features.priorPeriodEdit,
+        priorPeriodEditLimit: features.priorPeriodEditLimit,
+        payrollSyncedAt: new Date(),
+      };
 
       if (matchedId) {
-        // Update the existing seeded client record
         await prisma.client.update({
           where: { clientId: matchedId },
-          data: { payrollEnabled: enabled, payrollSyncedAt: new Date() },
+          data,
         });
       } else {
-        // No matching seed record — upsert by connection file clientId
         await prisma.client.upsert({
           where: { clientId: c.clientId },
-          update: { payrollEnabled: enabled, payrollSyncedAt: new Date() },
+          update: data,
           create: {
             clientId: c.clientId,
             name: c.clientId,
-            payrollEnabled: enabled,
-            payrollSyncedAt: new Date(),
+            ...data,
             db2Host: c.host,
             db2Port: parseInt(c.port || '50000', 10),
             db2Database: c.database,
@@ -94,7 +92,11 @@ async function syncPayrollClients(): Promise<void> {
         });
       }
 
-      logger.info(`Payroll sync: ${c.clientId} (→${matchedId || c.clientId}) → enabled=${enabled}`);
+      logger.info(
+        `Payroll sync: ${c.clientId} (→${matchedId || c.clientId}) ` +
+        `RTA=${features.payrollEnabled} freq=${features.payrollCycle} ` +
+        `fileGen=${features.payrollFileGen || '-'} adj=${features.priorPeriodEdit}/${features.priorPeriodEditLimit}`,
+      );
     } catch (err: any) {
       logger.warn(`Payroll sync: ${c.clientId} → ${err.message}`);
     }
@@ -103,46 +105,82 @@ async function syncPayrollClients(): Promise<void> {
   };
 
   await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, allClients.length) }, () => processNext())
+    Array.from({ length: Math.min(CONCURRENCY, allClients.length) }, () => processNext()),
   );
 
   logger.info('Payroll sync complete');
 }
 
-// GET /api/payroll/clients — Serve from local DB (payrollEnabled = true only)
-router.get('/clients', async (_req: Request, res: Response) => {
+router.get('/clients', requirePayrollJobsEnabled, requirePermission('PAYROLL_VIEW', 'read'), async (_req: Request, res: Response) => {
   try {
     const clients = await prisma.client.findMany({
       where: { payrollEnabled: true },
-      select: { clientId: true, name: true, payrollCycle: true, payrollSyncedAt: true },
+      select: {
+        clientId: true,
+        name: true,
+        payrollCycle: true,
+        payrollFileGen: true,
+        priorPeriodEdit: true,
+        priorPeriodEditLimit: true,
+        payrollSyncedAt: true,
+      },
       orderBy: { clientId: 'asc' },
     });
 
-    res.json({ success: true, data: clients });
+    res.json({
+      success: true,
+      data: clients.map(c => ({
+        ...c,
+        payrollFrequencies: parseFrequencies(c.payrollCycle),
+      })),
+    });
   } catch (error: any) {
     logger.error(`Payroll clients list error: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// POST /api/payroll/sync-clients — Start background sync of RTA_INTEGRATION per client
-// Returns 202 immediately; sync updates payrollEnabled in local DB as results come in
-router.post('/sync-clients', (_req: Request, res: Response) => {
+router.post('/sync-clients', requirePayrollJobsEnabled, requirePermission('PAYROLL_SYNC', 'write'), (_req: Request, res: Response) => {
   res.status(202).json({
     success: true,
     message: 'Sync started. Client list will reflect results as each DB2 is checked.',
   });
 
-  // Fire and forget — does not block the response
   syncPayrollClients().catch(err =>
-    logger.error(`Payroll background sync failed: ${err.message}`)
+    logger.error(`Payroll background sync failed: ${err.message}`),
   );
 });
 
-// GET /api/payroll/:clientId — Fetch TA_UNIT_PAY_STATUS for a single client
-router.get('/:clientId', async (req: Request, res: Response) => {
+router.get('/monitor', requirePayrollMonitorEnabled, requirePermission('PAYROLL_MONITOR_VIEW', 'read'), async (_req: Request, res: Response) => {
   try {
-    const result = await payrollService.getPayrollStatus(req.params.clientId);
+    const result = await payrollService.getMonitorSnapshot();
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    logger.error(`Payroll monitor snapshot error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/monitor/:clientId', requirePayrollMonitorEnabled, requirePermission('PAYROLL_MONITOR_VIEW', 'read'), async (req: Request, res: Response) => {
+  try {
+    const distListId = typeof req.query.distListId === 'string' ? req.query.distListId : '';
+    if (!distListId) {
+      res.status(400).json({ success: false, error: 'distListId query parameter is required' });
+      return;
+    }
+    const result = await payrollService.getMonitorDetail(req.params.clientId, distListId);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    logger.error(`Payroll monitor detail error for ${req.params.clientId}: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/:clientId', requirePayrollJobsEnabled, requirePermission('PAYROLL_VIEW', 'read'), async (req: Request, res: Response) => {
+  try {
+    const weekEnd = typeof req.query.weekEnd === 'string' ? req.query.weekEnd : undefined;
+    const frequency = typeof req.query.frequency === 'string' ? req.query.frequency : undefined;
+    const result = await payrollService.getPayrollStatus(req.params.clientId, weekEnd, frequency);
     res.json({ success: true, data: result });
   } catch (error: any) {
     logger.error(`Payroll query error for ${req.params.clientId}: ${error.message}`);

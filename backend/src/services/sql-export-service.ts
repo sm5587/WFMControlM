@@ -7,6 +7,8 @@ const core = require(path.join(__dirname, '../../scripts/lib/sql-export-core'));
 
 export type SqlExportType = 'ddl' | 'dml' | 'all';
 
+export type SqlWriteMode = 'snapshot' | 'first-time' | 'both';
+
 export async function exportSql(type: SqlExportType = 'all'): Promise<{ ddl?: string; dml?: string }> {
   const result: { ddl?: string; dml?: string } = {};
 
@@ -24,20 +26,28 @@ export async function exportSql(type: SqlExportType = 'all'): Promise<{ ddl?: st
 
 export function writeSqlFiles(
   payload: { ddl?: string; dml?: string },
-  outputDir?: string,
-): { ddlPath?: string; dmlPath?: string } {
-  const dir = outputDir || path.resolve(__dirname, '../../../database');
-  const written: { ddlPath?: string; dmlPath?: string } = {};
+  options?: { outputDir?: string; mode?: SqlWriteMode },
+): { ddlPaths?: string[]; dmlPaths?: string[] } {
+  const dir = options?.outputDir || path.resolve(__dirname, '../../../database');
+  const mode = options?.mode || 'snapshot';
+  const updateFirstTime = mode === 'both' || mode === 'first-time';
+  const firstTimeOnly = mode === 'first-time';
+  const targets = core.resolveExportTargets(dir, { updateFirstTime, firstTimeOnly });
+  const written: { ddlPaths?: string[]; dmlPaths?: string[] } = {};
 
   if (payload.ddl) {
-    const ddlPath = path.join(dir, 'ddl.sql');
-    core.writeFileSafe(ddlPath, payload.ddl);
-    written.ddlPath = ddlPath;
+    written.ddlPaths = [];
+    for (const filePath of targets.ddl) {
+      core.writeFileSafe(filePath, payload.ddl);
+      written.ddlPaths.push(filePath);
+    }
   }
   if (payload.dml) {
-    const dmlPath = path.join(dir, 'dml.sql');
-    core.writeFileSafe(dmlPath, payload.dml);
-    written.dmlPath = dmlPath;
+    written.dmlPaths = [];
+    for (const filePath of targets.dml) {
+      core.writeFileSafe(filePath, payload.dml);
+      written.dmlPaths.push(filePath);
+    }
   }
 
   return written;
