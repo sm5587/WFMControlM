@@ -1,0 +1,469 @@
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Deployment method:</strong> Build Docker images on Windows, export to a tar file, copy to production Linux, load images, and run with Docker Compose.</p>
+<p><strong>No git clone and no container registry required on production.</strong></p>
+<p><strong>Production server:</strong> <code>z182sp-usc1wstmon01</code> &nbsp;|&nbsp; <strong>FQDN:</strong> <code>z182sp-usc1wstmon01.rfx.zebra.com</code> &nbsp;|&nbsp; <strong>SSH user:</strong> <code>appadmin</code></p>
+<p><strong>App directory:</strong> <code>/application/wfmwatch</code> &nbsp;|&nbsp; <strong>App URL (browser):</strong> <code>http://z182sp-usc1wstmon01.rfx.zebra.com:3015</code></p>
+<p><strong>Host ports:</strong> UI <strong>3015</strong>, API <strong>4015</strong></p>
+<p><strong>From a Windows laptop:</strong> use the <strong>FQDN</strong> above — the short hostname <code>z182sp-usc1wstmon01</code> often fails DNS (<code>DNS_PROBE_FINISHED_NXDOMAIN</code>). Corporate firewall may block ports 3015/4015 until IT opens them; use an <strong>SSH tunnel</strong> until then (see <strong>Part 4</strong>).</p>
+<p><strong>Paths on server (after copy from build machine):</strong></p>
+<ul>
+<li>Image tar: <code>/tmp/wfm-controlm-1.0.0.tar</code></li>
+<li>Deploy files (staging): <code>/tmp/docker-deploy-files/</code></li>
+<li>Compose + config: <code>/application/wfmwatch/</code></li>
+<li>SQLite database: <code>/application/wfmwatch/data/sqlite/prisma/dev.db</code></li>
+<li>Env file: <code>/application/wfmwatch/.env</code></li>
+</ul>
+<p><strong>Build machine:</strong> Windows PC with Docker Desktop (build images there, then <code>scp</code> to this server).</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h2>What you copy to prod</h2>
+<table><tbody>
+<tr><th>Item</th><th>Description</th><th>Approx size</th></tr>
+<tr><td><code>wfm-controlm-1.0.0.tar</code></td><td>Pre-built backend + frontend Docker images (<code>docker save</code>)</td><td>~280 MB</td></tr>
+<tr><td><code>docker-deploy-files/</code></td><td>Minimal config only — <strong>not</strong> full repo source</td><td>~3 MB</td></tr>
+</tbody></table>
+
+<p><strong>Files inside <code>docker-deploy-files/</code>:</strong></p>
+<ul>
+<li><code>docker-compose.prod.yml</code></li>
+<li><code>docker-compose.prod-hostdb.yml</code> <strong>(required — do not deploy without this file)</strong></li>
+<li><code>.env.example</code></li>
+<li><code>database/first-time-deployment-ddl.sql</code></li>
+<li><code>database/first-time-deployment-dml.sql</code></li>
+<li><code>lib/db2jcc4.jar</code>, <code>lib/DB2Connector.class</code></li>
+<li><code>lib/DB2Connector.java</code> (optional — only if you need to compile the DB2 connector on the server)</li>
+</ul>
+
+<p><strong>Do NOT copy:</strong> <code>node_modules/</code>, full repo source, Windows <code>dev.db</code>, or log files. Images already contain the application.</p>
+
+<hr />
+
+<h2>Part 1 — On Windows (build machine only)</h2>
+
+<ac:structured-macro ac:name="info"><ac:rich-text-body>
+<p><strong>Skip Part 1</strong> if <code>/tmp/wfm-controlm-1.0.0.tar</code> and <code>/tmp/docker-deploy-files/</code> are already on <code>z182sp-usc1wstmon01</code> — go straight to <strong>Part 2</strong>.</p>
+<p>Part 1 is <strong>not</strong> run on the Linux server. It builds the Docker images on a Windows PC, then copies them to the server.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h3>1.1 Build production images</h3>
+<p>On your <strong>Windows PC</strong> (with Docker Desktop), open PowerShell in the folder that contains <code>backend/</code> and <code>frontend/</code>, then run:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:parameter ac:name="title">Build images (tags must match compose)</ac:parameter><ac:plain-text-body><![CDATA[docker build -f backend/Dockerfile.prod -t wfm-controlm-backend:prod ./backend
+docker build -f frontend/Dockerfile.prod -t wfm-controlm-frontend:prod ./frontend]]></ac:plain-text-body></ac:structured-macro>
+
+<p>First build can take 10–20 minutes. Repeat builds are faster (Docker cache).</p>
+
+<h3>1.2 Export images to a tar file</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:parameter ac:name="title">Save both images to one tar</ac:parameter><ac:plain-text-body><![CDATA[docker save wfm-controlm-backend:prod wfm-controlm-frontend:prod -o wfm-controlm-1.0.0.tar
+
+Get-Item wfm-controlm-1.0.0.tar | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}]]></ac:plain-text-body></ac:structured-macro>
+
+<p>Expected: <code>wfm-controlm-1.0.0.tar</code> ~280 MB in the repo folder. Use the version from the <code>VERSION</code> file in the filename (e.g. <code>1.0.0</code>).</p>
+
+<h3>1.3 Prepare deploy files folder</h3>
+<p>Copy these from the repo into a local <code>docker-deploy-files/</code> folder:</p>
+<ul>
+<li><code>docker-compose.prod.yml</code></li>
+<li><code>docker-compose.prod-hostdb.yml</code></li>
+<li><code>.env.example</code></li>
+<li><code>database/first-time-deployment-ddl.sql</code></li>
+<li><code>database/first-time-deployment-dml.sql</code></li>
+<li><code>lib/db2jcc4.jar</code>, <code>lib/DB2Connector.class</code></li>
+<li><code>lib/DB2Connector.java</code> (optional — compile on server if <code>.class</code> missing)</li>
+</ul>
+
+<h3>1.4 Copy to production server</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:parameter ac:name="title">scp image tar + deploy files</ac:parameter><ac:plain-text-body><![CDATA[$SERVER = "appadmin@z182sp-usc1wstmon01.rfx.zebra.com"
+
+# Create app directory on z182sp-usc1wstmon01 (run once)
+ssh $SERVER "sudo mkdir -p /application/wfmwatch && sudo chown `$USER:`$(id -gn) /application/wfmwatch"
+
+# Copy to server staging paths
+scp wfm-controlm-1.0.0.tar ${SERVER}:/tmp/wfm-controlm-1.0.0.tar
+scp -r docker-deploy-files ${SERVER}:/tmp/docker-deploy-files]]></ac:plain-text-body></ac:structured-macro>
+
+<p>On the server, files land at <code>/tmp/wfm-controlm-1.0.0.tar</code> and <code>/tmp/docker-deploy-files/</code> — see §2.2 to move them into <code>/application/wfmwatch/</code>.</p>
+
+<hr />
+
+<h2>Part 2 — On z182sp-usc1wstmon01 (production Linux)</h2>
+
+<p>SSH in first:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[ssh appadmin@z182sp-usc1wstmon01.rfx.zebra.com]]></ac:plain-text-body></ac:structured-macro>
+<p>From Windows PowerShell use the same FQDN. The short name <code>z182sp-usc1wstmon01</code> may work on the server itself but not from your laptop.</p>
+
+<h3>2.1 Prerequisites — Docker must be installed</h3>
+<p>Run as <code>appadmin</code> (or another user in the <code>docker</code> group on <code>z182sp-usc1wstmon01</code>).</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:parameter ac:name="title">Verify Docker</ac:parameter><ac:plain-text-body><![CDATA[docker --version
+docker compose version
+docker run --rm hello-world]]></ac:plain-text-body></ac:structured-macro>
+
+<p>If <code>hello-world</code> fails with <code>permission denied</code> on <code>docker.sock</code>, use a user in the <code>docker</code> group or ask IT to add your account.</p>
+
+<p><strong>Install Docker on RHEL 9 (skip if already working):</strong></p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[sudo dnf remove -y podman-docker
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+# Log out and SSH back in, then re-run: docker run --rm hello-world]]></ac:plain-text-body></ac:structured-macro>
+
+<h3>2.2 Copy deploy files into app directory</h3>
+<p>After <code>scp</code>, config files are in <code>/tmp/docker-deploy-files/</code>. Copy them into <code>/application/wfmwatch/</code> (includes dotfiles like <code>.env.example</code>):</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[ssh appadmin@z182sp-usc1wstmon01.rfx.zebra.com
+
+sudo mkdir -p /application/wfmwatch
+sudo chown $USER:$(id -gn) /application/wfmwatch
+
+cp -a /tmp/docker-deploy-files/. /application/wfmwatch/
+
+# CRITICAL: take ownership of everything under app dir (cp -a keeps original owner from /tmp)
+sudo chown -R $USER:$(id -gn) /application/wfmwatch
+
+# Verify required files on server
+ls -la /application/wfmwatch/
+ls -la /application/wfmwatch/docker-compose.prod.yml
+ls -la /application/wfmwatch/docker-compose.prod-hostdb.yml
+ls -la /application/wfmwatch/.env.example
+ls -la /application/wfmwatch/database/
+ls -la /application/wfmwatch/lib/]]></ac:plain-text-body></ac:structured-macro>
+
+<h3>2.3 Load Docker images from tar</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[docker load -i /tmp/wfm-controlm-1.0.0.tar
+docker images | grep wfm-controlm]]></ac:plain-text-body></ac:structured-macro>
+
+<p>Expected tags:</p>
+<ul>
+<li><code>wfm-controlm-backend:prod</code></li>
+<li><code>wfm-controlm-frontend:prod</code></li>
+</ul>
+
+<h3>2.4 Configure environment</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+cp /application/wfmwatch/.env.example /application/wfmwatch/.env
+openssl rand -hex 32
+vi .env
+chmod 600 /application/wfmwatch/.env
+
+# CRITICAL: create host SQLite file BEFORE first docker compose up
+# If dev.db does not exist, Docker bind-mount creates it as a DIRECTORY and Prisma fails.
+mkdir -p /application/wfmwatch/data/sqlite/prisma /application/wfmwatch/data/backups/sqlite
+touch /application/wfmwatch/data/sqlite/prisma/dev.db
+chmod 666 /application/wfmwatch/data/sqlite/prisma/dev.db
+ls -la /application/wfmwatch/data/sqlite/prisma/dev.db   # must show a file (-), not a directory (d)]]></ac:plain-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="warning"><ac:rich-text-body>
+<p><strong>SQLite file permissions — required for Docker DB access:</strong></p>
+<p>The backend container runs as user <code>node</code> (UID <strong>1000</strong>). The host file <code>dev.db</code> is bind-mounted into the container. If the file is owned by <code>appadmin</code> with mode <code>664</code>, the container <strong>cannot write</strong> to it.</p>
+<p>Use <strong>one</strong> of these before the first <code>docker compose up</code>:</p>
+<ul>
+<li><strong>Option A (simplest):</strong> <code>chmod 666 ./data/sqlite/prisma/dev.db</code> — no ownership change needed.</li>
+<li><strong>Option B (preferred long-term):</strong> <code>sudo chown 1000:1000 ./data/sqlite/prisma/dev.db</code> — must run with <code>sudo</code>; plain <code>chown</code> as <code>appadmin</code> fails with <em>Operation not permitted</em>.</li>
+</ul>
+<p>If <code>chown 1000:1000</code> fails even with <code>sudo</code>, stop Docker first (<code>docker compose $COMPOSE down</code>) — a running bind mount blocks ownership changes. See <strong>Part 5 — SQLite container write access</strong>.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<p>Set at minimum in <code>.env</code>:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[APP_DIR=/application/wfmwatch
+WFM_SQLITE_HOST_DIR=./data/sqlite
+CONFIG_ENCRYPTION_KEY=<64-char-hex-from-openssl>
+LDAP_DEV_MOCK=false]]></ac:plain-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="warning"><ac:rich-text-body>
+<p><strong>DATABASE_URL — do not misconfigure:</strong></p>
+<ul>
+<li>When you use <strong>both</strong> compose files (required), <code>docker-compose.prod-hostdb.yml</code> sets <code>DATABASE_URL=file:./dev.db</code> inside the container. You do <strong>not</strong> need to set <code>DATABASE_URL</code> in <code>.env</code> for production.</li>
+<li>If you leave <code>DATABASE_URL</code> from <code>.env.example</code> (<code>file:../../data/sqlite/prisma/dev.db</code>), it is overridden by the hostdb compose file — that is OK.</li>
+<li><strong>Never</strong> set <code>DATABASE_URL=./dev.db</code> without the <code>file:</code> prefix — Prisma error <strong>P1013</strong> (<em>The provided database string is invalid</em>).</li>
+<li><strong>Never</strong> copy a Windows absolute path from your dev machine into production <code>.env</code>.</li>
+</ul>
+</ac:rich-text-body></ac:structured-macro>
+
+<p><strong>Do not set</strong> <code>REGISTRY</code> or <code>RELEASE_TAG</code> — images use local tags from compose.</p>
+
+<h3>2.5 First-time start (backend → seed → full stack)</h3>
+<p>Always use <strong>both</strong> compose files — never run <code>docker-compose.prod.yml</code> alone in production:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[export COMPOSE="-f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml"
+cd /application/wfmwatch
+
+# Pre-flight: SQLite must be a file on the host
+test -f /application/wfmwatch/data/sqlite/prisma/dev.db || { echo "ERROR: create dev.db first (see §2.4)"; exit 1; }
+
+# 1) Start backend only
+docker compose $COMPOSE up -d backend
+sleep 35
+docker compose $COMPOSE ps
+docker compose $COMPOSE logs backend --tail 30
+
+# Confirm container DATABASE_URL (must be file:./dev.db)
+docker compose $COMPOSE exec backend printenv DATABASE_URL
+docker compose $COMPOSE exec backend ls -la /app/prisma/dev.db
+
+# 2) Seed database — FIRST TIME ONLY
+docker compose $COMPOSE run --rm \
+  -v "$(pwd)/database:/app/database:ro" \
+  backend node scripts/apply-sql.js database/first-time-deployment-ddl.sql
+
+docker compose $COMPOSE run --rm \
+  -v "$(pwd)/database:/app/database:ro" \
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
+
+# 2b) Set JWT secret — DML seeds secrets.jwtSecret as empty; backend refuses to start without it
+# Uses backend container + Prisma (no host sqlite3 CLI required)
+JWT=$(openssl rand -hex 32)
+docker compose $COMPOSE run --rm backend node -e "
+const { PrismaClient } = require('@prisma/client');
+(async () => {
+  const p = new PrismaClient();
+  await p.\$executeRawUnsafe(\"UPDATE AppConfig SET value='${JWT}' WHERE key='secrets.jwtSecret'\");
+  await p.\$disconnect();
+  console.log('secrets.jwtSecret updated');
+})().catch((e) => { console.error(e); process.exit(1); });
+"
+
+# Optional: set CORS for this server (seed defaults to localhost dev ports)
+docker compose $COMPOSE run --rm backend node -e "
+const { PrismaClient } = require('@prisma/client');
+(async () => {
+  const p = new PrismaClient();
+  await p.\$executeRawUnsafe(\"UPDATE AppConfig SET value='http://z182sp-usc1wstmon01.rfx.zebra.com:3015' WHERE key='infra.corsOrigins'\");
+  await p.\$disconnect();
+  console.log('infra.corsOrigins updated');
+})().catch((e) => { console.error(e); process.exit(1); });
+"
+
+# 3) Restart backend, then start full stack
+docker compose $COMPOSE restart backend
+sleep 45
+docker compose $COMPOSE up -d
+docker compose $COMPOSE ps]]></ac:plain-text-body></ac:structured-macro>
+
+<ac:structured-macro ac:name="warning"><ac:rich-text-body>
+<p><strong>First install only:</strong> run the DDL/DML seed scripts once. Do <strong>not</strong> re-run on routine upgrades — they can overwrite live AppConfig.</p>
+<p><strong>Expected on first backend start (before seed):</strong> logs may show <code>Missing critical AppConfig values: secrets.jwtSecret, secrets.jwtExpiresIn, infra.corsOrigins, ...</code> until steps 2 and 2b complete. That is normal.</p>
+<p><strong>After DML seed:</strong> you must still run step 2b (<code>secrets.jwtSecret</code>) — the DML file intentionally leaves JWT secret blank.</p>
+<p><strong>If backend logs show Prisma P1013:</strong> see <strong>Part 5 — Troubleshooting</strong> below.</p>
+</ac:rich-text-body></ac:structured-macro>
+
+<h3>2.6 Verify (on the server)</h3>
+<p>Run these <strong>on the server</strong> over SSH — they confirm the stack is up even if your laptop cannot reach ports 3015/4015 yet:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[curl -s http://localhost:4015/health
+curl -I http://localhost:3015
+ls -lh /application/wfmwatch/data/sqlite/prisma/dev.db
+docker compose $COMPOSE ps]]></ac:plain-text-body></ac:structured-macro>
+
+<table><tbody>
+<tr><th>Check</th><th>URL / detail</th></tr>
+<tr><td>UI (from browser)</td><td><code>http://z182sp-usc1wstmon01.rfx.zebra.com:3015</code></td></tr>
+<tr><td>API health (from browser)</td><td><code>http://z182sp-usc1wstmon01.rfx.zebra.com:4015/health</code></td></tr>
+<tr><td>UI/API (on server)</td><td><code>http://localhost:3015</code> / <code>http://localhost:4015/health</code></td></tr>
+<tr><td>Login</td><td><code>admin</code> / <code>ChangeMe123!</code> (hardcoded in seed SQL — change after first login)</td></tr>
+</tbody></table>
+
+<p>After first login, open <strong>Admin → Config</strong> and set <code>infra.corsOrigins</code> to include <code>http://z182sp-usc1wstmon01.rfx.zebra.com:3015</code> (seed data defaults to localhost dev ports).</p>
+
+<h3>2.7 DB2 connector (if needed)</h3>
+<p>If <code>lib/DB2Connector.class</code> was not copied, compile on server (requires JDK 17+ and <code>lib/DB2Connector.java</code>):</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+javac --release 17 -cp lib/db2jcc4.jar -d lib lib/DB2Connector.java
+ls -la lib/DB2Connector.class lib/db2jcc4.jar
+docker compose $COMPOSE restart backend]]></ac:plain-text-body></ac:structured-macro>
+
+<hr />
+
+<h2>Part 3 — Future upgrades</h2>
+
+<h3>On Windows (build machine)</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:plain-text-body><![CDATA[# Build new images on Windows, then copy tar to server
+docker build -f backend/Dockerfile.prod -t wfm-controlm-backend:prod ./backend
+docker build -f frontend/Dockerfile.prod -t wfm-controlm-frontend:prod ./frontend
+docker save wfm-controlm-backend:prod wfm-controlm-frontend:prod -o wfm-controlm-1.0.1.tar
+scp wfm-controlm-1.0.1.tar appadmin@z182sp-usc1wstmon01.rfx.zebra.com:/tmp/wfm-controlm-1.0.1.tar]]></ac:plain-text-body></ac:structured-macro>
+
+<h3>On z182sp-usc1wstmon01</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[ssh appadmin@z182sp-usc1wstmon01.rfx.zebra.com
+docker load -i /tmp/wfm-controlm-1.0.1.tar
+cd /application/wfmwatch
+export COMPOSE="-f /application/wfmwatch/docker-compose.prod.yml -f /application/wfmwatch/docker-compose.prod-hostdb.yml"
+docker compose $COMPOSE up -d --force-recreate
+curl -s http://localhost:4015/health]]></ac:plain-text-body></ac:structured-macro>
+
+<p>No re-seed needed on upgrades.</p>
+
+<hr />
+
+<h2>Part 4 — Access from your laptop (Windows)</h2>
+
+<p>The app listens on server ports <strong>3015</strong> (UI) and <strong>4015</strong> (API). You need the <strong>FQDN</strong> and (usually) corporate VPN. Firewall rules may block direct browser access until IT opens those ports.</p>
+
+<h3>4.1 Direct browser access (after firewall + DNS)</h3>
+<table><tbody>
+<tr><th>Check</th><th>URL</th></tr>
+<tr><td>UI</td><td><code>http://z182sp-usc1wstmon01.rfx.zebra.com:3015</code></td></tr>
+<tr><td>API health</td><td><code>http://z182sp-usc1wstmon01.rfx.zebra.com:4015/health</code></td></tr>
+</tbody></table>
+<p><strong>Do not</strong> use the short hostname <code>http://z182sp-usc1wstmon01:3015</code> from a Windows laptop — Chrome shows <code>DNS_PROBE_FINISHED_NXDOMAIN</code> because that name is not in public/corporate DNS from your PC.</p>
+
+<h3>4.2 SSH tunnel (works before firewall is opened)</h3>
+<p>Keep the SSH session open while you use the app in your browser:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:parameter ac:name="title">PowerShell — tunnel UI + API to localhost</ac:parameter><ac:plain-text-body><![CDATA[ssh -L 3015:localhost:3015 -L 4015:localhost:4015 appadmin@z182sp-usc1wstmon01.rfx.zebra.com]]></ac:plain-text-body></ac:structured-macro>
+<p>Then open:</p>
+<ul>
+<li><code>http://localhost:3015</code> — UI</li>
+<li><code>http://localhost:4015/health</code> — API health</li>
+</ul>
+<p><strong>PuTTY:</strong> Connection → SSH → Tunnels → add <code>3015 → localhost:3015</code> and <code>4015 → localhost:4015</code>, then connect.</p>
+<p>If you use the tunnel, set <code>infra.corsOrigins</code> in Admin → Config to include <code>http://localhost:3015</code> (or re-run the CORS update in §2.5 with that URL).</p>
+
+<h3>4.3 Confirm DNS from Windows (optional)</h3>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">powershell</ac:parameter><ac:plain-text-body><![CDATA[nslookup z182sp-usc1wstmon01.rfx.zebra.com
+# Expect an internal IP (e.g. 100.64.x.x). Short name often fails:
+nslookup z182sp-usc1wstmon01]]></ac:plain-text-body></ac:structured-macro>
+
+<hr />
+
+<h2>Part 5 — Troubleshooting</h2>
+
+<h3>Prisma P1013 — invalid database connection string</h3>
+<p><strong>Symptom:</strong> backend logs show <code>Error: P1013: The provided database string is invalid. Error parsing connection string: ./dev.db</code></p>
+<p><strong>Cause:</strong> <code>DATABASE_URL</code> is missing the <code>file:</code> prefix (e.g. set to <code>./dev.db</code> instead of <code>file:./dev.db</code>), or you started without <code>docker-compose.prod-hostdb.yml</code>.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+export COMPOSE="-f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml"
+
+docker compose $COMPOSE down backend
+
+# Fix .env — remove bad DATABASE_URL line, or set explicitly:
+# DATABASE_URL="file:./dev.db"
+
+# Ensure dev.db is a file, not a directory
+mkdir -p ./data/sqlite/prisma
+if [ -d ./data/sqlite/prisma/dev.db ]; then rm -rf ./data/sqlite/prisma/dev.db; fi
+touch ./data/sqlite/prisma/dev.db
+chmod 664 ./data/sqlite/prisma/dev.db
+
+docker compose $COMPOSE up -d backend
+docker compose $COMPOSE exec backend printenv DATABASE_URL   # expect: file:./dev.db
+docker compose $COMPOSE logs backend --tail 30]]></ac:plain-text-body></ac:structured-macro>
+
+<h3><code>dev.db</code> is a directory (not a file)</h3>
+<p><strong>Symptom:</strong> <code>ls -la ./data/sqlite/prisma/dev.db</code> shows <code>drwx</code> (directory).</p>
+<p><strong>Cause:</strong> First <code>docker compose up</code> ran before <code>touch ./data/sqlite/prisma/dev.db</code>. Docker created the bind-mount target as a folder.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+export COMPOSE="-f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml"
+docker compose $COMPOSE down backend
+rm -rf ./data/sqlite/prisma/dev.db
+touch ./data/sqlite/prisma/dev.db
+chmod 664 ./data/sqlite/prisma/dev.db
+docker compose $COMPOSE up -d backend]]></ac:plain-text-body></ac:structured-macro>
+
+<h3>SQLite container write access — <code>chown: Operation not permitted</code></h3>
+<p><strong>Symptom:</strong> <code>chown: changing ownership of './data/sqlite/prisma/dev.db': Operation not permitted</code> when running <code>chown 1000:1000</code> as <code>appadmin</code> (without <code>sudo</code>).</p>
+<p><strong>Cause:</strong> Only root can assign file ownership to another user (UID 1000). The backend container runs as <code>node</code> (UID 1000) and needs write access to the bind-mounted <code>dev.db</code>.</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+export COMPOSE="-f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml"
+
+# Stop containers first — bind mount blocks chown while backend is running
+docker compose $COMPOSE down
+
+# Fix app dir ownership (if files came from /tmp with wrong owner)
+sudo chown -R $USER:$(id -gn) /application/wfmwatch
+
+# Option A — simplest: world-writable (works without chown to UID 1000)
+chmod 666 ./data/sqlite/prisma/dev.db
+ls -la ./data/sqlite/prisma/dev.db
+
+# Option B — preferred: owner UID 1000 (container node user)
+sudo chown 1000:1000 ./data/sqlite/prisma/dev.db
+ls -la ./data/sqlite/prisma/dev.db   # owner should show 1000
+
+# Option C — if host chown still fails: fix via container as root
+docker compose $COMPOSE run --rm --user root backend chown node:node /app/prisma/dev.db
+ls -la ./data/sqlite/prisma/dev.db
+
+docker compose $COMPOSE up -d backend
+docker compose $COMPOSE logs backend --tail 20]]></ac:plain-text-body></ac:structured-macro>
+<p><strong>Success check:</strong> backend logs show <code>Database connected successfully</code> and <code>No pending migrations to apply</code> (not SQLite permission errors).</p>
+
+<h3><code>Permission denied</code> on <code>touch dev.db</code> or <code>mkdir</code></h3>
+<p><strong>Symptom:</strong> <code>touch: setting times of '/application/wfmwatch/data/sqlite/prisma/dev.db': Permission denied</code></p>
+<p><strong>Cause:</strong> Files under <code>/application/wfmwatch</code> are owned by another user (e.g. copied to <code>/tmp</code> as <code>sm5587</code>, or created with <code>sudo</code> without recursive <code>chown</code>).</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[ls -la /application/wfmwatch
+ls -la /application/wfmwatch/data/sqlite/prisma/ 2>/dev/null || true
+
+# Fix ownership for appadmin (run as appadmin)
+sudo chown -R $USER:$(id -gn) /application/wfmwatch
+
+mkdir -p /application/wfmwatch/data/sqlite/prisma /application/wfmwatch/data/backups/sqlite
+touch /application/wfmwatch/data/sqlite/prisma/dev.db
+chmod 664 /application/wfmwatch/data/sqlite/prisma/dev.db
+ls -la /application/wfmwatch/data/sqlite/prisma/dev.db]]></ac:plain-text-body></ac:structured-macro>
+
+<h3>Backend unhealthy / <code>Missing critical AppConfig values</code></h3>
+<p><strong>Symptom:</strong> <code>Failed to start server: Missing critical AppConfig values: secrets.jwtSecret, secrets.jwtExpiresIn, infra.corsOrigins, infra.bodySizeLimit, engine.purgeSchedule</code></p>
+<p><strong>Cause:</strong> First-time seed not run yet, or seed ran but <code>secrets.jwtSecret</code> is still empty (DML seeds it blank by design).</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[cd /application/wfmwatch
+export COMPOSE="-f docker-compose.prod.yml -f docker-compose.prod-hostdb.yml"
+
+# Run seed if not done yet (FIRST TIME ONLY)
+docker compose $COMPOSE run --rm \
+  -v "$(pwd)/database:/app/database:ro" \
+  backend node scripts/apply-sql.js database/first-time-deployment-ddl.sql
+docker compose $COMPOSE run --rm \
+  -v "$(pwd)/database:/app/database:ro" \
+  backend node scripts/apply-sql.js database/first-time-deployment-dml.sql
+
+# Required after DML — set JWT secret (via backend container; no host sqlite3 needed)
+JWT=$(openssl rand -hex 32)
+docker compose $COMPOSE run --rm backend node -e "
+const { PrismaClient } = require('@prisma/client');
+(async () => {
+  const p = new PrismaClient();
+  await p.\$executeRawUnsafe(\"UPDATE AppConfig SET value='${JWT}' WHERE key='secrets.jwtSecret'\");
+  await p.\$disconnect();
+  console.log('secrets.jwtSecret updated');
+})().catch((e) => { console.error(e); process.exit(1); });
+"
+
+docker compose $COMPOSE restart backend
+docker compose $COMPOSE logs backend --tail 20
+curl -s http://localhost:4015/health]]></ac:plain-text-body></ac:structured-macro>
+<p><strong>Note:</strong> If logs show <code>Could not decrypt secret "secrets.masterPasswordHash"</code> on first install, that is usually harmless — ensure <code>CONFIG_ENCRYPTION_KEY</code> is set in <code>.env</code> before seed when possible.</p>
+
+<h3><code>sqlite3: command not found</code></h3>
+<p><strong>Symptom:</strong> <code>-bash: sqlite3: command not found</code> when running step 2b.</p>
+<p><strong>Cause:</strong> The production server does not have the SQLite CLI installed (and you do not need it — Docker images already include Node + Prisma).</p>
+<p><strong>Fix:</strong> Use the backend container commands in step 2b above. Or install the CLI if you prefer: <code>sudo dnf install -y sqlite</code> (RHEL 9).</p>
+
+<h3>Frontend not starting — waits for backend healthy</h3>
+<p><strong>Fix:</strong> Resolve backend first (<code>docker compose $COMPOSE logs backend</code>), then <code>docker compose $COMPOSE up -d frontend</code>.</p>
+
+<h3><code>DNS_PROBE_FINISHED_NXDOMAIN</code> in Chrome (Windows laptop)</h3>
+<p><strong>Symptom:</strong> Browser shows <em>This site can't be reached</em> / <code>DNS_PROBE_FINISHED_NXDOMAIN</code> for <code>http://z182sp-usc1wstmon01:3015</code>.</p>
+<p><strong>Cause:</strong> The short hostname is not resolvable from your PC. This is a DNS issue, not a failed deployment.</p>
+<p><strong>Fix:</strong></p>
+<ul>
+<li>Use <code>http://z182sp-usc1wstmon01.rfx.zebra.com:3015</code> instead.</li>
+<li>Confirm VPN is connected if required.</li>
+<li>Until firewall opens ports 3015/4015, use the SSH tunnel in <strong>Part 4.2</strong>.</li>
+<li>On the server, <code>curl http://localhost:3015</code> should still work — that confirms the app is running.</li>
+</ul>
+
+<h3>Connection timeout from laptop (app works on server)</h3>
+<p><strong>Symptom:</strong> FQDN resolves, but browser times out or connection is refused from your laptop; <code>curl http://localhost:3015</code> on the server succeeds.</p>
+<p><strong>Cause:</strong> Corporate/GCP firewall blocking inbound TCP <strong>3015</strong> and <strong>4015</strong> to the server.</p>
+<p><strong>Fix:</strong> Ask IT to allow those ports from your network, or use the SSH tunnel (<strong>Part 4.2</strong>) until rules are in place.</p>
+
+<hr />
+
+<h2>Do NOT on production</h2>
+<table><tbody>
+<tr><th>Command / action</th><th>Why</th></tr>
+<tr><td><code>docker compose -f docker-compose.prod.yml up</code> without <code>prod-hostdb.yml</code></td><td>Wrong SQLite path / no host persistence — causes P1013 or data loss on recreate</td></tr>
+<tr><td><code>docker compose down -v</code></td><td>Removes Docker volumes (logs); host SQLite survives but avoid unless you know why</td></tr>
+<tr><td>Re-run <code>first-time-deployment-dml.sql</code> after go-live</td><td>Overwrites live AppConfig</td></tr>
+<tr><td>Change <code>CONFIG_ENCRYPTION_KEY</code> after DB exists</td><td>Breaks decryption of stored secrets</td></tr>
+<tr><td>Delete <code>./data/sqlite/prisma/dev.db</code></td><td>Destroys database</td></tr>
+<tr><td><code>DATABASE_URL=./dev.db</code> (no <code>file:</code> prefix)</td><td>Prisma P1013 on startup</td></tr>
+</tbody></table>
+
+<p><em>Last updated: March 2026 — FQDN + laptop access (DNS/firewall/SSH tunnel), JWT/CORS via backend container, SQLite container write access</em></p>

@@ -79,6 +79,7 @@ class ConfigService {
     await this.ensureLdapConfig();
     await this.ensureAuthTokenRevocationConfig();
     await this.ensureSyncConfig();
+    await this.ensureNodeEnvFromProcessEnv();
     await this.cleanupLegacyConfig();
 
     this.loaded = true;
@@ -510,6 +511,48 @@ class ConfigService {
       updatedAt: new Date(),
     });
     logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** When NODE_ENV=production (Docker prod), sync infra.nodeEnv so Admin → Config matches runtime. */
+  private async ensureNodeEnvFromProcessEnv(): Promise<void> {
+    if (process.env.NODE_ENV !== 'production') return;
+
+    const key = 'infra.nodeEnv';
+    const entry = this.cache.get(key);
+    if (entry?.value === 'production') return;
+
+    const value = 'production';
+    if (entry) {
+      await prisma.appConfig.update({
+        where: { key },
+        data: { value, updatedBy: 'system' },
+      });
+      this.cache.set(key, { ...entry, value, updatedBy: 'system', updatedAt: new Date() });
+    } else {
+      await prisma.appConfig.create({
+        data: {
+          key,
+          value,
+          category: 'INFRA',
+          label: 'Node Environment',
+          description: 'development or production (auto-set to production when NODE_ENV=production)',
+          isSecret: false,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(key, {
+        key,
+        value,
+        category: 'INFRA',
+        label: 'Node Environment',
+        description: 'development or production (auto-set to production when NODE_ENV=production)',
+        isSecret: false,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+    }
+
+    logger.info('Synced infra.nodeEnv to production (NODE_ENV=production)');
   }
 
   /** SSH/cron sync master toggle and daily auto-sync schedule. */

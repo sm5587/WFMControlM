@@ -11,6 +11,8 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   /** Shown in UI/health so local vs Docker instances are distinguishable (see DEPLOYMENT_LABEL in .env). */
   deploymentLabel: (process.env.DEPLOYMENT_LABEL || 'Local').trim() || 'Local',
+  /** External API base URL for startup logs (e.g. http://host:4015). Bootstrap only — not stored in AppConfig. */
+  publicApiUrl: (process.env.PUBLIC_API_URL || '').trim(),
   
   // Database (SQLite)
   databaseUrl: process.env.DATABASE_URL || '',
@@ -129,9 +131,14 @@ export function applyDbConfig(): void {
   if (config.smtp.host === '127.0.0.1' && (!config.smtp.port || config.smtp.port === 587)) {
     config.smtp.port = 1025;
   }
-  // Inside Docker, loopback SMTP points at the backend container — use Mailpit service name.
+  // INFRA — resolve nodeEnv before SMTP so production guards apply below.
+  config.port             = configService.getInt('infra.port');
+  config.nodeEnv          = resolveNodeEnv(configService);
+
+  // Inside Docker dev, loopback SMTP points at the backend container — use Mailpit service name.
   const dockerDeploy = config.deploymentLabel.trim().toLowerCase() === 'docker';
-  if (dockerDeploy && (config.smtp.host === '127.0.0.1' || config.smtp.host === 'localhost')) {
+  const isProduction = config.nodeEnv === 'production';
+  if (dockerDeploy && !isProduction && (config.smtp.host === '127.0.0.1' || config.smtp.host === 'localhost')) {
     config.smtp.host = 'mailpit';
     if (!config.smtp.port || config.smtp.port === 587) {
       config.smtp.port = 1025;
@@ -152,9 +159,7 @@ export function applyDbConfig(): void {
   config.keeper.db2Username = configService.getString('secrets.db2Username');
   config.keeper.db2Password = configService.getString('secrets.db2Password');
 
-  // INFRA
-  config.port             = configService.getInt('infra.port');
-  config.nodeEnv          = configService.getString('infra.nodeEnv');
+  // INFRA (port/nodeEnv set above)
   config.ssh.port         = configService.getInt('infra.sshPort');
   config.ssh.timeout      = configService.getInt('infra.sshTimeout');
   config.ssh.cronEntryPath = configService.getString('infra.sshCronEntryPath');
@@ -173,4 +178,10 @@ export function applyDbConfig(): void {
 
   // ENGINE (patch into config.engine)
   config.engine.pollIntervalMs = configService.getInt('engine.pollIntervalMs');
+}
+
+/** NODE_ENV=production (Docker prod) wins over seeded infra.nodeEnv=development. */
+export function resolveNodeEnv(configService: { getString(key: string, defaultVal?: string): string }): string {
+  if (process.env.NODE_ENV === 'production') return 'production';
+  return configService.getString('infra.nodeEnv') || 'development';
 }

@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { Activity, Lock, User, Eye, EyeOff, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useAppName, useDeploymentLabel, useConfig } from '../../contexts/ConfigContext';
-import { deploymentHint } from '../DeploymentBadge';
+import { useAppName, useAppVersion, useDeploymentLabel, useConfig } from '../../contexts/ConfigContext';
+import { appSubtitle } from '../DeploymentBadge';
 import AccessRequestPage, { SsoAccessStatus } from './AccessRequestPage';
 
 export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
   const appName = useAppName();
   const deploymentLabel = useDeploymentLabel();
+  const appVersion = useAppVersion();
   const { getBool } = useConfig();
   const ldapEnabled = getBool('infra.ldapEnabled', false);
   const ldapDevMock = getBool('infra.ldapDevMock', false);
@@ -49,7 +50,7 @@ export default function LoginPage({ ssoEmail }: { ssoEmail?: string }) {
             <Activity className="w-10 h-10 text-zebra-400" />
             <div>
               <h1 className="text-2xl font-bold text-white tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400 font-mono">{deploymentHint(deploymentLabel)}</p>
+              <p className="text-xs text-slate-400 font-mono">{appSubtitle(deploymentLabel, appVersion)}</p>
             </div>
           </div>
         </div>

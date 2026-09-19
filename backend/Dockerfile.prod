@@ -10,14 +10,14 @@ WORKDIR /app
 RUN apk add --no-cache tini libc6-compat openssl openjdk17-jre
 
 FROM base AS deps
-COPY package*.json ./
+COPY backend/package*.json ./
 # ibm_db is unused (DB2 uses Java JDBC bridge) — skip native compile on Alpine
 RUN npm ci --ignore-scripts
 
 FROM deps AS build
-COPY tsconfig.json ./
-COPY prisma ./prisma/
-COPY src ./src/
+COPY backend/tsconfig.json ./
+COPY backend/prisma ./prisma/
+COPY backend/src ./src/
 RUN npx prisma generate && npm run build
 
 FROM base AS runtime
@@ -31,7 +31,8 @@ COPY --from=deps /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
-COPY scripts ./scripts/
+COPY backend/scripts ./scripts/
+COPY VERSION ./VERSION
 
 RUN mkdir -p /app/logs /app/prisma \
   && chown -R node:node /app

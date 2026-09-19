@@ -24,6 +24,8 @@ import { APP_FUNCTIONS } from './constants/functions';
 import { prisma } from './database/prisma';
 import { hasPreviousEncryptionKey } from './utils/crypto';
 import { isLdapDevMockEnabled } from './utils/ldap-dev-mock';
+import { buildStartupBanner } from './utils/startup-banner';
+import { getAppVersion } from './utils/app-version';
 
 // Import routes
 import authRouter from './routes/auth';
@@ -136,7 +138,7 @@ async function bootstrap() {
       status: 'ok',
       service: configService.getAppName(),
       deployment: config.deploymentLabel,
-      version: '1.0.0',
+      version: getAppVersion(),
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     });
@@ -161,6 +163,7 @@ async function bootstrap() {
       data: {
         label: config.deploymentLabel,
         port: config.port,
+        version: getAppVersion(),
       },
     });
   });
@@ -300,20 +303,13 @@ async function bootstrap() {
 
   // ---- Start HTTP Server ----
   httpServer.listen(config.port, () => {
-    logger.info(`
-╔══════════════════════════════════════════════════════╗
-║                                                      ║
-║   🚀 ${configService.getAppName()} Server                           ║
-║                                                      ║
-║   HTTP:      http://localhost:${config.port}                ║
-║   WebSocket: ws://localhost:${config.port}                  ║
-║   Env:       ${config.nodeEnv.padEnd(38)}║
-║                                                      ║
-║   API:       http://localhost:${config.port}/api             ║
-║   Health:    http://localhost:${config.port}/health           ║
-${config.nodeEnv !== 'production' ? `║   Email preview: http://localhost:${config.port}/dev/email-preview ║\n` : ''}║                                                      ║
-╚══════════════════════════════════════════════════════╝
-    `);
+    logger.info(buildStartupBanner({
+      appName: configService.getAppName(),
+      port: config.port,
+      nodeEnv: config.nodeEnv,
+      deploymentLabel: config.deploymentLabel,
+      publicApiUrl: config.publicApiUrl,
+    }));
     logger.info(`SMTP: host=${config.smtp.host || 'NOT SET'}, port=${config.smtp.port}, user=${config.smtp.user || 'none (relay mode)'}`);
     logger.info(`Logs: ${config.logDir}`);
   });

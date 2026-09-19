@@ -13,6 +13,7 @@ interface ConfigContextValue {
   loaded: boolean;
   appName: string;
   deploymentLabel: string;
+  appVersion: string;
   getString: (key: string, fallback: string) => string;
   getInt: (key: string, fallback: number) => number;
   getFloat: (key: string, fallback: number) => number;
@@ -25,6 +26,7 @@ const ConfigContext = createContext<ConfigContextValue>({
   loaded: false,
   appName: DEFAULT_APP_NAME,
   deploymentLabel: DEFAULT_DEPLOYMENT_LABEL,
+  appVersion: '',
   getString: (_, fb) => fb,
   getInt: (_, fb) => fb,
   getFloat: (_, fb) => fb,
@@ -36,6 +38,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [deploymentLabel, setDeploymentLabel] = useState(DEFAULT_DEPLOYMENT_LABEL);
+  const [appVersion, setAppVersion] = useState('');
 
   const load = async () => {
     try {
@@ -45,6 +48,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         const label = depJson?.data?.label;
         if (typeof label === 'string' && label.trim()) {
           setDeploymentLabel(label.trim());
+        }
+        const version = depJson?.data?.version;
+        if (typeof version === 'string' && version.trim()) {
+          setAppVersion(version.trim());
         }
       }
     } catch {
@@ -104,7 +111,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <ConfigContext.Provider value={{ config, loaded, appName, deploymentLabel, getString, getInt, getFloat, getBool, reload: load }}>
+    <ConfigContext.Provider value={{ config, loaded, appName, deploymentLabel, appVersion, getString, getInt, getFloat, getBool, reload: load }}>
       {children}
     </ConfigContext.Provider>
   );
@@ -120,4 +127,8 @@ export function useAppName(): string {
 
 export function useDeploymentLabel(): string {
   return useContext(ConfigContext).deploymentLabel;
+}
+
+export function useAppVersion(): string {
+  return useContext(ConfigContext).appVersion;
 }

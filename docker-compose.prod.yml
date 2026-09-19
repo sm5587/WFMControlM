@@ -3,8 +3,8 @@ version: "3.8"
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile.prod
+      context: .
+      dockerfile: backend/Dockerfile.prod
     image: wfm-controlm-backend:prod
     container_name: wfm-controlm-api
     restart: unless-stopped
@@ -15,6 +15,8 @@ services:
       NODE_ENV: production
       PORT: "4005"
       DEPLOYMENT_LABEL: "Docker"
+      # Set in .env on each server — external API URL (host port 4015, not container 4005):
+      # PUBLIC_API_URL: "http://your-server-hostname:4015"
     ports:
       - "4015:4005"
     volumes:

@@ -10,8 +10,8 @@ import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
 import { useAlertsMenuBadge } from '../hooks/useAlertsMenuBadge';
 import { useAuth } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
-import { useAppName, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
-import { deploymentHint } from './DeploymentBadge';
+import { useAppName, useAppVersion, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
+import { appSubtitle } from './DeploymentBadge';
 import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
 
 const navItems = [
@@ -38,6 +38,7 @@ const adminNavItems = [
 export default function Layout() {
   const appName = useAppName();
   const deploymentLabel = useDeploymentLabel();
+  const appVersion = useAppVersion();
   const { getBool } = useConfig();
   const payrollEnabled = getBool(PAYROLL_ENABLED_KEY, false);
   const payrollMonitorEnabled = getBool(PAYROLL_MONITOR_ENABLED_KEY, false);
@@ -71,7 +72,7 @@ export default function Layout() {
           {!collapsed && (
             <div>
               <h1 className="text-lg font-bold tracking-tight">{appName}</h1>
-              <p className="text-xs text-slate-400 font-mono">{deploymentHint(deploymentLabel)}</p>
+              <p className="text-xs text-slate-400 font-mono">{appSubtitle(deploymentLabel, appVersion)}</p>
             </div>
           )}
         </div>
