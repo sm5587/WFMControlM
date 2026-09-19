@@ -46,6 +46,9 @@ database/snapshots/*.sql
 *.db-journal
 
 # Deploy/runtime artifacts
+docker-deploy-files/
+*.tar
+*.zip
 VERSION
 
 # Ad-hoc DB2 probe scripts (dev only)
