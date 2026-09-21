@@ -749,3 +749,39 @@ model CalendarDate {
   @@unique([calendarId, date])
   @@index([date])
 }
+
+// ============================================================
+// CUSTOM ALERTS - User-defined SQL threshold watchers
+// Each rule runs a SELECT against one client's DB2 on its own
+// interval, reads a named column from the first result row, and
+// compares it against a threshold using the configured operator.
+// ============================================================
+model CustomAlert {
+  id              String    @id @default(uuid())
+  name            String                       // Display label for the watcher
+  clientId        String                       // Client.clientId short code (e.g. WAWA) — used for DB2 query
+  clientName      String    @default("")       // Snapshot of client display name for the list UI
+
+  sqlQuery        String                       // User-provided SELECT statement
+  columnName      String                       // Column in the result row to evaluate
+  operator        String    @default("GT")     // GT | GTE | LT | LTE | EQ
+  thresholdValue  String                       // Threshold 'a' (compared numerically when both sides are numeric)
+  intervalMinutes Int       @default(15)       // How often to re-run the check
+
+  isActive        Boolean   @default(true)
+
+  // Runtime state (updated after each check)
+  lastStatus      String?                      // OK | TRIGGERED | ERROR | PENDING
+  lastValue       String?                      // Last observed column value
+  lastError       String?                      // Last error message (when lastStatus = ERROR)
+  lastCheckedAt   DateTime?                     // When the check last ran
+  lastTriggeredAt DateTime?                     // When the threshold was last crossed
+
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([isActive])
+  @@index([clientId])
+  @@index([lastStatus])
+}

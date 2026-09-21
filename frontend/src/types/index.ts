@@ -417,3 +417,47 @@ export interface CalendarImportEntry {
   status: string;
 }
 
+// ---- Custom Alerts (user-defined SQL threshold watchers) ----
+export type CustomAlertOperator = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ';
+export type CustomAlertStatus = 'OK' | 'TRIGGERED' | 'ERROR' | 'PENDING';
+
+export interface CustomAlert {
+  id: string;
+  name: string;
+  clientId: string;
+  clientName: string;
+  sqlQuery: string;
+  columnName: string;
+  operator: CustomAlertOperator;
+  thresholdValue: string;
+  intervalMinutes: number;
+  isActive: boolean;
+  lastStatus: CustomAlertStatus | null;
+  lastValue: string | null;
+  lastError: string | null;
+  lastCheckedAt: string | null;
+  lastTriggeredAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomAlertInput {
+  name: string;
+  clientId: string;
+  clientName?: string;
+  sqlQuery: string;
+  columnName: string;
+  operator: CustomAlertOperator;
+  thresholdValue: string;
+  intervalMinutes: number;
+  isActive?: boolean;
+}
+
+export interface CustomAlertTestResult {
+  value: string | null;
+  triggered: boolean;
+  error: string | null;
+  executionMs: number;
+}
+

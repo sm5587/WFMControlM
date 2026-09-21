@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Briefcase,
-  Bell, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play, Radio,
+  Bell, BellRing, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play, Radio,
   LogOut, Shield, Eye, Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -26,6 +26,7 @@ const navItems = [
   { path: '/payroll-monitor', label: 'Payroll Monitor', icon: Radio,           permission: 'PAYROLL_MONITOR_VIEW' },
   { path: '/unprocessed-punch', label: 'Unprocessed Punch', icon: Timer,        permission: 'UNPROC_PUNCH_VIEW' },
   { path: '/alerts',      label: 'Alerts',             icon: Bell,            permission: 'ALERTS_VIEW' },
+  { path: '/custom-alerts', label: 'Custom Alerts',    icon: BellRing,        permission: 'CUSTOM_ALERTS_VIEW' },
 ];
 
 const adminNavItems = [
