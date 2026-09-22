@@ -10,7 +10,9 @@
 import { prisma } from '../database/prisma';
 import { configService } from './config-service';
 import { db2DirectService } from './db2-direct-service';
+import { payrollDeadlineAlertService } from './payroll-deadline-alert-service';
 import {
+  CLIENT_WIDE_DIST_LIST_ID,
   PAY_FILE_GENERATED_STATUS,
   PAYROLL_FEATURE_IDS,
   PayScheduleKind,
@@ -19,13 +21,17 @@ import {
   classifyMonitorPhase,
   compareMonitorReleaseOrder,
   computeNextCronRunIso,
+  computePayrollDeadlineAtIso,
   computeReleaseDueAtIso,
   defaultPayWeekEnd,
+  evaluatePayrollDeadlineLate,
   evaluateStalledGeneration,
+  isClientWideDistList,
   monitorRowKey,
   normalizeFrequency,
   parseFrequencies,
   payJobKind,
+  regularPayJobRank,
   resolveQueueSchedule,
   rfxCompactDateTime,
   sanitizeDistListId,
@@ -101,6 +107,11 @@ export interface PayrollResult {
   summary: PayrollSummary;
   adj: AdjOutstanding | null;
   timezone: string;
+  payrollDeadlineDaysAfterWeekEnd: number | null;
+  payrollDeadlineLocalTime: string | null;
+  deadlineAt: string | null;
+  late: boolean;
+  lateMinutes: number | null;
   executionTimeMs: number;
 }
 
@@ -123,6 +134,8 @@ export interface PayMonitorGenerator {
   queueId: string;
   jobType: string;
   distListId: string;
+  /** From RWS_DIST_LIST.NAME when PARAM_3 matches a store group; null for ALL / unknown. */
+  distListName: string | null;
   execCron: string | null;
   schedule: string;
   scheduleKind: PayScheduleKind;
@@ -143,11 +156,15 @@ export interface PayrollMonitorRow {
   weekStartDate: string;
   weekEndDate: string;
   distListId: string;
+  distListName: string | null;
   generator: PayMonitorGenerator;
   units: { total: number; generated: number; pending: number };
   phase: PayrollMonitorPhase;
   stalled: boolean;
   stalledMinutes: number | null;
+  deadlineAt: string | null;
+  late: boolean;
+  lateMinutes: number | null;
   error?: string;
 }
 
@@ -157,6 +174,7 @@ export interface PayrollMonitorSnapshot {
   upcomingCount: number;
   completeCount: number;
   stalledCount: number;
+  lateCount: number;
   stalledGraceMins: number;
   rows: PayrollMonitorRow[];
   executionTimeMs: number;
@@ -169,11 +187,15 @@ export interface PayrollMonitorDetail {
   weekStartDate: string;
   weekEndDate: string;
   distListId: string;
+  distListName: string | null;
   generator: PayMonitorGenerator;
   units: { total: number; generated: number; pending: number };
   phase: PayrollMonitorPhase;
   stalled: boolean;
   stalledMinutes: number | null;
+  deadlineAt: string | null;
+  late: boolean;
+  lateMinutes: number | null;
   records: PayrollRecord[];
   executionTimeMs: number;
 }
@@ -222,6 +244,10 @@ function stalledRank(stalled: boolean): number {
   return stalled ? 0 : 1;
 }
 
+function lateRank(late: boolean): number {
+  return late ? 0 : 1;
+}
+
 function evaluateRowStalled(
   generator: PayMonitorGenerator,
   weekEndDate: string,
@@ -237,6 +263,21 @@ function evaluateRowStalled(
     units,
     graceMins,
   });
+}
+
+function evaluateRowDeadline(
+  weekEndDate: string,
+  timezone: string,
+  daysAfter: number | null | undefined,
+  localTime: string | null | undefined,
+  pendingUnits: number,
+): { deadlineAt: string | null; late: boolean; lateMinutes: number | null } {
+  const deadlineAt = computePayrollDeadlineAtIso(weekEndDate, daysAfter, localTime, timezone);
+  const { late, lateMinutes } = evaluatePayrollDeadlineLate({
+    deadlineAt,
+    pendingUnits,
+  });
+  return { deadlineAt, late, lateMinutes };
 }
 
 class PayrollService {
@@ -305,7 +346,14 @@ class PayrollService {
 
     const local = await prisma.client.findUnique({
       where: { clientId },
-      select: { priorPeriodEdit: true, priorPeriodEditLimit: true, payrollCycle: true, timezone: true },
+      select: {
+        priorPeriodEdit: true,
+        priorPeriodEditLimit: true,
+        payrollCycle: true,
+        timezone: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+      },
     });
     const adjEligible = !!(local?.priorPeriodEdit && (local.priorPeriodEditLimit || 0) > 0);
 
@@ -327,8 +375,29 @@ class PayrollService {
 
     const fileIds = [...new Set(records.filter(r => r.generated && r.fileId).map(r => r.fileId))];
     const generatedCount = records.filter(r => r.generated).length;
+    const pendingCount = records.length - generatedCount;
     const generatedTimes = records.map(r => r.generatedAt).filter(Boolean).sort();
     const generatedAt = generatedTimes[generatedTimes.length - 1] || null;
+    const timezone = local?.timezone || 'America/Chicago';
+    const payrollDeadlineDaysAfterWeekEnd = local?.payrollDeadlineDaysAfterWeekEnd ?? null;
+    const payrollDeadlineLocalTime = local?.payrollDeadlineLocalTime ?? null;
+    const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
+      weekEndDate,
+      timezone,
+      payrollDeadlineDaysAfterWeekEnd,
+      payrollDeadlineLocalTime,
+      pendingCount,
+    );
+
+    payrollDeadlineAlertService.sync({
+      clientId,
+      weekEndDate,
+      deadlineAt,
+      pendingUnits: pendingCount,
+      totalUnits: records.length,
+      lateMinutes,
+      late,
+    }).catch(() => { /* alert persistence must not fail the status response */ });
 
     return {
       clientId,
@@ -342,13 +411,18 @@ class PayrollService {
       summary: {
         totalStores: records.length,
         generatedCount,
-        pendingCount: records.length - generatedCount,
+        pendingCount,
         distinctFileIds: fileIds.length,
         fileIds,
         generatedAt,
       },
       adj,
-      timezone: local?.timezone || 'America/Chicago',
+      timezone,
+      payrollDeadlineDaysAfterWeekEnd,
+      payrollDeadlineLocalTime,
+      deadlineAt,
+      late,
+      lateMinutes,
       executionTimeMs: Date.now() - startMs,
     };
   }
@@ -513,17 +587,7 @@ class PayrollService {
   async getMonitorSnapshot(): Promise<PayrollMonitorSnapshot> {
     const startMs = Date.now();
     const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
-    const clients = await prisma.client.findMany({
-      where: { payrollEnabled: true, isActive: true, db2Host: { not: null } },
-      select: {
-        clientId: true,
-        name: true,
-        timezone: true,
-        payrollCycle: true,
-        payrollFileGen: true,
-      },
-      orderBy: { clientId: 'asc' },
-    });
+    const clients = await this.listMonitorClients();
 
     const CONCURRENCY = 5;
     const rows: PayrollMonitorRow[] = [];
@@ -539,6 +603,7 @@ class PayrollService {
     rows.sort((a, b) =>
       phaseRank(a.phase) - phaseRank(b.phase)
       || stalledRank(a.stalled) - stalledRank(b.stalled)
+      || lateRank(a.late) - lateRank(b.late)
       || compareMonitorReleaseOrder(a.generator, b.generator)
       || a.clientId.localeCompare(b.clientId)
       || a.distListId.localeCompare(b.distListId),
@@ -550,10 +615,123 @@ class PayrollService {
       upcomingCount: rows.filter(r => r.phase === 'upcoming').length,
       completeCount: rows.filter(r => r.phase === 'complete').length,
       stalledCount: rows.filter(r => r.stalled).length,
+      lateCount: rows.filter(r => r.late).length,
       stalledGraceMins,
       rows,
       executionTimeMs: Date.now() - startMs,
     };
+  }
+
+  /** Fast SQLite list of payroll-enabled clients for progressive monitor loading. */
+  async listMonitorClients(): Promise<Array<{
+    clientId: string;
+    name: string;
+    timezone: string;
+    payrollCycle: string;
+    payrollFileGen: string;
+    payrollDeadlineDaysAfterWeekEnd: number | null;
+    payrollDeadlineLocalTime: string | null;
+  }>> {
+    return prisma.client.findMany({
+      where: { payrollEnabled: true, isActive: true, db2Host: { not: null } },
+      select: {
+        clientId: true,
+        name: true,
+        timezone: true,
+        payrollCycle: true,
+        payrollFileGen: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+      },
+      orderBy: { clientId: 'asc' },
+    });
+  }
+
+  /** Scan one client for progressive monitor loading (one or more store-group rows). */
+  async getMonitorClientScan(clientId: string): Promise<{
+    clientId: string;
+    rows: PayrollMonitorRow[];
+    stalledGraceMins: number;
+    lateCount: number;
+    executionTimeMs: number;
+  }> {
+    const startMs = Date.now();
+    const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    const local = await prisma.client.findFirst({
+      where: { clientId, payrollEnabled: true, isActive: true, db2Host: { not: null } },
+      select: {
+        clientId: true,
+        name: true,
+        timezone: true,
+        payrollCycle: true,
+        payrollFileGen: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+      },
+    });
+    if (!local) {
+      throw new Error(`Payroll monitor client not found: ${clientId}`);
+    }
+    const rows = await this.scanMonitorClient(local, stalledGraceMins);
+    this.publishDeadlineAlert(local.clientId, local.name, rows);
+    return {
+      clientId: local.clientId,
+      rows,
+      stalledGraceMins,
+      lateCount: rows.filter(r => r.late).length,
+      executionTimeMs: Date.now() - startMs,
+    };
+  }
+
+  /** Re-check every client that has an SLA deadline and refresh Escalated alerts. */
+  async refreshDeadlineAlerts(): Promise<{ checked: number; errors: string[] }> {
+    const clients = await prisma.client.findMany({
+      where: {
+        payrollEnabled: true,
+        isActive: true,
+        db2Host: { not: null },
+        payrollDeadlineDaysAfterWeekEnd: { not: null },
+        payrollDeadlineLocalTime: { not: null },
+      },
+      select: { clientId: true },
+      orderBy: { clientId: 'asc' },
+    });
+    const errors: string[] = [];
+    const CONCURRENCY = 3;
+    let idx = 0;
+    const worker = async () => {
+      while (idx < clients.length) {
+        const c = clients[idx++];
+        try {
+          await this.getMonitorClientScan(c.clientId);
+        } catch (err: any) {
+          errors.push(`${c.clientId}: ${err.message || 'scan failed'}`);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, clients.length || 1) }, () => worker()));
+    return { checked: clients.length, errors };
+  }
+
+  private publishDeadlineAlert(clientId: string, clientName: string, rows: PayrollMonitorRow[]): void {
+    const lateRows = rows.filter(r => r.late);
+    const pendingUnits = lateRows.reduce((n, r) => n + (r.units?.pending || 0), 0);
+    const totalUnits = rows.reduce((n, r) => n + (r.units?.total || 0), 0);
+    const sample = lateRows[0] || rows.find(r => r.deadlineAt) || rows[0];
+    const lateMinutes = lateRows.reduce<number | null>((max, r) => {
+      if (r.lateMinutes == null) return max;
+      return max == null ? r.lateMinutes : Math.max(max, r.lateMinutes);
+    }, null);
+    payrollDeadlineAlertService.sync({
+      clientId,
+      clientName,
+      weekEndDate: sample?.weekEndDate || '',
+      deadlineAt: sample?.deadlineAt || null,
+      pendingUnits,
+      totalUnits,
+      lateMinutes,
+      late: lateRows.length > 0 && pendingUnits > 0,
+    }).catch(() => { /* ignore */ });
   }
 
   async getMonitorDetail(clientId: string, distListId: string): Promise<PayrollMonitorDetail> {
@@ -565,7 +743,11 @@ class PayrollService {
 
     const local = await prisma.client.findUnique({
       where: { clientId },
-      select: { timezone: true },
+      select: {
+        timezone: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+      },
     });
     const timezone = local?.timezone || 'America/Chicago';
     const periods = await this.fetchPeriods(clientId);
@@ -593,6 +775,13 @@ class PayrollService {
       units,
     });
     const { stalled, stalledMinutes } = evaluateRowStalled(generator, weekEndDate, units, stalledGraceMins);
+    const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
+      weekEndDate,
+      timezone,
+      local?.payrollDeadlineDaysAfterWeekEnd,
+      local?.payrollDeadlineLocalTime,
+      units.pending,
+    );
 
     return {
       rowKey: monitorRowKey(clientId, safeDistListId),
@@ -601,11 +790,15 @@ class PayrollService {
       weekStartDate,
       weekEndDate,
       distListId: safeDistListId,
+      distListName: generator.distListName,
       generator,
       units,
       phase,
       stalled,
       stalledMinutes,
+      deadlineAt,
+      late,
+      lateMinutes,
       records,
       executionTimeMs: Date.now() - startMs,
     };
@@ -617,6 +810,8 @@ class PayrollService {
     timezone: string;
     payrollCycle: string;
     payrollFileGen: string;
+    payrollDeadlineDaysAfterWeekEnd?: number | null;
+    payrollDeadlineLocalTime?: string | null;
   }, stalledGraceMins: number): Promise<PayrollMonitorRow[]> {
     const baseRow = {
       clientId: c.clientId,
@@ -639,12 +834,21 @@ class PayrollService {
           ...baseRow,
           rowKey: monitorRowKey(c.clientId, 'none'),
           distListId: '',
+          distListName: null,
           generator: this.emptyMonitorGenerator('', c.timezone, weekEndDate),
           units: { total: 0, generated: 0, pending: 0 },
           phase: 'unknown',
           stalled: false,
           stalledMinutes: null,
-          error: 'No regular pay generator rows with PARAM_3 store group in RFX_QUEUE',
+          deadlineAt: computePayrollDeadlineAtIso(
+            weekEndDate,
+            c.payrollDeadlineDaysAfterWeekEnd,
+            c.payrollDeadlineLocalTime,
+            c.timezone,
+          ),
+          late: false,
+          lateMinutes: null,
+          error: 'No running regular pay generator in RFX_QUEUE (RTAPayrollFeedGeneratorJob / RTANewPayFileGeneratorJob / RTA_PAYROLL_FILE_GEN)',
         }];
       }
 
@@ -657,12 +861,20 @@ class PayrollService {
           const { stalled, stalledMinutes } = evaluateRowStalled(
             generator, weekEndDate, units, stalledGraceMins,
           );
+          const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
+            weekEndDate,
+            c.timezone,
+            c.payrollDeadlineDaysAfterWeekEnd,
+            c.payrollDeadlineLocalTime,
+            units.pending,
+          );
           rows.push({
             ...baseRow,
             rowKey: monitorRowKey(c.clientId, generator.distListId),
             weekStartDate,
             weekEndDate,
             distListId: generator.distListId,
+            distListName: generator.distListName,
             generator,
             units,
             phase: classifyMonitorPhase({
@@ -676,6 +888,9 @@ class PayrollService {
             }),
             stalled,
             stalledMinutes,
+            deadlineAt,
+            late,
+            lateMinutes,
           });
         } catch (err: any) {
           rows.push({
@@ -684,11 +899,15 @@ class PayrollService {
             weekStartDate,
             weekEndDate,
             distListId: generator.distListId,
+            distListName: generator.distListName,
             generator,
             units: { total: 0, generated: 0, pending: 0 },
             phase: 'unknown',
             stalled: false,
             stalledMinutes: null,
+            deadlineAt: null,
+            late: false,
+            lateMinutes: null,
             error: err.message || 'Monitor scan failed',
           });
         }
@@ -699,11 +918,15 @@ class PayrollService {
         ...baseRow,
         rowKey: monitorRowKey(c.clientId, 'none'),
         distListId: '',
+        distListName: null,
         generator: this.emptyMonitorGenerator('', c.timezone, ''),
         units: { total: 0, generated: 0, pending: 0 },
         phase: 'unknown',
         stalled: false,
         stalledMinutes: null,
+        deadlineAt: null,
+        late: false,
+        lateMinutes: null,
         error: err.message || 'Monitor scan failed',
       }];
     }
@@ -714,6 +937,7 @@ class PayrollService {
       queueId: '',
       jobType,
       distListId: '',
+      distListName: null,
       execCron: null,
       schedule: '',
       scheduleKind: 'unknown',
@@ -733,8 +957,10 @@ class PayrollService {
     const jobType = cell(row, 'JOB_TYPE');
     if (payJobKind(jobType) !== 'regular') return null;
 
-    const distListId = sanitizeDistListId(cell(row, 'DIST_LIST_ID'));
-    if (!distListId) return null;
+    const distListId = sanitizeDistListId(cell(row, 'DIST_LIST_ID')) || CLIENT_WIDE_DIST_LIST_ID;
+    const distListName = isClientWideDistList(distListId)
+      ? null
+      : (cell(row, 'DIST_LIST_NAME') || null);
 
     const execCronRaw = cell(row, 'EXEC_CRON') || null;
     const schedule = resolveQueueSchedule(execCronRaw, cell(row, 'QUEUE_SLEEP') || null);
@@ -744,6 +970,7 @@ class PayrollService {
       queueId: cell(row, 'QUEUE_ID'),
       jobType,
       distListId,
+      distListName,
       execCron: execCronRaw,
       schedule,
       scheduleKind: kind,
@@ -757,6 +984,12 @@ class PayrollService {
     };
   }
 
+  /**
+   * Prefer one regular pay generator family per client (either-or):
+   * RTAPayrollFeedGeneratorJob → RTANewPayFileGeneratorJob → RTA_PAYROLL_FILE_GEN.
+   * Only QUEUE_STATUS = 'R' (running) jobs are considered — paused rows are ignored.
+   * Store-group (PARAM_3) rows stay one-per-group; client-wide jobs use distListId ALL.
+   */
   private async fetchPayGenerators(
     clientId: string,
     timezone: string,
@@ -764,24 +997,49 @@ class PayrollService {
   ): Promise<PayMonitorGenerator[]> {
     const sql =
       `SELECT q.QUEUE_ID, q.JOB_TYPE, q.EXEC_CRON, q.QUEUE_SLEEP, ` +
-      `q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS, s.PARAM_3 AS DIST_LIST_ID ` +
+      `q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS, s.PARAM_3 AS DIST_LIST_ID, ` +
+      `d.NAME AS DIST_LIST_NAME ` +
       `FROM RWSUSER.RFX_QUEUE q ` +
       `LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID ` +
+      `LEFT JOIN RWSUSER.RWS_DIST_LIST d ` +
+      `ON TRIM(CAST(d.DIST_LIST_ID AS VARCHAR(32))) = TRIM(CAST(s.PARAM_3 AS VARCHAR(32))) ` +
       `WHERE q.QUEUE_STATUS = 'R'`;
 
     const result = await db2DirectService.queryClient(clientId, sql, 'Payroll/MonitorQueue');
     if (!result.success || !result.rows) return [];
 
-    const byDistList = new Map<string, PayMonitorGenerator>();
+    const mapped: PayMonitorGenerator[] = [];
     for (const row of result.rows) {
-      const mapped = this.mapPayGeneratorRow(row, timezone, payWeekEndYmd);
-      if (!mapped) continue;
-      const existing = byDistList.get(mapped.distListId);
-      if (!existing || mapped.jobsPending > existing.jobsPending) {
-        byDistList.set(mapped.distListId, mapped);
-      }
+      const gen = this.mapPayGeneratorRow(row, timezone, payWeekEndYmd);
+      if (gen) mapped.push(gen);
     }
-    return [...byDistList.values()].sort((a, b) => a.distListId.localeCompare(b.distListId));
+    if (!mapped.length) return [];
+
+    const bestRank = Math.min(...mapped.map(g => regularPayJobRank(g.jobType)));
+    const preferred = mapped.filter(g => regularPayJobRank(g.jobType) === bestRank);
+
+    const withStoreGroup = preferred.filter(g => !isClientWideDistList(g.distListId));
+    if (withStoreGroup.length) {
+      const byDistList = new Map<string, PayMonitorGenerator>();
+      for (const gen of withStoreGroup) {
+        const existing = byDistList.get(gen.distListId);
+        if (!existing || this.isBetterMonitorGenerator(gen, existing)) {
+          byDistList.set(gen.distListId, gen);
+        }
+      }
+      return [...byDistList.values()].sort((a, b) => a.distListId.localeCompare(b.distListId));
+    }
+
+    let best = preferred[0];
+    for (let i = 1; i < preferred.length; i++) {
+      if (this.isBetterMonitorGenerator(preferred[i], best)) best = preferred[i];
+    }
+    return [{ ...best, distListId: CLIENT_WIDE_DIST_LIST_ID, distListName: null }];
+  }
+
+  /** Prefer higher JOBS_PENDING when both candidates are already running. */
+  private isBetterMonitorGenerator(candidate: PayMonitorGenerator, existing: PayMonitorGenerator): boolean {
+    return candidate.jobsPending > existing.jobsPending;
   }
 
   private async fetchScopedUnitCounts(
@@ -789,12 +1047,14 @@ class PayrollService {
     weekEndDate: string,
     distListId: string,
   ): Promise<{ total: number; generated: number; pending: number }> {
+    const scope = isClientWideDistList(distListId)
+      ? ''
+      : ` AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')}`;
     const sql =
       `SELECT COUNT(*) AS TOTAL_CNT, ` +
       `SUM(CASE WHEN UPPER(FILE_STATUS) = '${PAY_FILE_GENERATED_STATUS}' THEN 1 ELSE 0 END) AS GENERATED_CNT ` +
       `FROM RWSUSER.TA_UNIT_PAY_STATUS u ` +
-      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)} ` +
-      `AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')}`;
+      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)}${scope}`;
     const result = await db2DirectService.queryClient(clientId, sql, 'Payroll/MonitorCounts');
     if (!result.success || !result.rows || !result.rows[0]) {
       throw new Error(result.error || `Failed to query scoped unit counts for ${clientId}`);
@@ -809,18 +1069,19 @@ class PayrollService {
     weekEndDate: string,
     distListId: string,
   ): Promise<PayrollRecord[]> {
+    const scope = isClientWideDistList(distListId)
+      ? ''
+      : ` AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')}`;
     const sql =
       `SELECT ${UNIT_STATUS_COLUMNS} FROM RWSUSER.TA_UNIT_PAY_STATUS u ` +
       `LEFT JOIN RWSUSER.TA_PAY_FILE f ON f.FILE_ID = u.FILE_ID ` +
-      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)} ` +
-      `AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')} ` +
+      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)}${scope} ` +
       `ORDER BY u.UNIT_ID`;
 
     const fallbackSql =
       `SELECT UNIT_ID, WEEK_START_DATE, WEEK_END_DATE, FILE_STATUS, FILE_ID ` +
       `FROM RWSUSER.TA_UNIT_PAY_STATUS u ` +
-      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)} ` +
-      `AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')} ` +
+      `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)}${scope} ` +
       `ORDER BY UNIT_ID`;
 
     let result = await db2DirectService.queryClient(clientId, sql, 'Payroll/UnitStatus');

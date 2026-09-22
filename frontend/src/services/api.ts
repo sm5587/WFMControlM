@@ -39,7 +39,7 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && _onUnauthorized) {
       // Don't trigger on login attempts
       const url = error.config?.url || '';
-      if (!url.includes('/auth/login')) {
+      if (!url.includes('/auth/login') && !url.includes('/config/public')) {
         _onUnauthorized();
       }
     }
@@ -517,8 +517,20 @@ export const payrollApi = {
   syncClients: (): Promise<ApiResponse<any>> =>
     api.post('/payroll/sync-clients'),
 
+  updateDeadline: (
+    clientId: string,
+    payload: { daysAfterWeekEnd: number | null; localTime: string | null },
+  ): Promise<ApiResponse<any>> =>
+    api.patch(`/payroll/${encodeURIComponent(clientId)}/deadline`, payload),
+
   getMonitorSnapshot: (): Promise<ApiResponse<any>> =>
     api.get('/payroll/monitor', { timeout: 180000 }),
+
+  getMonitorClients: (): Promise<ApiResponse<any>> =>
+    api.get('/payroll/monitor/clients'),
+
+  getMonitorClientScan: (clientId: string): Promise<ApiResponse<any>> =>
+    api.get(`/payroll/monitor/client/${encodeURIComponent(clientId)}`, { timeout: 120000 }),
 
   getMonitorDetail: (clientId: string, distListId: string): Promise<ApiResponse<any>> =>
     api.get(`/payroll/monitor/${encodeURIComponent(clientId)}`, {
@@ -571,6 +583,9 @@ export const escalationsApi = {
   notify: (alertIds?: string[]): Promise<ApiResponse<{ sent: number; skipped: number }>> =>
     api.post('/escalations/notify', { alertIds }),
 
+  notifyAll: (punchRows: any[]): Promise<ApiResponse<any>> =>
+    api.post('/escalations/notify-all', { punchRows }),
+
   testEmail: (): Promise<ApiResponse<{ sent: boolean; recipients: string[]; error?: string; details?: string[] }>> =>
     api.post('/escalations/test-email'),
 
@@ -598,6 +613,21 @@ export const escalationsApi = {
 
   suppressPunch: (clientId: string, durationMinutes: number, userId?: string, reason?: string): Promise<ApiResponse> =>
     api.post(`/escalations/punch-alerts/${clientId}/suppress`, { userId, durationMinutes, reason }),
+
+  getPayrollDeadlineAlerts: (): Promise<ApiResponse<any[]>> =>
+    api.get('/escalations/payroll-deadlines'),
+
+  refreshPayrollDeadlineAlerts: (): Promise<ApiResponse<any[]>> =>
+    api.post('/escalations/payroll-deadlines/refresh', {}, { timeout: 180000 }),
+
+  notifyPayrollDeadline: (clientIds: string[]): Promise<ApiResponse<any>> =>
+    api.post('/escalations/payroll-deadlines/notify', { clientIds }),
+
+  acknowledgePayrollDeadline: (clientId: string, userId?: string): Promise<ApiResponse> =>
+    api.post(`/escalations/payroll-deadlines/${encodeURIComponent(clientId)}/acknowledge`, { userId }),
+
+  suppressPayrollDeadline: (clientId: string, durationMinutes: number, userId?: string, reason?: string): Promise<ApiResponse> =>
+    api.post(`/escalations/payroll-deadlines/${encodeURIComponent(clientId)}/suppress`, { userId, durationMinutes, reason }),
 };
 
 // ---- Maintenance Windows ----

@@ -4,17 +4,21 @@ import { Link } from 'react-router-dom';
 import {
   Server, Database, CheckCircle, Clock, AlertTriangle,
   Activity, Briefcase, ArrowRight, Loader2, Timer, Bell,
-  Settings, Eye, EyeOff, X,
+  Settings, Eye, EyeOff, X, Wallet,
 } from 'lucide-react';
 import { jobsApi, unprocessedPunchApi, escalationsApi } from '../../services/api';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
+import { useProgressivePayrollMonitor, PayrollMonitorRow } from '../../hooks/useProgressivePayrollMonitor';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useAppName, useConfig } from '../../contexts/ConfigContext';
+import { useAuth } from '../../context/AuthContext';
+import { PAYROLL_MONITOR_ENABLED_KEY } from '../../constants/app-display';
 
 // ---- Widget registry ----
 type WidgetId =
   | 'escalated-alerts'
   | 'unproc-punch'
+  | 'payroll'
   | 'db2-stats'
   | 'batch-summary'
   | 'pending-jobs'
@@ -24,6 +28,7 @@ type WidgetId =
 const WIDGET_LABELS: Record<WidgetId, string> = {
   'escalated-alerts': 'Escalated Alerts',
   'unproc-punch':     'Unprocessed Punches',
+  'payroll':          'Payroll',
   'db2-stats':        'DB2 Stat Cards',
   'batch-summary':    'Batch Summary',
   'pending-jobs':     'Pending Jobs >30min',
@@ -42,7 +47,10 @@ function loadHidden(): Set<WidgetId> {
 
 export default function Dashboard() {
   const appName = useAppName();
-  const { getInt } = useConfig();
+  const { canRead } = useAuth();
+  const { getInt, getBool } = useConfig();
+  const payrollMonitorEnabled = getBool(PAYROLL_MONITOR_ENABLED_KEY, false);
+  const canSeePayroll = payrollMonitorEnabled && canRead('PAYROLL_MONITOR_VIEW');
   const upcomingRefreshMs = getInt('polling.upcomingJobsRefreshSecs', 60) * 1000;
   const { data: allBatchData, isLoading: batchLoading, dataUpdatedAt: batchUpdatedAt } = useAllClientsBatchData();
 
@@ -171,7 +179,9 @@ export default function Dashboard() {
             </button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(Object.keys(WIDGET_LABELS) as WidgetId[]).map(id => {
+            {(Object.keys(WIDGET_LABELS) as WidgetId[])
+              .filter(id => id !== 'payroll' || canSeePayroll)
+              .map(id => {
               const visible = !hidden.has(id);
               return (
                 <button
@@ -320,6 +330,9 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* ===== Payroll: exceptions first ===== */}
+      {canSeePayroll && show('payroll') && <PayrollDashboardWidget />}
 
       {/* ===== ROW 2: DB2 + Cron Jobs ===== */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -518,6 +531,136 @@ function MiniStat({ label, value, color }: { label: string; value: number; color
     <div className="bg-gray-50 rounded-lg p-2.5">
       <div className={`text-lg font-bold ${color}`}>{value}</div>
       <div className="text-[10px] text-gray-400">{label}</div>
+    </div>
+  );
+}
+
+interface PayrollAttention {
+  clientId: string;
+  name: string;
+  lateGroups: number;
+  stalledGroups: number;
+  pending: number;
+  lateMinutes: number | null;
+}
+
+function payrollAttention(rows: PayrollMonitorRow[]): PayrollAttention[] {
+  const byClient = new Map<string, PayrollAttention>();
+  for (const row of rows) {
+    if (row.loading || (!row.late && !row.stalled)) continue;
+    const current = byClient.get(row.clientId) || {
+      clientId: row.clientId,
+      name: row.name || row.clientId,
+      lateGroups: 0,
+      stalledGroups: 0,
+      pending: 0,
+      lateMinutes: null,
+    };
+    if (row.late) current.lateGroups += 1;
+    if (row.stalled) current.stalledGroups += 1;
+    current.pending += row.units?.pending || 0;
+    if (row.lateMinutes != null) {
+      current.lateMinutes = current.lateMinutes == null
+        ? row.lateMinutes
+        : Math.max(current.lateMinutes, row.lateMinutes);
+    }
+    byClient.set(row.clientId, current);
+  }
+  return Array.from(byClient.values()).sort((a, b) => {
+    if (a.lateGroups !== b.lateGroups) return b.lateGroups - a.lateGroups;
+    return (b.lateMinutes || 0) - (a.lateMinutes || 0);
+  });
+}
+
+function PayrollDashboardWidget() {
+  const {
+    rows, lateCount, stalledCount, liveCount, completeCount,
+    total, loaded, status,
+  } = useProgressivePayrollMonitor();
+  const attention = payrollAttention(rows);
+  const scanning = status === 'connecting' || status === 'streaming';
+  const quiet = lateCount === 0 && stalledCount === 0 && !scanning;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+          <Wallet className="w-4 h-4 text-amber-600" />
+          Payroll
+          {lateCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold">{lateCount} late</span>
+          )}
+        </h3>
+        <div className="flex items-center gap-3">
+          {scanning && total > 0 && (
+            <span className="text-[10px] text-gray-400 flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> {loaded}/{total}
+            </span>
+          )}
+          <Link to="/payroll-monitor" className="text-xs text-amber-700 hover:text-amber-900 flex items-center gap-1">
+            Payroll Monitor <ArrowRight className="w-3 h-3" />
+          </Link>
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className={`rounded-lg p-3 text-center ${lateCount > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
+            <div className={`text-2xl font-bold ${lateCount > 0 ? 'text-red-600' : 'text-green-600'}`}>{lateCount}</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">Past deadline</div>
+          </div>
+          <div className={`rounded-lg p-3 text-center ${stalledCount > 0 ? 'bg-amber-50' : 'bg-gray-50'}`}>
+            <div className={`text-2xl font-bold ${stalledCount > 0 ? 'text-amber-700' : 'text-gray-400'}`}>{stalledCount}</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">Stalled</div>
+          </div>
+          <div className={`rounded-lg p-3 text-center ${liveCount > 0 ? 'bg-indigo-50' : 'bg-gray-50'}`}>
+            <div className={`text-2xl font-bold ${liveCount > 0 ? 'text-indigo-700' : 'text-gray-400'}`}>{liveCount}</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">Releasing now</div>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3 text-center">
+            <div className="text-2xl font-bold text-gray-600">{completeCount}</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">Done this week</div>
+          </div>
+        </div>
+
+        {status === 'connecting' && rows.length === 0 ? (
+          <div className="flex items-center gap-3 text-sm text-gray-400 py-2 justify-center">
+            <Loader2 className="w-5 h-5 animate-spin" /> Checking payroll clients...
+          </div>
+        ) : quiet ? (
+          <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 rounded-lg px-3 py-2">
+            <CheckCircle className="w-3.5 h-3.5" /> No payroll past deadline or stalled
+          </div>
+        ) : attention.length > 0 ? (
+          <div className="divide-y divide-gray-50 max-h-48 overflow-auto rounded-lg border border-amber-100">
+            {attention.slice(0, 6).map(client => (
+              <div key={client.clientId} className="px-4 py-2 flex items-center justify-between hover:bg-amber-50/30">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Database className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-gray-800 truncate">{client.name}</div>
+                    {client.name !== client.clientId && <div className="text-[10px] text-gray-400">{client.clientId}</div>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {client.pending > 0 && (
+                    <span className="text-[10px] text-gray-500">{client.pending} pending</span>
+                  )}
+                  {client.lateGroups > 0 ? (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700">
+                      LATE{client.lateMinutes != null ? ` ${client.lateMinutes}m` : ''}
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700">STALLED</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            {attention.length > 6 && (
+              <div className="px-4 py-2 text-center text-xs text-gray-400">+{attention.length - 6} more</div>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

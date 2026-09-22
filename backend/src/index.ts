@@ -164,6 +164,7 @@ async function bootstrap() {
         label: config.deploymentLabel,
         port: config.port,
         version: getAppVersion(),
+        displayFlags: configService.getDisplayMenuFlags(),
       },
     });
   });

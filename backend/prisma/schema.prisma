@@ -37,6 +37,9 @@ model Client {
   priorPeriodEdit      Boolean       @default(false)    // PRIOR_PERIOD_EDIT PF = Y
   priorPeriodEditLimit Int           @default(0)        // PRIOR_PERIOD_EDIT_LIMIT PF (prior weeks eligible for adj)
   payrollSyncedAt      DateTime?                        // Last time payroll PFs were checked per client DB2
+  // Local SLA (not WFM EXEC_CRON): completion deadline = weekEnd + days @ localTime in client TZ
+  payrollDeadlineDaysAfterWeekEnd Int?                  // null = unset; 0–7 days after pay week end
+  payrollDeadlineLocalTime        String?               // "HH:mm" in client timezone
 
   // Sync tracking
   lastCronSyncAt    DateTime?                      // Last successful cron sync (24h cooldown)
@@ -371,6 +374,40 @@ model UnprocPunchAlert {
 
   // Email notification tracking
   emailSentAt     DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([suppressUntil])
+}
+
+// ============================================================
+// PAYROLL DEADLINE ALERTS - SLA missed (units still pending after deadline)
+// Shown in Alerts → Escalated
+// ============================================================
+model PayrollDeadlineAlert {
+  id              String    @id @default(uuid())
+  clientId        String    @unique
+  clientName      String    @default("")
+  weekEndDate     String    @default("")
+  deadlineAt      DateTime?
+  pendingUnits    Int       @default(0)
+  totalUnits      Int       @default(0)
+  lateMinutes     Int?
+
+  status          String    @default("OPEN") // OPEN, ACKNOWLEDGED, SUPPRESSED
+  acknowledgedBy  String?
+  acknowledgedAt  DateTime?
+  suppressedBy    String?
+  suppressedAt    DateTime?
+  suppressUntil   DateTime?
+  suppressReason  String?
+  emailSentAt     DateTime?
+
+  firstSeenAt     DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  resolvedAt      DateTime?
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

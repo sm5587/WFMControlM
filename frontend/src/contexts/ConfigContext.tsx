@@ -3,10 +3,11 @@
 // Provides typed getters for frontend components.
 // ============================================================
 
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { configApi } from '../services/api';
 import { deploymentHint } from '../components/DeploymentBadge';
 import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME, DEFAULT_DEPLOYMENT_LABEL } from '../constants/app-display';
+import { useAuth } from '../context/AuthContext';
 
 interface ConfigContextValue {
   config: Record<string, string>;
@@ -34,13 +35,27 @@ const ConfigContext = createContext<ConfigContextValue>({
   reload: async () => {},
 });
 
+function mergeConfigMap(
+  prev: Record<string, string>,
+  incoming: Record<string, string>,
+): Record<string, string> {
+  return { ...prev, ...incoming };
+}
+
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
+  const { user, isLoading: authLoading } = useAuth();
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [deploymentLabel, setDeploymentLabel] = useState(DEFAULT_DEPLOYMENT_LABEL);
   const [appVersion, setAppVersion] = useState('');
 
-  const load = async () => {
+  const applyConfigValues = useCallback((values: Record<string, string>) => {
+    if (Object.keys(values).length === 0) return;
+    setConfig((prev) => mergeConfigMap(prev, values));
+  }, []);
+
+  /** Public — no auth. Includes menu display flags for instant sidebar rendering. */
+  const loadDeploymentInfo = useCallback(async () => {
     try {
       const depRes = await fetch('/api/deployment-info');
       if (depRes.ok) {
@@ -53,34 +68,54 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         if (typeof version === 'string' && version.trim()) {
           setAppVersion(version.trim());
         }
+        const displayFlags = depJson?.data?.displayFlags;
+        if (displayFlags && typeof displayFlags === 'object') {
+          applyConfigValues(displayFlags as Record<string, string>);
+        }
       }
     } catch {
       // deployment-info unavailable — keep default
+    } finally {
+      setLoaded(true);
     }
+  }, [applyConfigValues]);
 
+  const loadAppConfig = useCallback(async () => {
     try {
       const res = await configApi.getPublic();
       if (res.success && res.data) {
         if (Array.isArray(res.data)) {
-          // Array of { key, value } objects
           const map: Record<string, string> = {};
           for (const item of res.data) {
             map[item.key] = item.value;
           }
-          setConfig(map);
+          applyConfigValues(map);
         } else if (typeof res.data === 'object') {
-          // Flat Record<string, string>
-          setConfig(res.data as Record<string, string>);
+          applyConfigValues(res.data as Record<string, string>);
         }
       }
     } catch {
-      // Config fetch failed — use defaults
-    } finally {
-      setLoaded(true);
+      // Config fetch failed — menu flags from deployment-info still apply
     }
-  };
+  }, [applyConfigValues]);
 
-  useEffect(() => { load(); }, []);
+  const load = useCallback(async () => {
+    await loadDeploymentInfo();
+    if (user) {
+      await loadAppConfig();
+    }
+  }, [user, loadDeploymentInfo, loadAppConfig]);
+
+  // Menu flags: fetch immediately (parallel with auth restore)
+  useEffect(() => {
+    loadDeploymentInfo();
+  }, [loadDeploymentInfo]);
+
+  // Full config: fetch in parallel once session is known (background merge)
+  useEffect(() => {
+    if (authLoading || !user) return;
+    loadAppConfig();
+  }, [authLoading, user?.id, loadAppConfig]);
 
   const getString = (key: string, fallback: string) => config[key] ?? fallback;
   const appName = useMemo(() => {

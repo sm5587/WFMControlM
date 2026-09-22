@@ -8,6 +8,8 @@ export interface AuthUser {
   displayName: string;
   email?: string;
   timezone: string;
+  /** Assigned profile names (from /me) */
+  profileNames?: string[];
   /** functionId → { r: read, w: write } */
   permissions: Record<string, { r: boolean; w: boolean }>;
 }
@@ -34,6 +36,7 @@ function mapMeToAuthUser(data: {
   displayName: string;
   email?: string;
   timezone?: string;
+  profileNames?: string[];
   permissions?: Record<string, { r: boolean; w: boolean }>;
 }): AuthUser {
   return {
@@ -42,6 +45,7 @@ function mapMeToAuthUser(data: {
     displayName: data.displayName,
     email: data.email,
     timezone: data.timezone || 'Asia/Kolkata',
+    profileNames: data.profileNames,
     permissions: data.permissions ?? {},
   };
 }

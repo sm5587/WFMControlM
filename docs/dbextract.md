@@ -4,8 +4,9 @@ This project keeps SQL bootstrap and snapshot files under `database/`:
 
 | File | Purpose |
 |------|---------|
-| `database/first-time-deployment-ddl.sql` | Schema — apply on a **fresh** database only |
+| `database/first-time-deployment-ddl.sql` | Baseline schema (1.0.0) — apply on a **fresh** database only |
 | `database/first-time-deployment-dml.sql` | Reference/seed data — apply **once** after DDL on first deploy |
+| `database/upgrades/<version>-ddl.sql` | **Only** place for new DDL from 1.1.0 on (incremental; apply in version order after first-time) |
 | `database/snapshots/ddl-YYYYMMDD.sql` | Dated DDL export (reference backup, not used on deploy) |
 | `database/snapshots/dml-YYYYMMDD.sql` | Dated DML export (reference backup, not used on deploy) |
 | `database/sql-export-manifest.json` | Defines which tables are exported into DML |
@@ -86,7 +87,8 @@ npm run db:extract:first-time     # refresh first-time-deployment-*.sql only
 
 ## Production note
 
-- **First-time deploy:** `database/first-time-deployment-*.sql` or `./scripts/deploy-prod.sh` with `FIRST_TIME_DEPLOY=true`
+- **First-time deploy:** `database/first-time-deployment-*.sql`, then apply `database/upgrades/<version>-ddl.sql` in order up to the release version
+- **Upgrade existing DB:** apply only the new `database/upgrades/<version>-ddl.sql` file(s) once (see `database/upgrades/README.md`)
 - **Routine deploy:** `./scripts/deploy-prod.sh` only — never re-run first-time DML on live production
 - **Dated snapshots:** for audit/reference; stored in `database/snapshots/` (gitignored)
 

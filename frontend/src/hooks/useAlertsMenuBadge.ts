@@ -24,6 +24,16 @@ export function useAlertsMenuBadge() {
     refetchOnWindowFocus: true,
   });
 
+  const { data: payrollDeadlineAlerts = [] } = useQuery<any[]>({
+    queryKey: ['payroll-deadline-alerts'],
+    queryFn: async () => {
+      const res = await escalationsApi.getPayrollDeadlineAlerts();
+      return (res as any)?.data ?? [];
+    },
+    refetchInterval: getInt('polling.escalatedRefreshSecs', 60) * 1000,
+    refetchOnWindowFocus: true,
+  });
+
   const count = useMemo(() => {
     const activeEscalated = escalated.filter(
       a => a.status === 'OPEN' || a.status === 'ACKNOWLEDGED',
@@ -37,8 +47,15 @@ export function useAlertsMenuBadge() {
       else if (st?.status !== 'SUPPRESSED') punchOpen++;
     }
 
-    return activeEscalated + punchOpen + punchAcked;
-  }, [escalated, stalePunchRows, punchAlertStatuses]);
+    let payrollOpen = 0;
+    let payrollAcked = 0;
+    for (const a of payrollDeadlineAlerts) {
+      if (a.status === 'ACKNOWLEDGED') payrollAcked++;
+      else if (a.status !== 'SUPPRESSED') payrollOpen++;
+    }
+
+    return activeEscalated + punchOpen + punchAcked + payrollOpen + payrollAcked;
+  }, [escalated, stalePunchRows, punchAlertStatuses, payrollDeadlineAlerts]);
 
   return { showBadge: count > 0, count };
 }

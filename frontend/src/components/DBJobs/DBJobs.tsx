@@ -68,6 +68,7 @@ export default function DBJobs() {
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
   const [jobSearch, setJobSearch] = useState('');
   const [jobFilter, setJobFilter] = useState(''); // cross-client job name filter
+  const [criticalOnly, setCriticalOnly] = useState(false);
   const queryClient = useQueryClient();
 
   // Resizable left panel
@@ -216,25 +217,25 @@ export default function DBJobs() {
     return matchesSearch && matchesCluster && matchesSelected;
   };
 
-  // Cross-client job filter: flat list of all jobs matching jobFilter (respects client/cluster/search filters)
+  // Cross-client job list: when filtering by job name and/or critical-only (respects client/cluster/search filters)
   const crossClientJobs = useMemo(() => {
-    if (!jobFilter.trim()) return [];
-    const q = jobFilter.toLowerCase();
+    const q = jobFilter.trim().toLowerCase();
+    if (!q && !criticalOnly) return [];
     const results: { clientId: string; cluster: string; name: string; whiteGlove: boolean; job: QueueJob }[] = [];
     for (const ci of clientInfo) {
       if (!clientMatchesFilters(ci)) continue;
       const jobs: QueueJob[] = clientsData[ci.clientId]?.jobs || [];
       for (const job of jobs) {
+        if (criticalOnly && !job.isCritical) continue;
         const jobName = (job.jobType || job.param2 || '').toLowerCase();
-        if (jobName.includes(q)) {
-          results.push({ clientId: ci.clientId, cluster: ci.cluster || 'Unassigned', name: ci.name, whiteGlove: ci.whiteGlove, job });
-        }
+        if (q && !jobName.includes(q)) continue;
+        results.push({ clientId: ci.clientId, cluster: ci.cluster || 'Unassigned', name: ci.name, whiteGlove: ci.whiteGlove, job });
       }
     }
     return results.sort((a, b) =>
       a.cluster.localeCompare(b.cluster) || a.clientId.localeCompare(b.clientId)
     );
-  }, [jobFilter, clientInfo, clientsData, search, clusterFilter, selectedClient]);
+  }, [jobFilter, criticalOnly, clientInfo, clientsData, search, clusterFilter, selectedClient]);
 
   const nonCriticalFilteredJobs = useMemo(
     () => crossClientJobs.filter(r => !r.job.isCritical),
@@ -246,7 +247,7 @@ export default function DBJobs() {
   const getLastJobTime = (job: QueueJob) => job.lastJobTime || null;
   const getJobsPending = (job: QueueJob) => job.jobsPending ?? '—';
 
-  // Get jobs for selected client (with optional search)
+  // Get jobs for selected client (with optional search / critical filter)
   const selectedJobsRaw: QueueJob[] = selectedClient ? (clientsData[selectedClient]?.jobs || []) : [];
   const selectedJobs = useMemo(() => {
     let jobs = selectedJobsRaw;
@@ -264,8 +265,11 @@ export default function DBJobs() {
         return name.includes(q);
       });
     }
+    if (criticalOnly) {
+      jobs = jobs.filter(j => j.isCritical);
+    }
     return jobs;
-  }, [selectedJobsRaw, jobSearch, jobFilter]);
+  }, [selectedJobsRaw, jobSearch, jobFilter, criticalOnly]);
   const selectedError = selectedClient ? clientsData[selectedClient]?.error : null;
   const selectedInfo = clientInfo.find(ci => ci.clientId === selectedClient);
 
@@ -355,10 +359,22 @@ export default function DBJobs() {
           <div className="p-2.5 rounded-lg bg-green-50 text-green-600"><Play className="w-5 h-5" /></div>
           <div><p className="text-2xl font-bold text-gray-900">{totalJobs}</p><p className="text-xs text-gray-500">Running Jobs</p></div>
         </div>
-        <div className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setCriticalOnly(v => !v)}
+          title={criticalOnly ? 'Clear critical filter' : 'Show critical jobs only'}
+          className={`rounded-xl border p-4 flex items-center gap-3 text-left transition-colors ${
+            criticalOnly
+              ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-200'
+              : 'bg-white border-gray-100 hover:border-amber-200 hover:bg-amber-50/40'
+          }`}
+        >
           <div className="p-2.5 rounded-lg bg-amber-50 text-amber-600"><Star className="w-5 h-5" /></div>
-          <div><p className="text-2xl font-bold text-gray-900">{criticalCount}</p><p className="text-xs text-gray-500">Critical Jobs</p></div>
-        </div>
+          <div>
+            <p className="text-2xl font-bold text-gray-900">{criticalCount}</p>
+            <p className="text-xs text-gray-500">{criticalOnly ? 'Critical Jobs (filtered)' : 'Critical Jobs'}</p>
+          </div>
+        </button>
         <div className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3">
           <div className="p-2.5 rounded-lg bg-indigo-50 text-indigo-600"><Layers className="w-5 h-5" /></div>
           <div><p className="text-2xl font-bold text-gray-900">{clusterList.length}</p><p className="text-xs text-gray-500">Clusters</p></div>
@@ -393,15 +409,33 @@ export default function DBJobs() {
           )}
 
           {/* ── Cross-client job filter view (when no specific client is selected) ── */}
-          {jobFilter.trim() && !selectedClient && (
+          {(jobFilter.trim() || criticalOnly) && !selectedClient && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="px-5 py-3 bg-gradient-to-r from-zebra-50 to-white border-b border-gray-100 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Search className="w-4 h-4 text-zebra-500" />
-                  <span className="text-sm font-bold text-gray-900">Jobs matching "{jobFilter}"</span>
+                  {criticalOnly && !jobFilter.trim()
+                    ? <Star className="w-4 h-4 text-amber-500 fill-current" />
+                    : <Search className="w-4 h-4 text-zebra-500" />}
+                  <span className="text-sm font-bold text-gray-900">
+                    {criticalOnly && !jobFilter.trim()
+                      ? 'Critical jobs'
+                      : criticalOnly
+                        ? `Critical jobs matching "${jobFilter}"`
+                        : `Jobs matching "${jobFilter}"`}
+                  </span>
                   <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-zebra-100 text-zebra-700">
                     {crossClientJobs.length} across {new Set(crossClientJobs.map(r => r.clientId)).size} clients
                   </span>
+                  {criticalOnly && (
+                    <button
+                      type="button"
+                      onClick={() => setCriticalOnly(false)}
+                      className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 hover:bg-amber-200 transition-colors"
+                      title="Clear critical filter"
+                    >
+                      Critical ✕
+                    </button>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   {canManageDbJobs && nonCriticalFilteredJobs.length > 0 && (
@@ -423,7 +457,13 @@ export default function DBJobs() {
                 </div>
               </div>
               {crossClientJobs.length === 0 ? (
-                <div className="p-8 text-center text-gray-400 text-sm">No jobs found matching "{jobFilter}"</div>
+                <div className="p-8 text-center text-gray-400 text-sm">
+                  {criticalOnly && !jobFilter.trim()
+                    ? 'No critical jobs found'
+                    : criticalOnly
+                      ? `No critical jobs matching "${jobFilter}"`
+                      : `No jobs found matching "${jobFilter}"`}
+                </div>
               ) : (
                 <div className="max-h-[calc(100vh-420px)] overflow-y-auto">
                   <table className="w-full resizable-cols">
@@ -496,8 +536,8 @@ export default function DBJobs() {
             </div>
           )}
 
-          {/* ── Per-client split-panel view (always when a client is selected; otherwise when no job filter) ── */}
-          {(!jobFilter.trim() || selectedClient) && (
+          {/* ── Per-client split-panel view (always when a client is selected; otherwise when no job/critical filter) ── */}
+          {((!jobFilter.trim() && !criticalOnly) || selectedClient) && (
           <div className="flex gap-0">
           {/* Left: Client list grouped by cluster */}
           <div style={{ width: leftWidth, minWidth: 200, maxWidth: 600 }} className="flex-shrink-0 space-y-3 max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
@@ -618,7 +658,8 @@ export default function DBJobs() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500">
                       {selectedJobs.length} job{selectedJobs.length !== 1 ? 's' : ''}
-                      {(jobSearch || jobFilter) && ` of ${selectedJobsRaw.length}`}
+                      {(jobSearch || jobFilter || criticalOnly) && ` of ${selectedJobsRaw.length}`}
+                      {criticalOnly && ' (critical)'}
                     </span>
                     <div className="relative">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
@@ -644,7 +685,11 @@ export default function DBJobs() {
 
                 {selectedJobs.length === 0 ? (
                   <div className="p-8 text-center text-gray-400 text-sm">
-                    No running/active jobs for this client
+                    {criticalOnly
+                      ? 'No critical jobs for this client'
+                      : (jobSearch || jobFilter)
+                        ? 'No jobs match the current filter'
+                        : 'No running/active jobs for this client'}
                   </div>
                 ) : (
                   <div className="max-h-[calc(100vh-420px)] overflow-y-auto">

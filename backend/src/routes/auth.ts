@@ -422,17 +422,47 @@ router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
 });
 
 // ── GET /api/auth/me ─────────────────────────────────────────
-router.get('/me', authMiddleware, (req: Request, res: Response) => {
+router.get('/me', authMiddleware, async (req: Request, res: Response) => {
   const u = (req as any).user;
   const sessionToken = extractRequestToken(req);
+
+  if (u.isMaster || u.userId === 'master') {
+    return res.json({
+      success: true,
+      data: {
+        id: u.userId,
+        username: u.username,
+        displayName: u.displayName || 'WFM Admin',
+        timezone: u.timezone || 'Asia/Kolkata',
+        permissions: u.permissions,
+        profileNames: ['Master Admin'],
+        csrfToken: sessionToken ? csrfForSession(sessionToken) : undefined,
+      },
+    });
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: u.userId },
+    select: {
+      email: true,
+      profiles: { select: { profile: { select: { name: true } } } },
+    },
+  });
+
+  const profileNames = (dbUser?.profiles ?? [])
+    .map((up) => up.profile.name)
+    .sort((a, b) => a.localeCompare(b));
+
   res.json({
     success: true,
     data: {
       id: u.userId,
       username: u.username,
       displayName: u.displayName,
+      email: dbUser?.email,
       timezone: u.timezone || 'Asia/Kolkata',
       permissions: u.permissions,
+      profileNames,
       csrfToken: sessionToken ? csrfForSession(sessionToken) : undefined,
     },
   });

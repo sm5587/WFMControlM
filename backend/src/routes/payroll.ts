@@ -10,7 +10,7 @@ import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
 import { configService } from '../services/config-service';
 import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
-import { parseFrequencies } from '../constants/payroll';
+import { parseFrequencies, parsePayrollDeadlineLocalTime, sanitizePayrollDeadlineDays } from '../constants/payroll';
 import { requirePermission } from '../middleware';
 
 const router = Router();
@@ -123,6 +123,9 @@ router.get('/clients', requirePayrollJobsEnabled, requirePermission('PAYROLL_VIE
         priorPeriodEdit: true,
         priorPeriodEditLimit: true,
         payrollSyncedAt: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+        timezone: true,
       },
       orderBy: { clientId: 'asc' },
     });
@@ -151,12 +154,104 @@ router.post('/sync-clients', requirePayrollJobsEnabled, requirePermission('PAYRO
   );
 });
 
+router.patch('/:clientId/deadline', requirePayrollJobsEnabled, requirePermission('PAYROLL_SYNC', 'write'), async (req: Request, res: Response) => {
+  try {
+    const clientId = req.params.clientId;
+    const existing = await prisma.client.findUnique({
+      where: { clientId },
+      select: { clientId: true, payrollEnabled: true },
+    });
+    if (!existing) {
+      res.status(404).json({ success: false, error: `Client not found: ${clientId}` });
+      return;
+    }
+
+    const body = req.body || {};
+    const clear =
+      body.daysAfterWeekEnd === null
+      || body.daysAfterWeekEnd === undefined
+      || body.daysAfterWeekEnd === ''
+      || body.localTime === null
+      || body.localTime === undefined
+      || body.localTime === '';
+
+    let payrollDeadlineDaysAfterWeekEnd: number | null = null;
+    let payrollDeadlineLocalTime: string | null = null;
+
+    if (!clear) {
+      const days = sanitizePayrollDeadlineDays(body.daysAfterWeekEnd);
+      const time = parsePayrollDeadlineLocalTime(body.localTime);
+      if (days == null) {
+        res.status(400).json({ success: false, error: 'daysAfterWeekEnd must be an integer from 0 to 7' });
+        return;
+      }
+      if (!time) {
+        res.status(400).json({ success: false, error: 'localTime must be HH:mm (00:00–23:59)' });
+        return;
+      }
+      payrollDeadlineDaysAfterWeekEnd = days;
+      payrollDeadlineLocalTime = time;
+    }
+
+    const updated = await prisma.client.update({
+      where: { clientId },
+      data: { payrollDeadlineDaysAfterWeekEnd, payrollDeadlineLocalTime },
+      select: {
+        clientId: true,
+        payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineLocalTime: true,
+        timezone: true,
+      },
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    logger.error(`Payroll deadline update error for ${req.params.clientId}: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/monitor', requirePayrollMonitorEnabled, requirePermission('PAYROLL_MONITOR_VIEW', 'read'), async (_req: Request, res: Response) => {
   try {
     const result = await payrollService.getMonitorSnapshot();
     res.json({ success: true, data: result });
   } catch (error: any) {
     logger.error(`Payroll monitor snapshot error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/monitor/clients', requirePayrollMonitorEnabled, requirePermission('PAYROLL_MONITOR_VIEW', 'read'), async (_req: Request, res: Response) => {
+  try {
+    const clients = await payrollService.listMonitorClients();
+    const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    res.json({
+      success: true,
+      data: {
+        stalledGraceMins,
+        clients: clients.map(c => ({
+          clientId: c.clientId,
+          name: c.name,
+          timezone: c.timezone,
+          payrollFileGen: c.payrollFileGen,
+          frequencies: parseFrequencies(c.payrollCycle),
+          payrollDeadlineDaysAfterWeekEnd: c.payrollDeadlineDaysAfterWeekEnd,
+          payrollDeadlineLocalTime: c.payrollDeadlineLocalTime,
+        })),
+      },
+    });
+  } catch (error: any) {
+    logger.error(`Payroll monitor clients list error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/monitor/client/:clientId', requirePayrollMonitorEnabled, requirePermission('PAYROLL_MONITOR_VIEW', 'read'), async (req: Request, res: Response) => {
+  try {
+    const result = await payrollService.getMonitorClientScan(req.params.clientId);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    logger.error(`Payroll monitor client scan error for ${req.params.clientId}: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });

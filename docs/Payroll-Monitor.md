@@ -25,6 +25,19 @@ Gating:
 - Permission: `PAYROLL_VIEW`
 - Menu + APIs are hidden/404 until the flag is true
 
+### Local SLA deadline (not EXEC_CRON)
+
+Per-client completion SLA is stored in local SQLite on `Client`:
+
+- `payrollDeadlineDaysAfterWeekEnd` (0–6, null = unset). Payroll Jobs edits this as **Mon–Sun** for the selected week end (stored as days after that week end).
+- `payrollDeadlineLocalTime` (`HH:mm` in the client timezone)
+
+`deadlineAt = weekEndDate (client TZ) + days @ localTime`. A row is **late** when the deadline is set, `now >= deadlineAt`, and mapped units are still pending. This is separate from WFM `EXEC_CRON` release / stalled detection.
+
+Edit on **Payroll Jobs** (`PATCH /api/payroll/:clientId/deadline`, requires `PAYROLL_SYNC` write). Monitor shows a late banner, row badges, and `deadline` under the release schedule column.
+
+When units are still pending after `deadlineAt`, an alert is stored on `PayrollDeadlineAlert` and shown in **Alerts → Escalated** (acknowledge / suppress, same idea as Unproc Punch). **Notify Team** sends one email to the active notification recipients covering open stuck jobs, payroll deadlines, and unprocessed punches (`ALERTS_NOTIFY`), with the same cooldown as other escalated alerts. Opening that tab re-scans clients that have a deadline **after** the all-batch-status fetch is idle (same sequencing as Payroll Monitor auto-refresh). The alert clears when the week is no longer late.
+
 ---
 
 ## 2. High-level flow
@@ -87,26 +100,31 @@ Placeholders: `{previousWeekEnd}` is `yyyyMMdd` integer, e.g. `20260906`.
 
 **Query 1 and Query 2 run in parallel. Query 3 waits for the week from Query 2.**
 
-#### Query 1 — running queue jobs (`Payroll/MonitorQueue`)
+#### Query 1 — pay generator queue (`Payroll/MonitorQueue`)
 
 ```sql
-SELECT q.JOB_TYPE, q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS
+SELECT q.QUEUE_ID, q.JOB_TYPE, q.EXEC_CRON, q.QUEUE_SLEEP,
+       q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS,
+       s.PARAM_3 AS DIST_LIST_ID,
+       d.NAME AS DIST_LIST_NAME
 FROM RWSUSER.RFX_QUEUE q
+LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID
+LEFT JOIN RWSUSER.RWS_DIST_LIST d
+  ON TRIM(CAST(d.DIST_LIST_ID AS VARCHAR(32))) = TRIM(CAST(s.PARAM_3 AS VARCHAR(32)))
 WHERE q.QUEUE_STATUS = 'R'
 ```
 
-SQL does **not** filter by job name. The app keeps only pay generators by substring match on `JOB_TYPE`:
+SQL keeps only **running** rows (`QUEUE_STATUS = 'R'`). Paused (`P`) generators are ignored. Among running regular pay generators the app picks **either-or** by priority:
 
-| Kind | `JOB_TYPE` contains |
-|---|---|
-| Regular | `RTANewPayFileGeneratorJob`, `RTAPayrollFeedGeneratorJob`, `RTA_PAYROLL_FILE_GEN` |
-| Adjustment | `RTAPriorAdjPayGeneratorJob` |
+| Priority | `JOB_TYPE` contains | Typical scope |
+|---|---|---|
+| 1 | `RTAPayrollFeedGeneratorJob` | Client-wide (`PARAM_3` often empty → `distListId = ALL`) |
+| 2 | `RTANewPayFileGeneratorJob` | Store group (`PARAM_3` = `DIST_LIST_ID`; name from `RWS_DIST_LIST.NAME`) |
+| 3 | `RTA_PAYROLL_FILE_GEN` | Legacy / client-wide |
 
-If several regular (or adj) jobs are running, the row with the **highest `JOBS_PENDING`** wins.
+If the preferred family has numeric `PARAM_3` values, one monitor row is emitted per store group (with `distListName` when the join matches). If not, a single client-wide row (`ALL`) counts all `TA_UNIT_PAY_STATUS` units for the previous week.
 
-`QUEUE_STATUS = 'R'` means running. Idle generator rows are ignored, so `LAST_JOB_TIME` / `JOBS_PENDING` are blank unless the job is running.
-
-DB Jobs uses the same `'R'` filter, plus a `STD_QUEUE_JOB` join. Monitor does **not** join `STD_QUEUE_JOB`.
+Example: BP clients keep a paused Feed job and running NewPay store-group jobs — Monitor picks NewPay. DJ has running Feed and paused NewPay — Monitor picks Feed.
 
 #### Query 2 — calendar / weeks (`Payroll/Calendar`)
 
@@ -208,19 +226,12 @@ Consequences:
 
 | Method | Path | Timeout | Role |
 |---|---|---|---|
-| `GET` | `/api/payroll/monitor` | 180s | Snapshot of all payroll-enabled clients |
-| `GET` | `/api/payroll/monitor/:clientId` | 120s | Unit list for one client |
+| `GET` | `/api/payroll/monitor` | 180s | Full snapshot (all clients; kept for compatibility) |
+| `GET` | `/api/payroll/monitor/clients` | — | Fast SQLite list of payroll-enabled clients |
+| `GET` | `/api/payroll/monitor/client/:clientId` | 120s | Progressive scan for one client (store-group rows) |
+| `GET` | `/api/payroll/monitor/:clientId?distListId=` | 120s | Unit list for one store group |
 
-Response snapshot fields (per row): `clientId`, `name`, `timezone`, `frequencies`, `payrollFileGen`, `weekStartDate`, `weekEndDate`, `regular`, `adjustment`, `units { total, generated, pending }`, `phase`, optional `error`.
-
-Polling (frontend only; no extra query types):
-
-| Surface | Interval |
-|---|---|
-| List | 20s if any client is Live, else 60s |
-| Detail | 10s only while the selected client is Live |
-
-UI columns: Client (with frequency + week end), Status, Generator (`regular.jobType`), Last job time (`regular.lastJobTime` via `fmtDb2` / client timezone), Queue pending (`regular.jobsPending` only if running), Units (generated/total bar).
+UI loads **progressively**: client list first, then each client is scanned with bounded concurrency. Last snapshot is kept in React Query cache (`payroll-monitor-progressive`) so navigating away and back shows prior rows immediately; a background refresh updates clients one-by-one without clearing the table.
 
 ---
 

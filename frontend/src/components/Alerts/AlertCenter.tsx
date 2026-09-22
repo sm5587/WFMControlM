@@ -2,9 +2,10 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bell, Database, Clock, AlertTriangle, CheckCircle, BellOff,
-  Send, UserPlus, Trash2, X, Mail, Timer, BarChart3,
+  Send, UserPlus, Trash2, X, Mail, Timer, BarChart3, ChevronDown, ChevronRight,
 } from 'lucide-react';
-import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
+import { useAllClientsBatchData, waitForAllBatchStatusIdle } from '../../hooks/useAllClientsBatchData';
+import { useBatchLookbackDays } from '../../hooks/useBatchLookbackDays';
 import { useEscalatedAlerts, type EscalatedAlert } from '../../hooks/useEscalatedAlerts';
 import { parseDb2Ts, useStalePunchRows } from '../../hooks/useStalePunchRows';
 import { escalationsApi } from '../../services/api';
@@ -53,6 +54,26 @@ function PendingJobTypeChip({
         ? <span className="text-red-500 font-bold flex-shrink-0">{stale}</span>
         : <span className="text-amber-500 font-bold flex-shrink-0">{pending}</span>}
     </span>
+  );
+}
+
+function CollapsedEmptyAlert({ title, detail }: { title: string; detail: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="bg-white rounded-xl shadow-sm border">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-2.5 flex items-center gap-2 text-left hover:bg-gray-50 rounded-xl"
+      >
+        {open
+          ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+        <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+        <span className="text-sm font-medium text-gray-700">{title}</span>
+      </button>
+      {open && <p className="px-4 pb-3 pl-14 text-xs text-gray-500">{detail}</p>}
+    </div>
   );
 }
 
@@ -127,6 +148,9 @@ export default function AlertCenter() {
   const [punchSuppressTarget, setPunchSuppressTarget] = useState<{ clientId: string; name: string } | null>(null);
   const [punchSuppressMinutes, setPunchSuppressMinutes] = useState(getInt('threshold.defaultSuppressMins', 60));
   const [punchSuppressReason, setPunchSuppressReason] = useState('');
+  const [payrollSuppressTarget, setPayrollSuppressTarget] = useState<{ clientId: string; name: string } | null>(null);
+  const [payrollSuppressMinutes, setPayrollSuppressMinutes] = useState(getInt('threshold.defaultSuppressMins', 60));
+  const [payrollSuppressReason, setPayrollSuppressReason] = useState('');
 
   // ---- Recipients modal ----
   const [showRecipients, setShowRecipients] = useState(false);
@@ -142,6 +166,7 @@ export default function AlertCenter() {
 
   // ---- Data ----
   const { data: allBatchData, isLoading: batchLoading, dataUpdatedAt: batchUpdatedAt } = useAllClientsBatchData();
+  const lookbackDays = useBatchLookbackDays();
   const { data: escalated = [], isLoading: escLoading } = useEscalatedAlerts();
 
   const { data: recipients = [] } = useQuery<Recipient[]>({
@@ -248,6 +273,94 @@ export default function AlertCenter() {
     onSuccess: () => { invalidatePunchStatuses(); setPunchSuppressTarget(null); setPunchSuppressMinutes(60); setPunchSuppressReason(''); },
   });
 
+  const { data: payrollDeadlineAlerts = [], isFetching: payrollDeadlineLoading } = useQuery<any[]>({
+    queryKey: ['payroll-deadline-alerts'],
+    queryFn: async () => {
+      const res = await escalationsApi.getPayrollDeadlineAlerts();
+      return (res as any)?.data ?? [];
+    },
+    refetchInterval: getInt('polling.escalatedRefreshSecs', 60) * 1000,
+    refetchOnWindowFocus: true,
+  });
+
+  useEffect(() => {
+    if (activeTab !== 'escalated') return;
+    let cancelled = false;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        await waitForAllBatchStatusIdle(queryClient, lookbackDays, controller.signal);
+        if (cancelled) return;
+        const res: any = await escalationsApi.refreshPayrollDeadlineAlerts();
+        if (cancelled) return;
+        queryClient.setQueryData(['payroll-deadline-alerts'], res?.data ?? []);
+      } catch {
+        /* list stays as last persisted snapshot; abort is quiet */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeTab, queryClient, lookbackDays]);
+
+  const payrollAckMut = useMutation({
+    mutationFn: (clientId: string) => escalationsApi.acknowledgePayrollDeadline(clientId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] }),
+  });
+
+  const payrollSuppressMut = useMutation({
+    mutationFn: ({ clientId, mins, reason }: { clientId: string; mins: number; reason: string }) =>
+      escalationsApi.suppressPayrollDeadline(clientId, mins, undefined, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] });
+      setPayrollSuppressTarget(null);
+      setPayrollSuppressMinutes(60);
+      setPayrollSuppressReason('');
+    },
+  });
+
+  const notifyPayrollMut = useMutation({
+    mutationFn: (clientIds: string[]) => escalationsApi.notifyPayrollDeadline(clientIds),
+    onSuccess: (res: any) => {
+      queryClient.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] });
+      const d = res?.data;
+      if (!d) return;
+      if (d.error) {
+        setNotifyResult({ type: 'error', message: d.error });
+      } else if (d.sent > 0) {
+        setNotifyResult({
+          type: 'success',
+          message: `Payroll deadline email sent to ${d.recipients?.length ?? 0} recipient(s) for ${d.sent} client(s).`,
+          details: d.details,
+        });
+      } else {
+        setNotifyResult({
+          type: 'warning',
+          message: d.details?.[0] ?? 'No recipients or payroll alerts to notify.',
+        });
+      }
+    },
+    onError: (err: any) => {
+      setNotifyResult({ type: 'error', message: err?.response?.data?.error ?? err.message ?? 'Failed to send notification' });
+    },
+  });
+
+  const payrollStatusCounts = useMemo(() => {
+    let open = 0, acked = 0, suppressed = 0;
+    for (const a of payrollDeadlineAlerts) {
+      if (a.status === 'ACKNOWLEDGED') acked++;
+      else if (a.status === 'SUPPRESSED') suppressed++;
+      else open++;
+    }
+    return { open, acked, suppressed };
+  }, [payrollDeadlineAlerts]);
+
+  const notifiablePayrollAlerts = useMemo(
+    () => payrollDeadlineAlerts.filter((a: any) => a.status === 'OPEN' && isNotifyEligible(a.emailSentAt, notifyCooldownMins)),
+    [payrollDeadlineAlerts, notifyCooldownMins, notifyTick],
+  );
+
   const notifyMut = useMutation({
     mutationFn: (ids?: string[]) => escalationsApi.notify(ids),
     onSuccess: (res: any) => {
@@ -266,6 +379,38 @@ export default function AlertCenter() {
         setNotifyResult({
           type: 'warning',
           message: d.details?.[0] ?? 'No alerts required notification at this time.',
+          details: d.details,
+        });
+      }
+    },
+    onError: (err: any) => {
+      setNotifyResult({
+        type: 'error',
+        message: err?.response?.data?.error ?? err.message ?? 'Failed to send notification',
+      });
+    },
+  });
+
+  const notifyAllMut = useMutation({
+    mutationFn: () => escalationsApi.notifyAll(notifiablePunchRows),
+    onSuccess: (res: any) => {
+      invalidateEsc();
+      queryClient.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] });
+      invalidatePunchStatuses();
+      const d = res?.data;
+      if (!d) return;
+      if (d.error) {
+        setNotifyResult({ type: 'error', message: d.error, details: d.details });
+      } else if (d.sent > 0) {
+        setNotifyResult({
+          type: 'success',
+          message: d.details?.[0] ?? `One email sent to ${d.recipients?.length ?? 0} recipient(s).`,
+          details: d.details,
+        });
+      } else {
+        setNotifyResult({
+          type: 'warning',
+          message: d.details?.[0] ?? 'No open alerts to notify.',
           details: d.details,
         });
       }
@@ -360,9 +505,9 @@ export default function AlertCenter() {
         >
           <AlertTriangle className="w-4 h-4" />
           Escalated (&gt;{getInt('threshold.escalationMins', 60)} min)
-          {(activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked) > 0 && (
+          {(activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked + payrollStatusCounts.open + payrollStatusCounts.acked) > 0 && (
             <span className="px-1.5 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-600">
-              {activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked}
+              {activeEscalatedCount + punchStatusCounts.open + punchStatusCounts.acked + payrollStatusCounts.open + payrollStatusCounts.acked}
             </span>
           )}
         </button>
@@ -416,11 +561,10 @@ export default function AlertCenter() {
               <p>Loading batch data from all clients...</p>
             </div>
           ) : !pendingAlerts.length ? (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
-              <Bell className="w-10 h-10 mx-auto mb-3 text-gray-300" />
-              <p className="text-lg font-medium text-gray-500">No pending job alerts</p>
-              <p className="text-sm mt-1">All batch jobs are running on schedule</p>
-            </div>
+            <CollapsedEmptyAlert
+              title="No pending job alerts"
+              detail="All batch jobs are running on schedule"
+            />
           ) : (
             <>
               <div className="grid grid-cols-3 gap-4">
@@ -512,31 +656,19 @@ export default function AlertCenter() {
       {/* ================ ESCALATED TAB (RED) ================ */}
       {activeTab === 'escalated' && (
         <div className="space-y-4">
-          {/* Banner */}
-          <div className="bg-amber-50/60 border border-amber-200 rounded-xl px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-gray-700">Critical stuck jobs pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Acknowledge, suppress, or notify your team via email.
-                  Escalated alerts are emailed automatically and system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
-                </p>
-              </div>
-            </div>
-            {canNotify && notifiableOpenAlerts.length > 0 && (
+          {canNotify && (notifiableOpenAlerts.length + notifiablePayrollAlerts.length + notifiablePunchRows.length) > 0 && (
+            <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+              <p className="text-sm text-gray-600">Notify Team sends one email for every open alert: stuck jobs, payroll deadlines, and unprocessed punches.</p>
               <button
-                onClick={() => { setNotifyResult(null); notifyMut.mutate(notifiableOpenAlerts.map(a => a.id)); }}
-                disabled={notifyMut.isPending}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-100 rounded-lg hover:bg-amber-200 disabled:opacity-50 flex-shrink-0"
+                onClick={() => { setNotifyResult(null); notifyAllMut.mutate(); }}
+                disabled={notifyAllMut.isPending}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50 flex-shrink-0"
               >
                 <Send className="w-4 h-4" />
-                {notifyMut.isPending ? 'Sending...' : 'Notify Team'}
+                {notifyAllMut.isPending ? 'Sending...' : 'Notify Team'}
               </button>
-            )}
-          </div>
-
-          {/* Notify result banner */}
+            </div>
+          )}
           {notifyResult && (
             <div className={`flex items-start gap-3 px-4 py-3 rounded-xl border text-sm ${
               notifyResult.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
@@ -564,18 +696,30 @@ export default function AlertCenter() {
           )}
 
           {escLoading ? (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
-              <AlertTriangle className="w-10 h-10 mx-auto mb-3 text-gray-300 animate-pulse" />
-              <p>Checking for escalated alerts...</p>
+            <div className="bg-white rounded-xl shadow-sm border px-4 py-3 text-sm text-gray-400 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-gray-300 animate-pulse" />
+              Checking for escalated alerts...
             </div>
           ) : escalated.length === 0 ? (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
-              <CheckCircle className="w-10 h-10 mx-auto mb-3 text-green-300" />
-              <p className="text-lg font-medium text-gray-500">No escalated alerts</p>
-              <p className="text-sm mt-1">No critical stuck jobs have been pending for more than 1 hour</p>
-            </div>
+            <CollapsedEmptyAlert
+              title="No escalated alerts"
+              detail={`No critical stuck jobs have been pending for more than ${getInt('threshold.escalationMins', 60)} minutes.`}
+            />
           ) : (
             <>
+          <div className="bg-amber-50/60 border border-amber-200 rounded-xl px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-gray-700">Critical stuck jobs pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Acknowledge or suppress while jobs stay stuck.
+                  Escalated alerts are emailed automatically and system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
+                </p>
+              </div>
+            </div>
+          </div>
+
               {/* Summary cards */}
               <div className="grid grid-cols-3 gap-4">
                 <div className="bg-white rounded-xl border border-amber-200 p-4">
@@ -729,34 +873,135 @@ export default function AlertCenter() {
             </>
           )}
 
-          {/* ---- UNPROC PUNCH ALERTS SECTION (in Escalated tab) ---- */}
-          {stalePunchRows.length > 0 && (
-            <>
-              <div className="border-t pt-6 mt-6">
+          {/* ---- PAYROLL DEADLINE ALERTS (in Escalated tab) ---- */}
+          {payrollDeadlineLoading && payrollDeadlineAlerts.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border px-4 py-3 text-sm text-gray-400 flex items-center gap-2">
+              <Clock className="w-4 h-4 text-gray-300 animate-pulse" />
+              Checking payroll deadline alerts...
+            </div>
+          ) : payrollDeadlineAlerts.length === 0 ? (
+            <CollapsedEmptyAlert
+              title="No payroll deadline alerts"
+              detail="No clients have pay units still pending after their SLA deadline."
+            />
+          ) : (
+              <div className="border-t pt-6 mt-2">
                 <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-4">
-                  <Timer className="w-5 h-5 text-amber-500" />
-                  Unproc Punch Alerts
-                  <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-700">{stalePunchRows.length}</span>
+                  <Clock className="w-5 h-5 text-amber-500" />
+                  Payroll deadline
+                  <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-700">
+                    {payrollDeadlineAlerts.length}
+                  </span>
                 </h3>
-                
-                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <Timer className="w-5 h-5 text-amber-500 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-amber-800">Clients with &gt;{getInt('threshold.punchCountMin', 100)} unprocessed punches stale for &gt;{getInt('threshold.staleHoursMins', 60)} minutes</p>
-                      <p className="text-xs text-amber-600 mt-0.5">Acknowledge, suppress, or notify your team.</p>
-                    </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+                  <p className="text-sm font-medium text-amber-800">Pay files still pending after the client SLA deadline</p>
+                  <p className="text-xs text-amber-600 mt-0.5">Included in the one Notify Team email. Acknowledge or suppress while units remain unreleased.</p>
+                </div>
+                  <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50 border-b">
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Client</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Week end</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Deadline</th>
+                          <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Pending</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Late</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Status</th>
+                          <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {payrollDeadlineAlerts.map((a: any) => (
+                          <tr
+                            key={a.id}
+                            className={
+                              a.status === 'OPEN' ? 'bg-red-50/50 hover:bg-red-50' :
+                              a.status === 'SUPPRESSED' ? 'bg-gray-50/60 opacity-60' :
+                              'hover:bg-gray-50'
+                            }
+                          >
+                            <td className="px-4 py-3">
+                              <span className="font-medium text-gray-800">{a.clientName || a.clientId}</span>
+                              {a.clientName && a.clientName !== a.clientId && (
+                                <p className="text-xs text-gray-400">{a.clientId}</p>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-gray-600">{a.weekEndDate || '—'}</td>
+                            <td className="px-4 py-3 text-xs text-gray-600">{a.deadlineAt ? fmt(a.deadlineAt) : '—'}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold">{a.pendingUnits}</span>
+                              <span className="text-xs text-gray-400"> / {a.totalUnits}</span>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-red-700">{a.lateMinutes != null ? `${a.lateMinutes}m` : '—'}</td>
+                            <td className="px-4 py-3">
+                              {a.status === 'OPEN' && <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600">OPEN</span>}
+                              {a.status === 'ACKNOWLEDGED' && <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">ACK</span>}
+                              {a.status === 'SUPPRESSED' && (
+                                <div>
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">SUPPRESSED</span>
+                                  {a.suppressUntil && <p className="text-xs text-gray-400 mt-0.5">until {fmt(a.suppressUntil)}</p>}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-end gap-1">
+                                {(a.status === 'OPEN' || a.status === 'ACKNOWLEDGED') && (
+                                  <>
+                                    {canAck && a.status === 'OPEN' && (
+                                      <button onClick={() => payrollAckMut.mutate(a.clientId)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="Acknowledge">
+                                        <CheckCircle className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    {canSuppress && (
+                                      <button
+                                        onClick={() => setPayrollSuppressTarget({ clientId: a.clientId, name: a.clientName || a.clientId })}
+                                        className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg"
+                                        title="Suppress"
+                                      >
+                                        <BellOff className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    {canNotify && a.status === 'OPEN' && isNotifyEligible(a.emailSentAt, notifyCooldownMins) && (
+                                      <button
+                                        onClick={() => { setNotifyResult(null); notifyPayrollMut.mutate([a.clientId]); }}
+                                        className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg"
+                                        title="Send email for this client"
+                                      >
+                                        <Send className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  {canNotify && notifiablePunchRows.length > 0 && (
-                    <button
-                      onClick={() => { setNotifyResult(null); notifyPunchMut.mutate(notifiablePunchRows); }}
-                      disabled={notifyPunchMut.isPending}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white transition-colors flex-shrink-0"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      {notifyPunchMut.isPending ? 'Sending…' : 'Notify Team'}
-                    </button>
-                  )}
+              </div>
+          )}
+
+          {/* ---- UNPROC PUNCH ALERTS SECTION (in Escalated tab) ---- */}
+          {stalePunchRows.length === 0 ? (
+            <CollapsedEmptyAlert
+              title="No unprocessed punch alerts"
+              detail="No clients are over the punch count and stale-time thresholds"
+            />
+          ) : (
+          <div className="border-t pt-6 mt-2">
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-4">
+              <Timer className="w-5 h-5 text-amber-500" />
+              Unproc Punch Alerts
+              <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-700">{stalePunchRows.length}</span>
+            </h3>
+            <>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3 mb-4">
+                  <Timer className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-800">Clients with &gt;{getInt('threshold.punchCountMin', 100)} unprocessed punches stale for &gt;{getInt('threshold.staleHoursMins', 60)} minutes</p>
+                    <p className="text-xs text-amber-600 mt-0.5">Included in the one Notify Team email. Acknowledge or suppress while punches stay stale.</p>
+                  </div>
                 </div>
 
                 {/* Summary cards for punch alerts */}
@@ -860,8 +1105,8 @@ export default function AlertCenter() {
                     </tbody>
                   </table>
                 </div>
-              </div>
             </>
+          </div>
           )}
         </div>
       )}
@@ -870,20 +1115,32 @@ export default function AlertCenter() {
       {showUnprocPunchTab && activeTab === 'unproc-punch' && (
         <div className="space-y-4">
           {/* Banner */}
+          {!punchLoaded ? (
+            <CollapsedEmptyAlert
+              title="Punch data not loaded"
+              detail="Visit the Unprocessed Punch page to fetch."
+            />
+          ) : stalePunchRows.length === 0 ? (
+            <CollapsedEmptyAlert
+              title="No unprocessed punch alerts"
+              detail="No clients are over the punch count and stale-time thresholds"
+            />
+          ) : (
+            <>
           <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
             <Timer className="w-5 h-5 text-amber-500 flex-shrink-0" />
             <div className="flex-1">
               <p className="text-sm font-medium text-amber-800">Clients with &gt;{getInt('threshold.punchCountMin', 100)} unprocessed punches stale for more than {getInt('threshold.staleHoursMins', 60)} minutes</p>
-              <p className="text-xs text-amber-600 mt-0.5">Acknowledge, suppress, or notify your team via email.</p>
+              <p className="text-xs text-amber-600 mt-0.5">Included in the one Notify Team email. Acknowledge or suppress while punches stay stale.</p>
             </div>
-            {canNotify && notifiablePunchRows.length > 0 && (
+            {canNotify && (notifiableOpenAlerts.length + notifiablePayrollAlerts.length + notifiablePunchRows.length) > 0 && (
               <button
-                onClick={() => notifyPunchMut.mutate(notifiablePunchRows)}
-                disabled={notifyPunchMut.isPending}
+                onClick={() => { setNotifyResult(null); notifyAllMut.mutate(); }}
+                disabled={notifyAllMut.isPending}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white transition-colors"
               >
                 <Send className="w-3.5 h-3.5" />
-                {notifyPunchMut.isPending ? 'Sending…' : 'Notify Team'}
+                {notifyAllMut.isPending ? 'Sending…' : 'Notify Team'}
               </button>
             )}
           </div>
@@ -913,19 +1170,6 @@ export default function AlertCenter() {
             </div>
           )}
 
-          {!punchLoaded ? (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
-              <Timer className="w-10 h-10 mx-auto mb-3 text-gray-300 animate-pulse" />
-              <p>Punch data not loaded yet — visit the Unprocessed Punch page to fetch.</p>
-            </div>
-          ) : stalePunchRows.length === 0 ? (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
-              <CheckCircle className="w-10 h-10 mx-auto mb-3 text-green-300" />
-              <p className="text-lg font-medium text-gray-500">No stale unprocessed punches</p>
-              <p className="text-sm mt-1">All pending punches have been updated within the last hour</p>
-            </div>
-          ) : (
-            <>
               {/* Summary cards */}
               <div className="grid grid-cols-3 gap-4">
                 <div className="bg-white rounded-xl border border-amber-200 p-4">
@@ -1141,6 +1385,54 @@ export default function AlertCenter() {
                 className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
               >
                 {punchSuppressMut.isPending ? 'Suppressing...' : 'Suppress'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payrollSuppressTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">Suppress payroll deadline alert</h3>
+              <button onClick={() => setPayrollSuppressTarget(null)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-sm text-gray-600">
+              Suppress the payroll deadline alert for <strong>{payrollSuppressTarget.name}</strong> ({payrollSuppressTarget.clientId})
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Duration</label>
+              <select
+                value={payrollSuppressMinutes}
+                onChange={e => setPayrollSuppressMinutes(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              >
+                <option value={30}>30 minutes</option>
+                <option value={60}>1 hour</option>
+                <option value={120}>2 hours</option>
+                <option value={240}>4 hours</option>
+                <option value={480}>8 hours</option>
+                <option value={1440}>24 hours</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reason (optional)</label>
+              <input
+                type="text"
+                value={payrollSuppressReason}
+                onChange={e => setPayrollSuppressReason(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setPayrollSuppressTarget(null)} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200">Cancel</button>
+              <button
+                onClick={() => payrollSuppressMut.mutate({ clientId: payrollSuppressTarget.clientId, mins: payrollSuppressMinutes, reason: payrollSuppressReason })}
+                disabled={payrollSuppressMut.isPending}
+                className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+              >
+                {payrollSuppressMut.isPending ? 'Suppressing...' : 'Suppress'}
               </button>
             </div>
           </div>

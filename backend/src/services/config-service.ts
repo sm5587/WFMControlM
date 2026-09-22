@@ -5,7 +5,7 @@
 // ============================================================
 
 import { prisma } from '../database/prisma';
-import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME } from '../constants/app-display';
+import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME, DISPLAY_MENU_FLAG_KEYS } from '../constants/app-display';
 import { encryptSecret, decryptSecret, isEncryptionConfigured } from '../utils/crypto';
 import { createServiceLogger } from '../utils/logger';
 import {
@@ -700,6 +700,16 @@ class ConfigService {
       result[key] = entry.value;
     }
     applyLdapDevMockPublicConfig(result);
+    return result;
+  }
+
+  /** Menu visibility flags — safe to expose without auth (no secrets). */
+  getDisplayMenuFlags(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const key of DISPLAY_MENU_FLAG_KEYS) {
+      const entry = this.cache.get(key);
+      if (entry) result[key] = entry.value;
+    }
     return result;
   }
 

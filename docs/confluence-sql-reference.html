@@ -165,11 +165,14 @@ FROM SYSIBM.SYSDUMMY1]]></ac:plain-text-body></ac:structured-macro>
 </ac:rich-text-body></ac:structured-macro>
 
 <ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Payroll Monitor — Running pay generators (with store group)</ac:parameter><ac:rich-text-body>
-<p><strong>Caller:</strong> <code>Payroll/MonitorQueue</code> · App keeps regular jobs with non-empty <code>PARAM_3</code> (<code>DIST_LIST_ID</code>).</p>
+<p><strong>Caller:</strong> <code>Payroll/MonitorQueue</code> · App keeps regular jobs; store-group name from <code>RWS_DIST_LIST.NAME</code> when <code>PARAM_3</code> matches <code>DIST_LIST_ID</code>.</p>
 <ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql</ac:parameter><ac:plain-text-body><![CDATA[SELECT q.QUEUE_ID, q.JOB_TYPE, q.EXEC_CRON, q.QUEUE_SLEEP,
-q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS, s.PARAM_3 AS DIST_LIST_ID
+q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS, s.PARAM_3 AS DIST_LIST_ID,
+d.NAME AS DIST_LIST_NAME
 FROM RWSUSER.RFX_QUEUE q
 LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID
+LEFT JOIN RWSUSER.RWS_DIST_LIST d
+ON TRIM(CAST(d.DIST_LIST_ID AS VARCHAR(32))) = TRIM(CAST(s.PARAM_3 AS VARCHAR(32)))
 WHERE q.QUEUE_STATUS = 'R']]></ac:plain-text-body></ac:structured-macro>
 <p>Calendar query is identical to Payroll Jobs (above). Runs in parallel with this query per client.</p>
 </ac:rich-text-body></ac:structured-macro>
@@ -252,6 +255,7 @@ FETCH FIRST 100 ROWS ONLY]]></ac:plain-text-body></ac:structured-macro>
 <tr><td><code>RWSUSER.TA_PAY_FILE</code></td><td>Payroll Jobs, Payroll Monitor</td></tr>
 <tr><td><code>RWSUSER.TA_COST_SEG_DIFF</code></td><td>Payroll Jobs</td></tr>
 <tr><td><code>RWSUSER.TA_DIFF_PAY_DETAIL</code></td><td>Payroll Jobs</td></tr>
+<tr><td><code>RWSUSER.RWS_DIST_LIST</code></td><td>Payroll Monitor (store group name)</td></tr>
 <tr><td><code>RWSUSER.RWS_DIST_STORE_MAP</code></td><td>Payroll Monitor</td></tr>
 <tr><td><code>RWSUSER.TA_UNPROC_PUNCH</code></td><td>Dashboard, Unprocessed Punch, Alerts</td></tr>
 <tr><td><code>SYSCAT.TABLES</code></td><td>Connector only (not API-wired)</td></tr>

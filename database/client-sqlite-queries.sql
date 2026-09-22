@@ -160,9 +160,16 @@ SELECT clientId, jobName FROM CriticalDbJob;
 
 -- ---------- Payroll Jobs (/payroll) ----------
 
-SELECT clientId, name, payrollCycle, payrollFileGen, priorPeriodEdit, priorPeriodEditLimit, payrollSyncedAt FROM Client
+SELECT clientId, name, payrollCycle, payrollFileGen, priorPeriodEdit, priorPeriodEditLimit,
+       payrollDeadlineDaysAfterWeekEnd, payrollDeadlineLocalTime, payrollSyncedAt
+FROM Client
 WHERE payrollEnabled = 1
 ORDER BY clientId ASC;
+
+-- local SLA deadline (days after week end + HH:mm in client TZ; NULL clears)
+UPDATE Client SET payrollDeadlineDaysAfterWeekEnd = {0-7 or NULL},
+  payrollDeadlineLocalTime = '{HH:mm}' OR NULL
+WHERE clientId = {id};
 
 -- sync-clients background (updates local flags after DB2 PRODUCT_FEATURE + FREQUENCY query)
 SELECT clientId FROM Client;

@@ -4,7 +4,7 @@ import {
   DollarSign, Search, Loader2, RefreshCw, Building2,
   CheckCircle, XCircle, ChevronDown, ChevronRight,
   RotateCcw, AlertCircle, ArrowUpDown, ArrowUp, ArrowDown,
-  PanelLeftClose, PanelLeftOpen, Calendar, Files,
+  PanelLeftClose, PanelLeftOpen, Calendar, Files, Clock,
 } from 'lucide-react';
 import { payrollApi } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
@@ -12,9 +12,13 @@ import { useTimezone } from '../../hooks/useTimezone';
 import {
   FREQUENCY_LABELS,
   FREQUENCY_ORDER,
+  PAY_DEADLINE_WEEKDAYS,
+  daysAfterWeekEndForWeekday,
   fileGenLabel,
   formatYyyymmdd,
   parseFrequencies,
+  weekdayFromDaysAfter,
+  weekdayShortLabel,
 } from '../../constants/payroll';
 
 interface PayrollClient {
@@ -26,6 +30,9 @@ interface PayrollClient {
   priorPeriodEdit: boolean;
   priorPeriodEditLimit: number;
   payrollSyncedAt: string | null;
+  payrollDeadlineDaysAfterWeekEnd?: number | null;
+  payrollDeadlineLocalTime?: string | null;
+  timezone?: string;
 }
 
 interface PayPeriod {
@@ -85,6 +92,11 @@ interface PayrollResult {
     error?: string;
   } | null;
   timezone?: string;
+  payrollDeadlineDaysAfterWeekEnd?: number | null;
+  payrollDeadlineLocalTime?: string | null;
+  deadlineAt?: string | null;
+  late?: boolean;
+  lateMinutes?: number | null;
   executionTimeMs: number;
 }
 
@@ -117,6 +129,7 @@ export default function PayrollJobs() {
   const [selectedWeekEnd, setSelectedWeekEnd] = useState('');
   const [fileTab, setFileTab] = useState<FileTab>('regular');
   const [searchTerm, setSearchTerm] = useState('');
+  const [clientSearch, setClientSearch] = useState('');
   const [expandedCycles, setExpandedCycles] = useState<Set<string>>(new Set(['WK']));
   const [fetchEnabled, setFetchEnabled] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
@@ -124,6 +137,9 @@ export default function PayrollJobs() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'generated' | 'pending'>('all');
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [deadlineDow, setDeadlineDow] = useState('1');
+  const [deadlineTime, setDeadlineTime] = useState('10:00');
+  const [deadlineMsg, setDeadlineMsg] = useState('');
 
   const qc = useQueryClient();
 
@@ -151,6 +167,20 @@ export default function PayrollJobs() {
     },
   });
 
+  const deadlineMutation = useMutation({
+    mutationFn: (payload: { daysAfterWeekEnd: number | null; localTime: string | null }) =>
+      payrollApi.updateDeadline(selectedClientId, payload),
+    onSuccess: () => {
+      setDeadlineMsg('Deadline saved');
+      qc.invalidateQueries({ queryKey: ['payroll-clients'] });
+      qc.invalidateQueries({ queryKey: ['payroll-status', selectedClientId] });
+      setTimeout(() => setDeadlineMsg(''), 2500);
+    },
+    onError: (err: any) => {
+      setDeadlineMsg(err?.message || 'Failed to save deadline');
+    },
+  });
+
   const {
     data: payrollRes,
     isLoading: payrollLoading,
@@ -166,6 +196,27 @@ export default function PayrollJobs() {
   });
 
   const payrollData: PayrollResult | null = (payrollRes as any)?.data || null;
+
+  useEffect(() => {
+    const weekEnd = selectedWeekEnd || payrollData?.weekEndDate || '';
+    const days = payrollData?.payrollDeadlineDaysAfterWeekEnd
+      ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd;
+    const time = payrollData?.payrollDeadlineLocalTime
+      ?? selectedClient?.payrollDeadlineLocalTime;
+    const dow = days != null ? weekdayFromDaysAfter(weekEnd, days) : 1;
+    setDeadlineDow(dow != null ? String(dow) : '1');
+    setDeadlineTime(time || '10:00');
+    setDeadlineMsg('');
+  }, [
+    selectedClientId,
+    selectedWeekEnd,
+    payrollData?.weekEndDate,
+    selectedClient?.payrollDeadlineDaysAfterWeekEnd,
+    selectedClient?.payrollDeadlineLocalTime,
+    payrollData?.payrollDeadlineDaysAfterWeekEnd,
+    payrollData?.payrollDeadlineLocalTime,
+  ]);
+
   const liveFrequencies =
     payrollData?.clientId === selectedClientId ? payrollData.frequencies : undefined;
 
@@ -180,12 +231,22 @@ export default function PayrollJobs() {
     return [...ordered, ...extra];
   }, [clients, selectedClientId, liveFrequencies]);
 
+  const clientQuery = clientSearch.trim().toLowerCase();
+  const clientMatches = (c: PayrollClient) =>
+    !clientQuery
+    || c.clientId.toLowerCase().includes(clientQuery)
+    || (c.name || '').toLowerCase().includes(clientQuery);
+
   const clientsByCycle: Record<string, PayrollClient[]> = {};
   for (const key of frequencyKeys) {
     clientsByCycle[key] = clients.filter(c =>
-      clientFrequencies(c, c.clientId === selectedClientId ? liveFrequencies : undefined).includes(key),
+      clientMatches(c)
+      && clientFrequencies(c, c.clientId === selectedClientId ? liveFrequencies : undefined).includes(key),
     );
   }
+  const clientMatchCount = clientQuery
+    ? clients.filter(clientMatches).length
+    : clients.length;
 
   const prevFreqKeys = useRef<string[]>([]);
   useEffect(() => {
@@ -270,8 +331,37 @@ export default function PayrollJobs() {
 
   const activeWeekEnd = selectedWeekEnd || payrollData?.weekEndDate || '';
   const adjWeek = isAdjEligibleWeek(activeWeekEnd, periods, selectedClient?.priorPeriodEditLimit || 0);
-  const clientTz = payrollData?.timezone || 'America/Chicago';
+  const clientTz = payrollData?.timezone || selectedClient?.timezone || 'America/Chicago';
   const formatGeneratedAt = (raw?: string) => raw ? (fmtDb2(raw, clientTz, 'full') || raw) : '';
+  const deadlineConfigured = !!(
+    (payrollData?.payrollDeadlineDaysAfterWeekEnd ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd) != null
+    && (payrollData?.payrollDeadlineLocalTime ?? selectedClient?.payrollDeadlineLocalTime)
+  );
+  const deadlineDaysStored = payrollData?.payrollDeadlineDaysAfterWeekEnd
+    ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd;
+  const deadlineDowSaved = deadlineDaysStored != null
+    ? weekdayFromDaysAfter(activeWeekEnd, deadlineDaysStored)
+    : null;
+  const deadlineDayLabel = weekdayShortLabel(deadlineDowSaved);
+  const isLate = !!payrollData?.late && fileTab === 'regular';
+
+  const saveDeadline = () => {
+    const dow = parseInt(deadlineDow, 10);
+    const days = daysAfterWeekEndForWeekday(activeWeekEnd, dow);
+    if (days == null) {
+      setDeadlineMsg('Select a pay week before setting the deadline day');
+      return;
+    }
+    if (!/^\d{1,2}:\d{2}$/.test(deadlineTime.trim())) {
+      setDeadlineMsg('Time must be HH:mm');
+      return;
+    }
+    deadlineMutation.mutate({ daysAfterWeekEnd: days, localTime: deadlineTime.trim() });
+  };
+
+  const clearDeadline = () => {
+    deadlineMutation.mutate({ daysAfterWeekEnd: null, localTime: null });
+  };
 
   const columns: Array<{ key: keyof PayrollRecord | 'generated'; label: string }> = [
     { key: 'unitId', label: 'Unit' },
@@ -319,7 +409,30 @@ export default function PayrollJobs() {
 
       <div className="flex gap-6 flex-1 min-h-0 mt-6">
         {leftPanelOpen && (
-        <div className="w-80 flex-shrink-0 space-y-2 overflow-y-auto">
+        <div className="w-80 flex-shrink-0 flex flex-col min-h-0">
+          {!clientsLoading && clients.length > 0 && (
+            <div className="relative mb-2 flex-shrink-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search client..."
+                className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-zebra-500"
+                value={clientSearch}
+                onChange={e => setClientSearch(e.target.value)}
+              />
+              {clientSearch && (
+                <button
+                  type="button"
+                  onClick={() => setClientSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs px-1"
+                  title="Clear"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
+          <div className="space-y-2 overflow-y-auto flex-1 min-h-0">
           {clientsLoading ? (
             <div className="bg-white rounded-xl shadow-sm border p-8 flex items-center justify-center">
               <Loader2 className="w-5 h-5 animate-spin text-zebra-600" />
@@ -331,11 +444,17 @@ export default function PayrollJobs() {
               <p className="text-sm">No payroll-enabled clients found.</p>
               <p className="text-xs mt-1">Click <strong>Sync Clients</strong> to check RTA and pay-file PFs.</p>
             </div>
+          ) : clientMatchCount === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border p-6 text-center text-gray-400">
+              <Search className="w-8 h-8 mx-auto mb-2 opacity-40" />
+              <p className="text-sm">No clients match “{clientSearch.trim()}”.</p>
+            </div>
           ) : (
             frequencyKeys.map(cycle => {
               const meta = frequencyMeta(cycle);
               const cycleClients = clientsByCycle[cycle] || [];
-              const isExpanded = expandedCycles.has(cycle);
+              if (cycleClients.length === 0) return null;
+              const isExpanded = !!clientQuery || expandedCycles.has(cycle);
 
               return (
                 <div key={cycle} className="bg-white rounded-xl shadow-sm border overflow-hidden">
@@ -372,6 +491,9 @@ export default function PayrollJobs() {
                               <Loader2 className="w-3 h-3 animate-spin text-zebra-600" />
                             )}
                           </div>
+                          {c.name && c.name.toLowerCase() !== c.clientId.toLowerCase() && (
+                            <p className="text-[11px] text-gray-500 truncate">{c.name}</p>
+                          )}
                           <div className="flex flex-wrap gap-1 mt-1">
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
                               {fileGenLabel(c.payrollFileGen)}
@@ -379,6 +501,17 @@ export default function PayrollJobs() {
                             {c.priorPeriodEdit && c.priorPeriodEditLimit > 0 && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-800">
                                 Adj {c.priorPeriodEditLimit}
+                              </span>
+                            )}
+                            {c.payrollDeadlineDaysAfterWeekEnd != null && c.payrollDeadlineLocalTime && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 inline-flex items-center gap-0.5"
+                                title={`SLA ${c.payrollDeadlineLocalTime} ${c.timezone || ''}`}
+                              >
+                                <Clock className="w-2.5 h-2.5" />
+                                {c.clientId === selectedClientId && deadlineDayLabel
+                                  ? `${deadlineDayLabel} ${c.payrollDeadlineLocalTime}`
+                                  : c.payrollDeadlineLocalTime}
                               </span>
                             )}
                           </div>
@@ -391,6 +524,7 @@ export default function PayrollJobs() {
               );
             })
           )}
+          </div>
         </div>
         )}
 
@@ -524,7 +658,25 @@ export default function PayrollJobs() {
                 </div>
               ) : (
               <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-shrink-0 mt-3">
+              {isLate && (
+                <div className="mt-3 flex-shrink-0 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+                  <Clock className="w-5 h-5 text-amber-700 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">
+                      Past payroll SLA deadline
+                      {payrollData?.lateMinutes != null ? ` (${payrollData.lateMinutes}m)` : ''}
+                    </p>
+                    <p className="text-xs text-amber-800 mt-0.5">
+                      {summary?.pendingCount ?? 0} unit{(summary?.pendingCount ?? 0) === 1 ? '' : 's'} still pending
+                      {payrollData?.deadlineAt
+                        ? ` after deadline ${fmt(payrollData.deadlineAt, 'full')}`
+                        : ''}
+                      .
+                    </p>
+                  </div>
+                </div>
+              )}
+              <div className={`gap-3 flex-shrink-0 mt-3 min-w-0 [&>*]:min-w-0 ${fileTab === 'regular' ? 'grid grid-cols-5' : 'grid grid-cols-2 md:grid-cols-4'}`}>
                 <div className="bg-white rounded-xl shadow-sm border p-4">
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Generator</p>
                   {fileTab === 'regular' ? (
@@ -552,6 +704,77 @@ export default function PayrollJobs() {
                     <p className="text-xs text-gray-500 mt-1" title="Latest TA_PAY_FILE.LAST_UPDATE_TIME">
                       {formatGeneratedAt(summary.generatedAt)}
                     </p>
+                  )}
+                </div>
+                )}
+
+                {fileTab === 'regular' && (
+                <div className="bg-white rounded-xl shadow-sm border p-4">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-1">
+                    <Clock className="w-3 h-3" /> Pay deadline
+                  </p>
+                  {deadlineConfigured ? (
+                    <p className={`text-sm font-semibold mt-1 ${isLate ? 'text-amber-800' : 'text-gray-900'}`}>
+                      {deadlineDayLabel || 'Set'}
+                      {' '}
+                      @ {payrollData?.payrollDeadlineLocalTime ?? selectedClient?.payrollDeadlineLocalTime}
+                    </p>
+                  ) : (
+                    <p className="text-sm font-semibold text-gray-400 mt-1">Not set</p>
+                  )}
+                  <p className="text-[11px] text-gray-400 mt-1 truncate" title={clientTz}>
+                    {payrollData?.deadlineAt
+                      ? fmt(payrollData.deadlineAt, 'full')
+                      : `Weekday after week end · ${clientTz}`}
+                  </p>
+                  {canSync ? (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <select
+                          className="border border-gray-300 rounded text-xs px-1.5 py-1"
+                          value={deadlineDow}
+                          onChange={e => setDeadlineDow(e.target.value)}
+                          title="Deadline weekday"
+                        >
+                          {PAY_DEADLINE_WEEKDAYS.map(d => (
+                            <option key={d.dow} value={d.dow}>{d.label}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="time"
+                          className="border border-gray-300 rounded text-xs px-1.5 py-1 min-w-0"
+                          value={deadlineTime}
+                          onChange={e => setDeadlineTime(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={saveDeadline}
+                          disabled={deadlineMutation.isPending}
+                          className="text-[11px] px-2 py-0.5 rounded bg-zebra-600 text-white hover:bg-zebra-700 disabled:opacity-50"
+                        >
+                          {deadlineMutation.isPending ? 'Saving…' : 'Save'}
+                        </button>
+                        {deadlineConfigured && (
+                          <button
+                            type="button"
+                            onClick={clearDeadline}
+                            disabled={deadlineMutation.isPending}
+                            className="text-[11px] px-2 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      {deadlineMsg && (
+                        <p className={`text-[11px] ${deadlineMsg === 'Deadline saved' ? 'text-green-700' : 'text-amber-700'}`}>
+                          {deadlineMsg}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 mt-2">PAYROLL_SYNC required to edit</p>
                   )}
                 </div>
                 )}

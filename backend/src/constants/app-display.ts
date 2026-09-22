@@ -8,3 +8,12 @@ export const PAYROLL_ENABLED_KEY = 'display.payrollEnabled';
 
 /** Admin → Config: set to true to show Payroll Monitor menu and API (initial rollout: false). */
 export const PAYROLL_MONITOR_ENABLED_KEY = 'display.payrollMonitorEnabled';
+
+/** Non-secret display toggles exposed on /api/deployment-info for instant menu rendering. */
+export const DISPLAY_MENU_FLAG_KEYS = [
+  APP_NAME_CONFIG_KEY,
+  PAYROLL_ENABLED_KEY,
+  PAYROLL_MONITOR_ENABLED_KEY,
+  'display.maintenanceAdHocWindows',
+  'display.showUnprocPunchTab',
+] as const;

@@ -1,6 +1,6 @@
 {
   "name": "wfm-controlm-backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WFM Control-M Backend - Job Scheduling & Orchestration Engine",
   "main": "dist/index.js",
   "scripts": {

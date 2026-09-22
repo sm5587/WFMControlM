@@ -431,6 +431,69 @@ class EscalationService {
     logger.info(`Escalated alert ${alertId} suppressed by ${userId} until ${suppressUntil.toISOString()}`);
   }
 
+  /** Open stuck-job alerts outside the notify cooldown, rendered for a combined email. */
+  async collectEligibleQueueNotify(alertIds?: string[]): Promise<{ ids: string[]; linesHtml: string }> {
+    const notifyCooldownSince = getNotifyCooldownDate();
+    const where: any = {
+      resolvedAt: null,
+      status: 'OPEN',
+      OR: [
+        { emailSentAt: null },
+        { emailSentAt: { lt: notifyCooldownSince } },
+      ],
+    };
+    if (alertIds?.length) where.id = { in: alertIds };
+    else where.firstSeenAt = { lte: getEscalationThresholdDate() };
+
+    const alerts = await prisma.escalatedAlert.findMany({ where, orderBy: { stalePendingCount: 'desc' } });
+    if (!alerts.length) return { ids: [], linesHtml: '' };
+
+    const dbClients = await prisma.client.findMany({ select: { clientId: true, name: true } });
+    const nameMap = new Map(dbClients.map(c => [c.clientId.toUpperCase(), c.name]));
+    const impactedByClient = await this.getImpactedJobsByClient(alerts.map(a => a.clientId));
+    const alertLines: string[] = [];
+    for (const a of alerts) {
+      const name = nameMap.get(a.serverCode.toUpperCase()) ?? nameMap.get(a.clientId.toUpperCase()) ?? a.clientId;
+      const since = escHtml(a.firstSeenAt.toLocaleString());
+      const jobs = impactedByClient.get(a.clientId) ?? [];
+      if (jobs.length === 0) {
+        alertLines.push(`<tr>
+        <td style="padding: 6px 12px; font-weight: bold;">${escHtml(name)}</td>
+        <td style="padding: 6px 12px; font-family: monospace;">${escHtml(a.serverCode)}</td>
+        <td style="padding: 6px 12px; color: #888; font-style: italic;">(no critical job detail)</td>
+        <td style="padding: 6px 12px;">—</td>
+        <td style="padding: 6px 12px; color: #c62828; font-weight: bold;">${a.stalePendingCount}</td>
+        <td style="padding: 6px 12px;">${a.totalPending}</td>
+        <td style="padding: 6px 12px; color: #666; font-size: 12px;">${since}</td>
+      </tr>`);
+        continue;
+      }
+      jobs.forEach((job, idx) => {
+        const plan = job.planType ? escHtml(job.planType) : '—';
+        alertLines.push(`<tr>
+        <td style="padding: 6px 12px; font-weight: bold;">${idx === 0 ? escHtml(name) : ''}</td>
+        <td style="padding: 6px 12px; font-family: monospace;">${idx === 0 ? escHtml(a.serverCode) : ''}</td>
+        <td style="padding: 6px 12px; font-family: monospace; font-weight: 600;">${escHtml(job.jobType)}</td>
+        <td style="padding: 6px 12px;">${plan}</td>
+        <td style="padding: 6px 12px; color: #c62828; font-weight: bold;">${job.stalePending}</td>
+        <td style="padding: 6px 12px;">${job.pending}</td>
+        <td style="padding: 6px 12px; color: #666; font-size: 12px;">${idx === 0 ? since : ''}</td>
+      </tr>`);
+      });
+    }
+    return { ids: alerts.map(a => a.id), linesHtml: alertLines.join('') };
+  }
+
+  async markQueueNotifySent(ids: string[], recipients: string[]): Promise<void> {
+    const now = new Date();
+    for (const id of ids) {
+      await prisma.escalatedAlert.update({
+        where: { id },
+        data: { emailSentAt: now, emailRecipients: JSON.stringify(recipients) },
+      });
+    }
+  }
+
   /**
    * Send email notifications for escalated (red) alerts directly to NotificationRecipients.
    * Does NOT go through AlertRule matching — sends unconditionally to all active recipients.

@@ -84,15 +84,22 @@ ORDER BY 1;
 SELECT JOB_TYPE FROM RWSUSER.RFX_QUEUE
 WHERE QUEUE_STATUS = 'R';
 
--- payroll monitor: pay generator schedule + store group (PARAM_3 = DIST_LIST_ID)
+-- payroll monitor: pay generator schedule + optional store group (PARAM_3 = DIST_LIST_ID)
+-- Prefer either RTAPayrollFeedGeneratorJob (client-wide) OR RTANewPayFileGeneratorJob (store group)
+-- OR RTA_PAYROLL_FILE_GEN; only QUEUE_STATUS = 'R' (ignore paused)
+-- RWS_DIST_LIST.NAME is the store group display name
 SELECT q.QUEUE_ID, q.JOB_TYPE, q.EXEC_CRON, q.QUEUE_SLEEP,
        q.LAST_JOB_TIME, q.JOBS_PENDING, q.QUEUE_STATUS,
-       s.PARAM_3 AS DIST_LIST_ID
+       s.PARAM_3 AS DIST_LIST_ID,
+       d.NAME AS DIST_LIST_NAME
 FROM RWSUSER.RFX_QUEUE q
 LEFT JOIN RWSUSER.STD_QUEUE_JOB s ON s.QUEUE_ID = q.QUEUE_ID
+LEFT JOIN RWSUSER.RWS_DIST_LIST d
+  ON TRIM(CAST(d.DIST_LIST_ID AS VARCHAR(32))) = TRIM(CAST(s.PARAM_3 AS VARCHAR(32)))
 WHERE q.QUEUE_STATUS = 'R';
--- filter JOB_TYPE to RTANewPayFileGeneratorJob, RTAPayrollFeedGeneratorJob, RTA_PAYROLL_FILE_GEN
+-- filter JOB_TYPE to RTAPayrollFeedGeneratorJob, RTANewPayFileGeneratorJob, RTA_PAYROLL_FILE_GEN
 -- EXEC_CRON = pay release time after previous RWS_CALENDAR week completes
+-- when PARAM_3 is null, unit counts are client-wide (all TA_UNIT_PAY_STATUS for the week)
 
 -- payroll monitor: mapped units for store group (effective on pay week end)
 SELECT UNIT_ID

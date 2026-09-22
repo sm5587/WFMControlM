@@ -1,7 +1,10 @@
 import {
   calendarPeriodsSql,
   classifyMonitorPhase,
+  computePayrollDeadlineAtIso,
   defaultPayWeekEnd,
+  evaluatePayrollDeadlineLate,
+  isClientWideDistList,
   jobTimeOnOrAfterPayWeekEnd,
   matchPayJob,
   compareMonitorReleaseOrder,
@@ -10,9 +13,13 @@ import {
   normalizeFrequency,
   normalizeQuartzCron,
   parseFrequencies,
+  parsePayrollDeadlineLocalTime,
   payJobKind,
+  regularPayJobRank,
   resolveQueueSchedule,
   rfxCompactDateTime,
+  sanitizeDistListId,
+  sanitizePayrollDeadlineDays,
   sanitizeWeekEnd,
   scheduleKind,
   serializeFrequencies,
@@ -43,6 +50,20 @@ describe('payroll constants', () => {
     expect(payJobKind('com.rws.RTAPayrollFeedGeneratorJob')).toBe('regular');
     expect(payJobKind('RTAPriorAdjPayGeneratorJob')).toBe('adjustment');
     expect(payJobKind('SomeOtherJob')).toBeNull();
+  });
+
+  it('ranks either-or regular pay generators (Feed preferred over NewPay)', () => {
+    expect(regularPayJobRank('RTAPayrollFeedGeneratorJob')).toBe(0);
+    expect(regularPayJobRank('com.rws.RTANewPayFileGeneratorJob')).toBe(1);
+    expect(regularPayJobRank('RTA_PAYROLL_FILE_GEN')).toBe(2);
+    expect(regularPayJobRank('Other')).toBeGreaterThan(2);
+  });
+
+  it('treats ALL as client-wide dist list sentinel', () => {
+    expect(sanitizeDistListId('ALL')).toBe('ALL');
+    expect(sanitizeDistListId('all')).toBe('ALL');
+    expect(isClientWideDistList('ALL')).toBe(true);
+    expect(isClientWideDistList('1')).toBe(false);
   });
 
   it('matches generator job names inside JOB_TYPE or class paths', () => {
@@ -188,5 +209,43 @@ describe('payroll constants', () => {
     expect(compareMonitorReleaseOrder(early, later)).toBeLessThan(0);
     expect(compareMonitorReleaseOrder(later, early)).toBeGreaterThan(0);
     expect(compareMonitorReleaseOrder(early, fallback)).toBeLessThan(0);
+  });
+
+  it('parses and sanitizes payroll SLA deadline inputs', () => {
+    expect(parsePayrollDeadlineLocalTime('9:05')).toBe('09:05');
+    expect(parsePayrollDeadlineLocalTime('23:59')).toBe('23:59');
+    expect(parsePayrollDeadlineLocalTime('24:00')).toBeNull();
+    expect(parsePayrollDeadlineLocalTime('abc')).toBeNull();
+    expect(sanitizePayrollDeadlineDays(0)).toBe(0);
+    expect(sanitizePayrollDeadlineDays(7)).toBe(7);
+    expect(sanitizePayrollDeadlineDays(8)).toBeNull();
+    expect(sanitizePayrollDeadlineDays(null)).toBeNull();
+  });
+
+  it('computes payroll SLA deadline from week end + days + local time', () => {
+    // Week end 2026-09-06 (Sat) + 1 day at 10:00 America/Chicago (CDT, UTC-5) → 2026-09-07 15:00Z
+    const iso = computePayrollDeadlineAtIso('20260906', 1, '10:00', 'America/Chicago');
+    expect(iso).toBe('2026-09-07T15:00:00.000Z');
+    expect(computePayrollDeadlineAtIso('20260906', null, '10:00', 'America/Chicago')).toBeNull();
+    expect(computePayrollDeadlineAtIso('20260906', 1, null, 'America/Chicago')).toBeNull();
+  });
+
+  it('flags late when past deadline with pending units', () => {
+    const deadlineAt = '2026-09-07T15:00:00.000Z';
+    expect(evaluatePayrollDeadlineLate({
+      deadlineAt,
+      pendingUnits: 3,
+      now: new Date('2026-09-07T16:00:00.000Z'),
+    })).toEqual({ late: true, lateMinutes: 60 });
+    expect(evaluatePayrollDeadlineLate({
+      deadlineAt,
+      pendingUnits: 3,
+      now: new Date('2026-09-07T14:59:00.000Z'),
+    })).toEqual({ late: false, lateMinutes: null });
+    expect(evaluatePayrollDeadlineLate({
+      deadlineAt,
+      pendingUnits: 0,
+      now: new Date('2026-09-07T16:00:00.000Z'),
+    })).toEqual({ late: false, lateMinutes: null });
   });
 });

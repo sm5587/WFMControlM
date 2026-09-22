@@ -3,7 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Briefcase,
   Bell, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play, Radio,
-  LogOut, Shield, Eye, Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
+  Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
 import { useAppName, useAppVersion, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
 import { appSubtitle } from './DeploymentBadge';
+import UserProfileMenu from './UserProfileMenu';
 import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
 
 const navItems = [
@@ -47,10 +48,8 @@ export default function Layout() {
   const { isConnected } = useWebSocket();
   useBackgroundPolling();
   const { showBadge: showAlertsBadge } = useAlertsMenuBadge();
-  const { user, logout } = useAuth();
-  const { canRead, canWrite } = useAuth();
+  const { canRead } = useAuth();
   const showAdminSection = adminNavItems.some(item => canRead(item.permission));
-  const isAdminUser = canWrite('PERMISSIONS_EDIT') || canWrite('USERS_MANAGE');
   const {
     selectedCluster, selectedClientId,
     setSelectedCluster, setSelectedClientId,
@@ -137,51 +136,24 @@ export default function Layout() {
           )}
         </div>
 
-        {/* User Info + Connection Status */}
-        <div className="px-4 py-3 border-t border-slate-700 space-y-2 flex-shrink-0 bg-slate-900">
-          {/* Role badge */}
-          {!collapsed && user && (
-            <div className="flex items-center gap-2">
-              {isAdminUser
-                ? <Shield className="w-3.5 h-3.5 text-zebra-400 flex-shrink-0" />
-                : <Eye className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-              }
-              <div className="min-w-0">
-                <p className="text-xs text-white font-medium truncate">{user.displayName}</p>
-                <p className="text-[10px] text-slate-400">{isAdminUser ? 'Admin' : 'Monitor'}</p>
-              </div>
-              <button
-                onClick={logout}
-                title="Sign out"
-                className="ml-auto text-slate-400 hover:text-red-400 transition-colors flex-shrink-0"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-          {collapsed && (
-            <button onClick={logout} title="Sign out" className="flex justify-center w-full text-slate-400 hover:text-red-400 transition-colors">
-              <LogOut className="w-4 h-4" />
-            </button>
-          )}
-          {/* Connection indicator */}
-          <div className="flex items-center gap-2">
+        {/* Connection status + collapse toggle */}
+        <div className="px-4 py-2.5 border-t border-slate-700 flex-shrink-0 bg-slate-900 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <span className={`status-dot ${isConnected ? 'status-success' : 'status-failed'}`} />
             {!collapsed && (
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-400 truncate">
                 {isConnected ? 'Connected' : 'Disconnected'}
               </span>
             )}
           </div>
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="p-1 rounded hover:bg-slate-800 transition-colors flex-shrink-0 text-slate-400 hover:text-white"
+          >
+            {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+          </button>
         </div>
-
-        {/* Collapse Toggle */}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="flex items-center justify-center py-3 border-t border-slate-700 hover:bg-slate-800 transition-colors flex-shrink-0 bg-slate-900"
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
       </aside>
 
       {/* Main Content */}
@@ -229,6 +201,8 @@ export default function Layout() {
               Clear
             </button>
           )}
+
+          <UserProfileMenu />
         </div>
 
         <main className="flex-1 overflow-auto flex flex-col min-h-0 [scrollbar-gutter:stable]">

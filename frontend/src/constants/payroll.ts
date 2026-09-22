@@ -29,6 +29,46 @@ export function parseFrequencies(raw: string | null | undefined, list?: string[]
   return ordered.length || extra.length ? [...ordered, ...extra] : ['WK'];
 }
 
+/** JS weekday: 0 = Sunday … 6 = Saturday. Display order is Monday-first. */
+export const PAY_DEADLINE_WEEKDAYS: Array<{ dow: number; label: string }> = [
+  { dow: 1, label: 'Mon' },
+  { dow: 2, label: 'Tue' },
+  { dow: 3, label: 'Wed' },
+  { dow: 4, label: 'Thu' },
+  { dow: 5, label: 'Fri' },
+  { dow: 6, label: 'Sat' },
+  { dow: 0, label: 'Sun' },
+];
+
+export function ymdWeekday(ymd: string): number | null {
+  const s = toYyyymmdd(ymd);
+  if (!/^\d{8}$/.test(s)) return null;
+  const d = new Date(Date.UTC(
+    parseInt(s.slice(0, 4), 10),
+    parseInt(s.slice(4, 6), 10) - 1,
+    parseInt(s.slice(6, 8), 10),
+    12,
+  ));
+  return Number.isNaN(d.getTime()) ? null : d.getUTCDay();
+}
+
+/** Days after week end (0–6) so the deadline lands on targetDow. */
+export function daysAfterWeekEndForWeekday(weekEndYmd: string, targetDow: number): number | null {
+  const endDow = ymdWeekday(weekEndYmd);
+  if (endDow == null || targetDow < 0 || targetDow > 6) return null;
+  return (targetDow - endDow + 7) % 7;
+}
+
+export function weekdayFromDaysAfter(weekEndYmd: string, days: number): number | null {
+  const endDow = ymdWeekday(weekEndYmd);
+  if (endDow == null || !Number.isFinite(days)) return null;
+  return (endDow + (((days % 7) + 7) % 7)) % 7;
+}
+
+export function weekdayShortLabel(dow: number | null | undefined): string {
+  return PAY_DEADLINE_WEEKDAYS.find(d => d.dow === dow)?.label || '';
+}
+
 export function formatYyyymmdd(ymd: string): string {
   const s = toYyyymmdd(ymd);
   if (!/^\d{8}$/.test(s)) return ymd || '';

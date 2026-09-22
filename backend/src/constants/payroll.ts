@@ -3,12 +3,31 @@
 // ============================================================
 
 import cronParser from 'cron-parser';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezonePlugin from 'dayjs/plugin/timezone';
+
+dayjs.extend(utc);
+dayjs.extend(timezonePlugin);
 
 export const REGULAR_PAY_JOBS = [
   'RTANewPayFileGeneratorJob',
   'RTAPayrollFeedGeneratorJob',
   'RTA_PAYROLL_FILE_GEN',
 ] as const;
+
+/**
+ * Either-or preference when a client exposes more than one regular pay generator.
+ * Feed (client-wide) wins over NewPay (store-group) over legacy file-gen.
+ */
+export const REGULAR_PAY_JOB_PRIORITY = [
+  'RTAPayrollFeedGeneratorJob',
+  'RTANewPayFileGeneratorJob',
+  'RTA_PAYROLL_FILE_GEN',
+] as const;
+
+/** Sentinel when the chosen generator has no STD_QUEUE_JOB.PARAM_3 store group. */
+export const CLIENT_WIDE_DIST_LIST_ID = 'ALL';
 
 export const ADJ_PAY_JOB = 'RTAPriorAdjPayGeneratorJob';
 
@@ -53,6 +72,19 @@ export function payJobKind(jobType: string | null | undefined): 'regular' | 'adj
     if (matchPayJob(blob, name)) return 'regular';
   }
   return null;
+}
+
+/** Lower rank = preferred either-or choice among regular pay generators. */
+export function regularPayJobRank(jobType: string | null | undefined): number {
+  const blob = jobType || '';
+  for (let i = 0; i < REGULAR_PAY_JOB_PRIORITY.length; i++) {
+    if (matchPayJob(blob, REGULAR_PAY_JOB_PRIORITY[i])) return i;
+  }
+  return REGULAR_PAY_JOB_PRIORITY.length;
+}
+
+export function isClientWideDistList(distListId: string | null | undefined): boolean {
+  return (distListId || '').trim().toUpperCase() === CLIENT_WIDE_DIST_LIST_ID;
 }
 
 export function sanitizeWeekEnd(raw: string | undefined): string | null {
@@ -151,6 +183,7 @@ export function weekEndEqualsSql(column: string, ymd: string): string {
 export function sanitizeDistListId(raw: string | null | undefined): string | null {
   const s = (raw || '').trim();
   if (!s) return null;
+  if (s.toUpperCase() === CLIENT_WIDE_DIST_LIST_ID) return CLIENT_WIDE_DIST_LIST_ID;
   if (!/^\d+$/.test(s)) return null;
   return s;
 }
@@ -403,4 +436,68 @@ export function compareMonitorReleaseOrder(
   b: { releaseDueAt: string | null; lastJobTime: string | null },
 ): number {
   return monitorReleaseSortMs(a) - monitorReleaseSortMs(b);
+}
+
+/** Normalize "H:mm" / "HH:mm" to "HH:mm", or null if invalid. */
+export function parsePayrollDeadlineLocalTime(raw: string | null | undefined): string | null {
+  const m = (raw || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 23 || min < 0 || min > 59) {
+    return null;
+  }
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+/** Accept 0–7 inclusive; otherwise null. */
+export function sanitizePayrollDeadlineDays(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 0 || n > 7) return null;
+  return Math.floor(n);
+}
+
+/**
+ * SLA deadline: pay week-end calendar day in client TZ, plus daysAfter, at localTime.
+ * Returns ISO UTC string, or null when any part is unset/invalid.
+ */
+export function computePayrollDeadlineAtIso(
+  payWeekEndYmd: string,
+  daysAfterWeekEnd: number | null | undefined,
+  localTime: string | null | undefined,
+  tz: string,
+): string | null {
+  const ymd = sanitizeWeekEnd(payWeekEndYmd);
+  const days = sanitizePayrollDeadlineDays(daysAfterWeekEnd);
+  const time = parsePayrollDeadlineLocalTime(localTime);
+  if (!ymd || days == null || !time) return null;
+  const isoDay = yyyymmddToIso(ymd);
+  if (!isoDay) return null;
+  try {
+    const base = dayjs.tz(`${isoDay} ${time}:00`, tz || 'America/Chicago');
+    if (!base.isValid()) return null;
+    return base.add(days, 'day').toISOString();
+  } catch {
+    return null;
+  }
+}
+
+export function evaluatePayrollDeadlineLate(input: {
+  deadlineAt: string | null;
+  pendingUnits: number;
+  now?: Date;
+}): { late: boolean; lateMinutes: number | null } {
+  if (!input.deadlineAt || input.pendingUnits <= 0) {
+    return { late: false, lateMinutes: null };
+  }
+  const now = input.now || new Date();
+  const due = Date.parse(input.deadlineAt);
+  if (!Number.isFinite(due) || now.getTime() < due) {
+    return { late: false, lateMinutes: null };
+  }
+  return {
+    late: true,
+    lateMinutes: Math.floor((now.getTime() - due) / 60000),
+  };
 }
