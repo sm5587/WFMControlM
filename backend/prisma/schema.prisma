@@ -759,8 +759,14 @@ model CalendarDate {
 model CustomAlert {
   id              String    @id @default(uuid())
   name            String                       // Display label for the watcher
-  clientId        String                       // Client.clientId short code (e.g. WAWA) — used for DB2 query
-  clientName      String    @default("")       // Snapshot of client display name for the list UI
+
+  // Multi-client support. clientIds/clientNames are JSON string arrays and
+  // are the source of truth. clientId/clientName are kept (nullable) for
+  // back-compat and hold the first selected client.
+  clientId        String?                      // deprecated: first client short code
+  clientName      String    @default("")       // deprecated: first client display name
+  clientIds       String    @default("[]")     // JSON array of Client.clientId short codes
+  clientNames     String    @default("[]")     // JSON array of display names (parallel to clientIds)
 
   sqlQuery        String                       // User-provided SELECT statement
   columnName      String                       // Column in the result row to evaluate
@@ -770,12 +776,15 @@ model CustomAlert {
 
   isActive        Boolean   @default(true)
 
+  notifyEmails    String    @default("[]")     // JSON array of email recipients (empty = in-app only)
+
   // Runtime state (updated after each check)
-  lastStatus      String?                      // OK | TRIGGERED | ERROR | PENDING
-  lastValue       String?                      // Last observed column value
-  lastError       String?                      // Last error message (when lastStatus = ERROR)
+  lastStatus      String?                      // Aggregate: OK | TRIGGERED | ERROR | PENDING
+  lastValue       String?                      // deprecated (single-client) — see results
+  lastError       String?                      // Last error summary (when lastStatus = ERROR)
   lastCheckedAt   DateTime?                     // When the check last ran
-  lastTriggeredAt DateTime?                     // When the threshold was last crossed
+  lastTriggeredAt DateTime?                     // When any client last crossed the threshold
+  results         String    @default("[]")     // JSON array of per-client {clientId, clientName, status, value, error, checkedAt}
 
   createdBy       String?
   createdAt       DateTime  @default(now())

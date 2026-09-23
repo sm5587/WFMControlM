@@ -750,13 +750,14 @@ export const customAlertsApi = {
     api.post(`/custom-alerts/${id}/run`, {}, { timeout: 120000 }),
 
   test: (data: {
-    clientId: string;
+    clientIds: string[];
+    clientNames?: string[];
     sqlQuery: string;
     columnName: string;
     operator: import('../types').CustomAlertOperator;
     thresholdValue: string;
-  }): Promise<ApiResponse<import('../types').CustomAlertTestResult>> =>
-    api.post('/custom-alerts/test', data, { timeout: 120000 }),
+  }): Promise<ApiResponse<import('../types').CustomAlertClientResult[]>> =>
+    api.post('/custom-alerts/test', data, { timeout: 300000 }),
 };
 
 // ============================================================

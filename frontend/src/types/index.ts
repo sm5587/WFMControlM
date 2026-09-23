@@ -421,22 +421,37 @@ export interface CalendarImportEntry {
 export type CustomAlertOperator = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ';
 export type CustomAlertStatus = 'OK' | 'TRIGGERED' | 'ERROR' | 'PENDING';
 
+export interface CustomAlertClientResult {
+  clientId: string;
+  clientName: string;
+  status: 'OK' | 'TRIGGERED' | 'ERROR';
+  value: string | null;
+  triggered: boolean;
+  error: string | null;
+  executionMs: number;
+  checkedAt: string;
+}
+
 export interface CustomAlert {
   id: string;
   name: string;
-  clientId: string;
+  clientId: string | null;
   clientName: string;
+  clientIds: string[];
+  clientNames: string[];
   sqlQuery: string;
   columnName: string;
   operator: CustomAlertOperator;
   thresholdValue: string;
   intervalMinutes: number;
   isActive: boolean;
+  notifyEmails: string[];
   lastStatus: CustomAlertStatus | null;
   lastValue: string | null;
   lastError: string | null;
   lastCheckedAt: string | null;
   lastTriggeredAt: string | null;
+  results: CustomAlertClientResult[];
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -444,20 +459,17 @@ export interface CustomAlert {
 
 export interface CustomAlertInput {
   name: string;
-  clientId: string;
-  clientName?: string;
+  clientIds: string[];
+  clientNames: string[];
   sqlQuery: string;
   columnName: string;
   operator: CustomAlertOperator;
   thresholdValue: string;
   intervalMinutes: number;
   isActive?: boolean;
+  notifyEmails: string[];
 }
 
-export interface CustomAlertTestResult {
-  value: string | null;
-  triggered: boolean;
-  error: string | null;
-  executionMs: number;
-}
+// The test endpoint returns one result per selected client.
+export type CustomAlertTestResult = CustomAlertClientResult;
 

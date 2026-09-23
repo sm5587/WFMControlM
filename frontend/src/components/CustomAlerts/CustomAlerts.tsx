@@ -1,15 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BellRing, Plus, Pencil, Trash2, Play, Loader2, AlertTriangle,
-  CheckCircle, XCircle, Clock, X, Power,
+  CheckCircle, XCircle, Clock, X, Power, ChevronDown, ChevronRight, Check, Users, Mail,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customAlertsApi } from '../../services/api';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { usePermission } from '../../context/AuthContext';
 import type {
-  CustomAlert, CustomAlertInput, CustomAlertOperator, CustomAlertTestResult,
+  CustomAlert, CustomAlertClientResult, CustomAlertInput, CustomAlertOperator,
 } from '../../types';
+
+interface ClientOption { id: string; clientId: string; name: string }
 
 // ============================================================
 // Custom Alerts Page
@@ -73,15 +75,29 @@ function timeAgo(iso: string | null): string {
 
 const EMPTY_FORM: CustomAlertInput = {
   name: '',
-  clientId: '',
-  clientName: '',
+  clientIds: [],
+  clientNames: [],
   sqlQuery: '',
   columnName: '',
   operator: 'GT',
   thresholdValue: '',
   intervalMinutes: 15,
   isActive: true,
+  notifyEmails: [],
 };
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Small status pill used inside the per-client breakdown.
+function MiniStatus({ status }: { status: CustomAlertClientResult['status'] }) {
+  const map = {
+    TRIGGERED: 'bg-red-100 text-red-700',
+    OK: 'bg-green-100 text-green-700',
+    ERROR: 'bg-amber-100 text-amber-700',
+  } as const;
+  const label = status === 'TRIGGERED' ? 'Triggered' : status === 'OK' ? 'OK' : 'Error';
+  return <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold ${map[status]}`}>{label}</span>;
+}
 
 export default function CustomAlerts() {
   const canManage = usePermission('CUSTOM_ALERTS_MANAGE', 'write');
@@ -92,6 +108,7 @@ export default function CustomAlerts() {
   const [editing, setEditing] = useState<CustomAlert | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomAlert | null>(null);
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { data: alerts = [], isLoading } = useQuery<CustomAlert[]>({
     queryKey: ['custom-alerts'],
@@ -189,81 +206,166 @@ export default function CustomAlerts() {
                 <tr className="bg-gray-50 border-b border-gray-200 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Client</th>
+                  <th className="px-4 py-3">Clients</th>
                   <th className="px-4 py-3">Condition</th>
                   <th className="px-4 py-3">Interval</th>
-                  <th className="px-4 py-3">Last Value</th>
+                  <th className="px-4 py-3">Result</th>
                   <th className="px-4 py-3">Last Checked</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {alerts.map(alert => (
-                  <tr key={alert.id} className={`hover:bg-gray-50 ${!alert.isActive ? 'opacity-50' : ''}`}>
-                    <td className="px-4 py-3"><StatusBadge status={alert.lastStatus} /></td>
-                    <td className="px-4 py-3 font-medium text-gray-900">
-                      {alert.name}
-                      {!alert.isActive && <span className="ml-2 text-xs text-gray-400">(paused)</span>}
-                    </td>
-                    <td className="px-4 py-3 text-gray-700">
-                      <span className="font-mono text-xs">{alert.clientId}</span>
-                      {alert.clientName && <span className="text-gray-400"> — {alert.clientName}</span>}
-                    </td>
-                    <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
-                      <span className="font-mono text-xs">{alert.columnName}</span>{' '}
-                      <span className="font-semibold">{OP_SYMBOL[alert.operator]}</span>{' '}
-                      <span className="font-mono text-xs">{alert.thresholdValue}</span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500">{alert.intervalMinutes}m</td>
-                    <td className="px-4 py-3">
-                      {alert.lastStatus === 'ERROR' ? (
-                        <span className="text-amber-600 text-xs" title={alert.lastError ?? ''}>Error</span>
-                      ) : (
-                        <span className="font-mono text-xs text-gray-700">{alert.lastValue ?? '-'}</span>
+                {alerts.map(alert => {
+                  const clientCount = alert.clientIds?.length || (alert.clientId ? 1 : 0);
+                  const clientLabel = (alert.clientIds && alert.clientIds.length > 0)
+                    ? alert.clientIds.join(', ')
+                    : (alert.clientId ?? '');
+                  const results = alert.results ?? [];
+                  const triggered = results.filter(r => r.status === 'TRIGGERED').length;
+                  const errored = results.filter(r => r.status === 'ERROR').length;
+                  const okCount = results.filter(r => r.status === 'OK').length;
+                  const isExpanded = expandedId === alert.id;
+
+                  return (
+                    <React.Fragment key={alert.id}>
+                      <tr className={`hover:bg-gray-50 ${!alert.isActive ? 'opacity-50' : ''}`}>
+                        <td className="px-4 py-3"><StatusBadge status={alert.lastStatus} /></td>
+                        <td className="px-4 py-3 font-medium text-gray-900">
+                          <span className="inline-flex items-center gap-1.5">
+                            {alert.name}
+                            {alert.notifyEmails && alert.notifyEmails.length > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 text-[11px] text-sky-600"
+                                title={`Emails: ${alert.notifyEmails.join(', ')}`}
+                              >
+                                <Mail className="w-3 h-3" />{alert.notifyEmails.length}
+                              </span>
+                            )}
+                          </span>
+                          {!alert.isActive && <span className="ml-2 text-xs text-gray-400">(paused)</span>}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : alert.id)}
+                            className="inline-flex items-center gap-1.5 max-w-[240px] text-left hover:text-zebra-600"
+                            title="Show per-client results"
+                          >
+                            {isExpanded ? <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />}
+                            <Users className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+                            <span className="inline-flex items-center gap-1">
+                              <span className="font-semibold">{clientCount}</span>
+                              <span className="text-gray-400">·</span>
+                              <span className="font-mono text-xs truncate">{clientLabel}</span>
+                            </span>
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
+                          <span className="font-mono text-xs">{alert.columnName}</span>{' '}
+                          <span className="font-semibold">{OP_SYMBOL[alert.operator]}</span>{' '}
+                          <span className="font-mono text-xs">{alert.thresholdValue}</span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">{alert.intervalMinutes}m</td>
+                        <td className="px-4 py-3">
+                          {results.length === 0 ? (
+                            <span className="text-gray-400 text-xs">-</span>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-xs">
+                              {triggered > 0 && <span className="text-red-600 font-semibold">▲ {triggered}</span>}
+                              {okCount > 0 && <span className="text-green-600">✓ {okCount}</span>}
+                              {errored > 0 && <span className="text-amber-600">✕ {errored}</span>}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">{timeAgo(alert.lastCheckedAt)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1">
+                            {canManage && (
+                              <>
+                                <button
+                                  onClick={() => runNow(alert)}
+                                  disabled={runningId === alert.id}
+                                  title="Run now"
+                                  className="p-1.5 text-gray-400 hover:text-zebra-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                                >
+                                  {runningId === alert.id
+                                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                                    : <Play className="w-4 h-4" />}
+                                </button>
+                                <button
+                                  onClick={() => toggleMutation.mutate(alert)}
+                                  title={alert.isActive ? 'Pause' : 'Resume'}
+                                  className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-gray-100 rounded transition-colors"
+                                >
+                                  <Power className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => openEdit(alert)}
+                                  title="Edit"
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-gray-100 rounded transition-colors"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => setDeleteTarget(alert)}
+                                  title="Delete"
+                                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-gray-100 rounded transition-colors"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+
+                      {isExpanded && (
+                        <tr className="bg-gray-50/60">
+                          <td colSpan={8} className="px-6 py-3">
+                            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                              Per-client results
+                            </div>
+                            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="bg-gray-50 text-left text-[11px] font-semibold text-gray-500 uppercase">
+                                    <th className="px-3 py-2">Client</th>
+                                    <th className="px-3 py-2">Status</th>
+                                    <th className="px-3 py-2">Value</th>
+                                    <th className="px-3 py-2">Detail</th>
+                                    <th className="px-3 py-2">Checked</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                  {(alert.clientIds && alert.clientIds.length > 0
+                                    ? alert.clientIds
+                                    : alert.clientId ? [alert.clientId] : []
+                                  ).map((cid, i) => {
+                                    const r = results.find(x => x.clientId === cid);
+                                    const nm = alert.clientNames?.[i] ?? '';
+                                    return (
+                                      <tr key={cid}>
+                                        <td className="px-3 py-2 text-gray-700">
+                                          <span className="font-mono text-xs">{cid}</span>
+                                          {nm && <span className="text-gray-400"> — {nm}</span>}
+                                        </td>
+                                        <td className="px-3 py-2">
+                                          {r ? <MiniStatus status={r.status} /> : <span className="text-gray-400 text-xs">Pending</span>}
+                                        </td>
+                                        <td className="px-3 py-2 font-mono text-xs text-gray-700">{r?.value ?? '-'}</td>
+                                        <td className="px-3 py-2 text-xs text-amber-600 max-w-[320px] truncate" title={r?.error ?? ''}>{r?.error ?? ''}</td>
+                                        <td className="px-3 py-2 text-gray-400 text-xs">{r ? timeAgo(r.checkedAt) : '-'}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{timeAgo(alert.lastCheckedAt)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        {canManage && (
-                          <>
-                            <button
-                              onClick={() => runNow(alert)}
-                              disabled={runningId === alert.id}
-                              title="Run now"
-                              className="p-1.5 text-gray-400 hover:text-zebra-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
-                            >
-                              {runningId === alert.id
-                                ? <Loader2 className="w-4 h-4 animate-spin" />
-                                : <Play className="w-4 h-4" />}
-                            </button>
-                            <button
-                              onClick={() => toggleMutation.mutate(alert)}
-                              title={alert.isActive ? 'Pause' : 'Resume'}
-                              className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-gray-100 rounded transition-colors"
-                            >
-                              <Power className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => openEdit(alert)}
-                              title="Edit"
-                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-gray-100 rounded transition-colors"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => setDeleteTarget(alert)}
-                              title="Delete"
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-gray-100 rounded transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -299,7 +401,7 @@ function AlertModal({
   editing, clients, onClose, onSaved,
 }: {
   editing: CustomAlert | null;
-  clients: { id: string; clientId: string; name: string }[];
+  clients: ClientOption[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -307,33 +409,78 @@ function AlertModal({
     editing
       ? {
           name: editing.name,
-          clientId: editing.clientId,
-          clientName: editing.clientName,
+          clientIds: editing.clientIds && editing.clientIds.length > 0
+            ? editing.clientIds
+            : editing.clientId ? [editing.clientId] : [],
+          clientNames: editing.clientNames && editing.clientNames.length > 0
+            ? editing.clientNames
+            : editing.clientName ? [editing.clientName] : [],
           sqlQuery: editing.sqlQuery,
           columnName: editing.columnName,
           operator: editing.operator,
           thresholdValue: editing.thresholdValue,
           intervalMinutes: editing.intervalMinutes,
           isActive: editing.isActive,
+          notifyEmails: editing.notifyEmails ?? [],
         }
       : { ...EMPTY_FORM },
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<CustomAlertTestResult | null>(null);
+  const [testResults, setTestResults] = useState<CustomAlertClientResult[] | null>(null);
+  const [emailInput, setEmailInput] = useState('');
+
+  const addEmail = (raw: string) => {
+    const candidates = raw.split(/[,\s;]+/).map(s => s.trim()).filter(Boolean);
+    if (candidates.length === 0) return;
+    setForm(prev => {
+      const next = [...prev.notifyEmails];
+      for (const c of candidates) {
+        if (EMAIL_RE.test(c) && !next.includes(c)) next.push(c);
+      }
+      return { ...prev, notifyEmails: next };
+    });
+    setEmailInput('');
+  };
+
+  const removeEmail = (email: string) =>
+    setForm(prev => ({ ...prev, notifyEmails: prev.notifyEmails.filter(e => e !== email) }));
+
+  const emailInvalid = emailInput.trim().length > 0 && !EMAIL_RE.test(emailInput.trim());
 
   const set = <K extends keyof CustomAlertInput>(key: K, value: CustomAlertInput[K]) =>
     setForm(prev => ({ ...prev, [key]: value }));
 
-  const onClientChange = (code: string) => {
-    const c = clients.find(cl => cl.clientId === code);
-    setForm(prev => ({ ...prev, clientId: code, clientName: c?.name ?? '' }));
+  // Toggle a client in/out of the selection, keeping the parallel names array in sync.
+  const toggleClient = (code: string) => {
+    setForm(prev => {
+      const idx = prev.clientIds.indexOf(code);
+      if (idx >= 0) {
+        return {
+          ...prev,
+          clientIds: prev.clientIds.filter(c => c !== code),
+          clientNames: prev.clientNames.filter((_, i) => i !== idx),
+        };
+      }
+      const c = clients.find(cl => cl.clientId === code);
+      return {
+        ...prev,
+        clientIds: [...prev.clientIds, code],
+        clientNames: [...prev.clientNames, c?.name ?? ''],
+      };
+    });
+  };
+
+  const setAllClients = (select: boolean) => {
+    setForm(prev => select
+      ? { ...prev, clientIds: clients.map(c => c.clientId), clientNames: clients.map(c => c.name) }
+      : { ...prev, clientIds: [], clientNames: [] });
   };
 
   const validate = (): string | null => {
     if (!form.name.trim()) return 'Name is required';
-    if (!form.clientId) return 'Please select a client';
+    if (!form.clientIds || form.clientIds.length === 0) return 'Please select at least one client';
     if (!form.sqlQuery.trim()) return 'SQL query is required';
     if (!form.columnName.trim()) return 'Column name is required';
     if (!String(form.thresholdValue).trim()) return 'Threshold value is required';
@@ -343,19 +490,20 @@ function AlertModal({
 
   const runTest = async () => {
     setError(null);
-    setTestResult(null);
+    setTestResults(null);
     const v = validate();
     if (v) { setError(v); return; }
     setTesting(true);
     try {
       const res = await customAlertsApi.test({
-        clientId: form.clientId,
+        clientIds: form.clientIds,
+        clientNames: form.clientNames,
         sqlQuery: form.sqlQuery,
         columnName: form.columnName,
         operator: form.operator,
         thresholdValue: String(form.thresholdValue),
       });
-      setTestResult((res.data ?? null) as CustomAlertTestResult | null);
+      setTestResults((res.data ?? []) as CustomAlertClientResult[]);
     } catch (err: any) {
       setError(err.message || 'Test failed');
     } finally {
@@ -367,12 +515,19 @@ function AlertModal({
     setError(null);
     const v = validate();
     if (v) { setError(v); return; }
+    // Fold any email still sitting in the input box into the list.
+    const pending = emailInput.trim();
+    if (pending && !EMAIL_RE.test(pending)) { setError(`Invalid email address: ${pending}`); return; }
+    const finalEmails = pending && !form.notifyEmails.includes(pending)
+      ? [...form.notifyEmails, pending]
+      : form.notifyEmails;
+    const payload: CustomAlertInput = { ...form, notifyEmails: finalEmails };
     setSaving(true);
     try {
       if (editing) {
-        await customAlertsApi.update(editing.id, form);
+        await customAlertsApi.update(editing.id, payload);
       } else {
-        await customAlertsApi.create(form);
+        await customAlertsApi.create(payload);
       }
       onSaved();
     } catch (err: any) {
@@ -408,19 +563,27 @@ function AlertModal({
             />
           </div>
 
-          {/* Client */}
+          {/* Clients (multi-select) */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Client</label>
-            <select
-              value={form.clientId}
-              onChange={e => onClientChange(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500"
-            >
-              <option value="">Select a client…</option>
-              {clients.map(c => (
-                <option key={c.id} value={c.clientId}>{c.clientId} — {c.name}</option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">
+                Clients {form.clientIds.length > 0 && (
+                  <span className="ml-1 text-xs font-normal text-gray-400">({form.clientIds.length} selected)</span>
+                )}
+              </label>
+              <div className="flex items-center gap-3 text-xs">
+                <button type="button" onClick={() => setAllClients(true)} className="text-zebra-600 hover:underline">Select all</button>
+                <button type="button" onClick={() => setAllClients(false)} className="text-gray-500 hover:underline">Clear</button>
+              </div>
+            </div>
+            <MultiClientSelect
+              clients={clients}
+              selectedIds={form.clientIds}
+              onToggle={toggleClient}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              The query runs against each selected client on the configured interval.
+            </p>
           </div>
 
           {/* SQL query */}
@@ -500,18 +663,69 @@ function AlertModal({
             </div>
           </div>
 
-          {/* Test result */}
-          {testResult && (
-            <div className={`rounded-lg px-3 py-2 text-sm ${
-              testResult.error
-                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                : testResult.triggered
-                  ? 'bg-red-50 text-red-700 border border-red-200'
-                  : 'bg-green-50 text-green-700 border border-green-200'
-            }`}>
-              {testResult.error
-                ? <>Test error: {testResult.error}</>
-                : <>Result: <span className="font-mono font-semibold">{testResult.value ?? 'null'}</span> — {testResult.triggered ? 'threshold WOULD trigger an alert' : 'threshold not crossed'} ({testResult.executionMs}ms)</>}
+          {/* Email recipients */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Email Recipients <span className="text-xs font-normal text-gray-400">(optional — leave empty for in-app only)</span>
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5 border border-gray-300 rounded-lg px-2 py-1.5 focus-within:ring-2 focus-within:ring-zebra-500">
+              {form.notifyEmails.map(email => (
+                <span key={email} className="inline-flex items-center gap-1 bg-sky-100 text-sky-800 text-xs font-medium px-2 py-1 rounded">
+                  {email}
+                  <button type="button" onClick={() => removeEmail(email)} className="hover:text-sky-950" title="Remove">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+              <input
+                type="text"
+                value={emailInput}
+                onChange={e => setEmailInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ',' || e.key === ' ') { e.preventDefault(); addEmail(emailInput); }
+                  else if (e.key === 'Backspace' && !emailInput && form.notifyEmails.length > 0) {
+                    removeEmail(form.notifyEmails[form.notifyEmails.length - 1]);
+                  }
+                }}
+                onBlur={() => { if (emailInput.trim()) addEmail(emailInput); }}
+                placeholder={form.notifyEmails.length === 0 ? 'name@zebra.com, another@zebra.com' : 'Add another…'}
+                className="flex-1 min-w-[160px] px-1 py-1 text-sm focus:outline-none"
+              />
+            </div>
+            <p className={`text-xs mt-1 ${emailInvalid ? 'text-red-500' : 'text-gray-400'}`}>
+              {emailInvalid
+                ? 'That does not look like a valid email address.'
+                : 'Press Enter or comma to add. Recipients are emailed when the threshold is crossed (requires SMTP configured).'}
+            </p>
+          </div>
+
+          {/* Test results (one row per selected client) */}
+          {testResults && testResults.length > 0 && (
+            <div className="rounded-lg border border-gray-200 overflow-hidden">
+              <div className="bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Test results — {testResults.length} client(s)
+              </div>
+              <div className="divide-y divide-gray-100 max-h-56 overflow-auto">
+                {testResults.map(r => (
+                  <div
+                    key={r.clientId}
+                    className={`flex items-center justify-between gap-3 px-3 py-2 text-sm ${
+                      r.status === 'ERROR' ? 'bg-amber-50' : r.status === 'TRIGGERED' ? 'bg-red-50' : 'bg-green-50/60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <MiniStatus status={r.status} />
+                      <span className="font-mono text-xs text-gray-700">{r.clientId}</span>
+                      {r.clientName && <span className="text-gray-400 text-xs truncate">— {r.clientName}</span>}
+                    </div>
+                    <div className="text-xs text-gray-600 text-right flex-shrink-0">
+                      {r.error
+                        ? <span className="text-amber-700" title={r.error}>{r.error.length > 60 ? r.error.slice(0, 60) + '…' : r.error}</span>
+                        : <>value <span className="font-mono font-semibold">{r.value ?? 'null'}</span> — {r.triggered ? 'would trigger' : 'ok'} ({r.executionMs}ms)</>}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -551,6 +765,102 @@ function AlertModal({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Multi-client selector
+// A custom dropdown with per-client checkboxes. Selected rows get a
+// light-blue background; the closed box shows the selected client
+// names comma-separated.
+// ─────────────────────────────────────────────────────────────
+function MultiClientSelect({
+  clients, selectedIds, onToggle,
+}: {
+  clients: ClientOption[];
+  selectedIds: string[];
+  onToggle: (code: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const selectedNames = clients
+    .filter(c => selectedIds.includes(c.clientId))
+    .map(c => c.name || c.clientId);
+  // Include any selected codes not present in the current client list (edge case).
+  const extra = selectedIds.filter(id => !clients.some(c => c.clientId === id));
+  const displayText = [...selectedNames, ...extra].join(', ');
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? clients.filter(c => c.clientId.toLowerCase().includes(q) || c.name.toLowerCase().includes(q))
+    : clients;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-2 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white text-left focus:outline-none focus:ring-2 focus:ring-zebra-500"
+      >
+        <span className={`truncate ${displayText ? 'text-gray-800' : 'text-gray-400'}`}>
+          {displayText || 'Select one or more clients…'}
+        </span>
+        <ChevronDown className={`w-4 h-4 flex-shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+          <div className="p-2 border-b border-gray-100">
+            <input
+              autoFocus
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search clients…"
+              className="w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-zebra-500"
+            />
+          </div>
+          <div className="max-h-60 overflow-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-4 text-center text-sm text-gray-400">No clients match “{search}”</div>
+            ) : (
+              filtered.map(c => {
+                const checked = selectedIds.includes(c.clientId);
+                return (
+                  <button
+                    type="button"
+                    key={c.id}
+                    onClick={() => onToggle(c.clientId)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left transition-colors ${
+                      checked ? 'bg-sky-100 hover:bg-sky-200' : 'bg-white hover:bg-gray-50'
+                    }`}
+                  >
+                    <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
+                      checked ? 'bg-sky-600 border-sky-600' : 'bg-white border-gray-300'
+                    }`}>
+                      {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                    </span>
+                    <span className="font-mono text-xs text-gray-500 w-16 flex-shrink-0">{c.clientId}</span>
+                    <span className="truncate text-gray-800">{c.name}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
