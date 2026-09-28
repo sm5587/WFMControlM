@@ -20,6 +20,7 @@ import {
   CUSTOM_ALERT_SCHEDULE_TYPES,
   CUSTOM_ALERT_MIN_INTERVAL,
   buildCronExpressions,
+  normalizeAggregateQuery,
   type CustomAlertOperator,
 } from '../services/custom-alert-service';
 
@@ -223,7 +224,8 @@ function validateRuleInput(body: RuleInput, partial = false): { ok: true; data: 
       }
       const check = customAlertService.validateQuery(body.sqlQuery);
       if (!check.ok) return { ok: false, error: check.error! };
-      data.sqlQuery = body.sqlQuery.trim();
+      // Persist with the leading SELECT + aggregate function uppercased.
+      data.sqlQuery = normalizeAggregateQuery(body.sqlQuery);
     } else if (!partial) {
       return { ok: false, error: 'SQL query is required' };
     }

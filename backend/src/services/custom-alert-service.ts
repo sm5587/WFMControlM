@@ -61,6 +61,39 @@ function extractTopLevelSelectList(sql: string): string | null {
   return sql.slice(startIdx); // no top-level FROM (e.g. SELECT COUNT(*) FROM SYSIBM.SYSDUMMY1 handled above)
 }
 
+// Normalize a validated query for storage: uppercase the whole statement EXCEPT
+// anything inside quotes. Unquoted identifiers (tables/columns) and keywords are
+// uppercased for a clean, consistent look; single-quoted string values (e.g.
+// WHERE STATUS = 'n') and double-quoted identifiers are preserved verbatim so
+// case-sensitive data comparisons are never altered.
+export function normalizeAggregateQuery(sqlQuery: string | null | undefined): string {
+  const s = (sqlQuery ?? '').trim();
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inSingle) {
+      out += ch;
+      // Two single quotes inside a string is an escaped quote — stay in string.
+      if (ch === "'") {
+        if (s[i + 1] === "'") { out += s[i + 1]; i++; }
+        else inSingle = false;
+      }
+      continue;
+    }
+    if (inDouble) {
+      out += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") { inSingle = true; out += ch; continue; }
+    if (ch === '"') { inDouble = true; out += ch; continue; }
+    out += ch.toUpperCase();
+  }
+  return out;
+}
+
 // Human-readable label for what a query measures, derived from its aggregate
 // projection (e.g. "COUNT(*)"). Falls back to "value" when it can't be read.
 export function aggregateLabel(sqlQuery: string | null | undefined): string {
