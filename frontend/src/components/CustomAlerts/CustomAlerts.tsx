@@ -7,8 +7,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customAlertsApi } from '../../services/api';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { usePermission } from '../../context/AuthContext';
+import CustomAlertDetailModal from './CustomAlertDetailModal';
 import type {
   CustomAlert, CustomAlertClientResult, CustomAlertInput, CustomAlertOperator,
+  CustomAlertValidateResult, CustomAlertScheduleType, CustomAlertScheduleConfig,
 } from '../../types';
 
 interface ClientOption { id: string; clientId: string; name: string }
@@ -31,6 +33,81 @@ const OPERATORS: { value: CustomAlertOperator; label: string; symbol: string }[]
 const OP_SYMBOL: Record<CustomAlertOperator, string> = {
   GT: '>', GTE: '>=', LT: '<', LTE: '<=', EQ: '=',
 };
+
+// Only aggregate SELECTs are allowed — the query must return a single number
+// (a count/sum/etc.), never individual rows/columns of personal data. Keep this
+// list in sync with the backend (CUSTOM_ALERT_AGGREGATE_FUNCTIONS).
+const ALLOWED_AGGREGATE_FUNCTIONS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'] as const;
+
+// True if the string contains a comma outside of any parentheses/quotes.
+function hasTopLevelComma(s: string): boolean {
+  let depth = 0;
+  let inSingle = false;
+  for (const ch of s) {
+    if (inSingle) { if (ch === "'") inSingle = false; continue; }
+    if (ch === "'") { inSingle = true; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    else if (ch === ',' && depth === 0) return true;
+  }
+  return false;
+}
+
+// Extract the outermost SELECT projection (between SELECT and its top-level
+// FROM), respecting nesting/quotes. Returns null if it doesn't start with SELECT.
+function extractTopLevelSelectList(sql: string): string | null {
+  const upper = sql.toUpperCase();
+  if (!upper.startsWith('SELECT')) return null;
+  const startIdx = 6;
+  let depth = 0;
+  let inSingle = false;
+  for (let i = startIdx; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inSingle) { if (ch === "'") inSingle = false; continue; }
+    if (ch === "'") { inSingle = true; continue; }
+    if (ch === '(') { depth++; continue; }
+    if (ch === ')') { depth = Math.max(0, depth - 1); continue; }
+    if (depth === 0 && (ch === 'F' || ch === 'f') && upper.startsWith('FROM', i)) {
+      const before = sql[i - 1];
+      const after = sql[i + 4];
+      const beforeOk = before === undefined || /[\s),]/.test(before);
+      const afterOk = after === undefined || /[\s(]/.test(after);
+      if (beforeOk && afterOk) return sql.slice(startIdx, i);
+    }
+  }
+  return sql.slice(startIdx);
+}
+
+// Human-readable label for what a query measures, derived from its aggregate
+// projection (e.g. "COUNT(*)"). Falls back to "value".
+function aggregateLabel(sql: string): string {
+  const cleaned = (sql ?? '').trim().replace(/;\s*$/, '');
+  const list = extractTopLevelSelectList(cleaned);
+  return list?.trim() || 'value';
+}
+
+// Client-side mirror of the backend aggregate-only rule, for instant feedback.
+function validateAggregateQuery(sql: string): string | null {
+  const trimmed = (sql ?? '').trim();
+  if (!trimmed) return 'SQL query is required';
+  const withoutTrailing = trimmed.replace(/;\s*$/, '');
+  if (withoutTrailing.includes(';')) return 'Only a single SQL statement is allowed (no ";")';
+  if ((withoutTrailing.split(/\s+/)[0] ?? '').toUpperCase() !== 'SELECT') {
+    return 'Query must be a single aggregate SELECT, e.g. SELECT COUNT(*) FROM ...';
+  }
+  const selectList = extractTopLevelSelectList(withoutTrailing);
+  if (selectList === null || !selectList.trim()) {
+    return 'Could not read the SELECT clause. Use a single aggregate, e.g. SELECT COUNT(*) FROM ...';
+  }
+  const projection = selectList.trim();
+  if (hasTopLevelComma(projection)) return 'Only a single aggregate value may be selected (no multiple columns).';
+  const aggRe = new RegExp(`^(${ALLOWED_AGGREGATE_FUNCTIONS.join('|')})\\s*\\(`, 'i');
+  if (!aggRe.test(projection)) {
+    return `Query must select a single aggregate value (${ALLOWED_AGGREGATE_FUNCTIONS.join(', ')}). `
+      + 'Selecting columns or "*" is not allowed — e.g. SELECT COUNT(*) FROM ...';
+  }
+  return null;
+}
 
 function StatusBadge({ status }: { status: CustomAlert['lastStatus'] }) {
   switch (status) {
@@ -78,15 +155,63 @@ const EMPTY_FORM: CustomAlertInput = {
   clientIds: [],
   clientNames: [],
   sqlQuery: '',
-  columnName: '',
   operator: 'GT',
   thresholdValue: '',
   intervalMinutes: 15,
+  scheduleType: 'INTERVAL',
+  scheduleConfig: { times: [], daysOfWeek: [], daysOfMonth: [] },
   isActive: true,
   notifyEmails: [],
+  startAt: '',
+  endAt: '',
 };
 
+const MIN_INTERVAL_MINUTES = 15;
+
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const FREQUENCY_OPTIONS: { value: CustomAlertScheduleType; label: string }[] = [
+  { value: 'INTERVAL', label: 'Every N minutes' },
+  { value: 'DAILY', label: 'Every day (at set times)' },
+  { value: 'WEEKLY', label: 'Specific days of week' },
+  { value: 'MONTHLY', label: 'Specific days of month' },
+];
+
+// Human-readable summary of the configured frequency (times shown in IST).
+function describeSchedule(
+  type: CustomAlertScheduleType,
+  cfg: CustomAlertScheduleConfig,
+  intervalMinutes: number,
+): string {
+  if (type === 'INTERVAL') return `Every ${intervalMinutes} minute${intervalMinutes === 1 ? '' : 's'}`;
+  const times = cfg.times.length ? [...cfg.times].sort().join(', ') : '(no time set)';
+  if (type === 'DAILY') return `Daily at ${times} IST`;
+  if (type === 'WEEKLY') {
+    const days = cfg.daysOfWeek.length ? [...cfg.daysOfWeek].sort((a, b) => a - b).map(d => DOW_LABELS[d]).join(', ') : '(no day set)';
+    return `${days} at ${times} IST`;
+  }
+  const doms = cfg.daysOfMonth.length ? [...cfg.daysOfMonth].sort((a, b) => a - b).join(', ') : '(no day set)';
+  return `Day ${doms} of month at ${times} IST`;
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// datetime-local <-> ISO helpers. The <input type="datetime-local"> works in
+// the browser's local timezone (IST here); we store/transmit UTC ISO strings.
+const pad2 = (n: number) => String(n).padStart(2, '0');
+function toLocalInput(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : toLocalInput(d);
+}
+function localInputToIso(local: string | null): string | null {
+  if (!local) return null;
+  const d = new Date(local);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
 
 // Small status pill used inside the per-client breakdown.
 function MiniStatus({ status }: { status: CustomAlertClientResult['status'] }) {
@@ -107,7 +232,7 @@ export default function CustomAlerts() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CustomAlert | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomAlert | null>(null);
-  const [runningId, setRunningId] = useState<string | null>(null);
+  const [detailAlert, setDetailAlert] = useState<CustomAlert | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { data: alerts = [], isLoading } = useQuery<CustomAlert[]>({
@@ -130,16 +255,6 @@ export default function CustomAlerts() {
     mutationFn: (alert: CustomAlert) => customAlertsApi.update(alert.id, { isActive: !alert.isActive }),
     onSuccess: invalidate,
   });
-
-  const runNow = async (alert: CustomAlert) => {
-    setRunningId(alert.id);
-    try {
-      await customAlertsApi.run(alert.id);
-      invalidate();
-    } finally {
-      setRunningId(null);
-    }
-  };
 
   const openCreate = () => { setEditing(null); setModalOpen(true); };
   const openEdit = (alert: CustomAlert) => { setEditing(alert); setModalOpen(true); };
@@ -208,7 +323,7 @@ export default function CustomAlerts() {
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Clients</th>
                   <th className="px-4 py-3">Condition</th>
-                  <th className="px-4 py-3">Interval</th>
+                  <th className="px-4 py-3">Frequency</th>
                   <th className="px-4 py-3">Result</th>
                   <th className="px-4 py-3">Last Checked</th>
                   <th className="px-4 py-3 text-right">Actions</th>
@@ -226,10 +341,20 @@ export default function CustomAlerts() {
                   const okCount = results.filter(r => r.status === 'OK').length;
                   const isExpanded = expandedId === alert.id;
 
+                  const nowMs = Date.now();
+                  const startMs = alert.startAt ? new Date(alert.startAt).getTime() : null;
+                  const endMs = alert.endAt ? new Date(alert.endAt).getTime() : null;
+                  const scheduleState: 'scheduled' | 'ended' | 'running' =
+                    endMs !== null && nowMs >= endMs ? 'ended'
+                      : startMs !== null && nowMs < startMs ? 'scheduled'
+                      : 'running';
+
                   return (
                     <React.Fragment key={alert.id}>
                       <tr className={`hover:bg-gray-50 ${!alert.isActive ? 'opacity-50' : ''}`}>
-                        <td className="px-4 py-3"><StatusBadge status={alert.lastStatus} /></td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={alert.lastStatus} />
+                        </td>
                         <td className="px-4 py-3 font-medium text-gray-900">
                           <span className="inline-flex items-center gap-1.5">
                             {alert.name}
@@ -242,7 +367,23 @@ export default function CustomAlerts() {
                               </span>
                             )}
                           </span>
-                          {!alert.isActive && <span className="ml-2 text-xs text-gray-400">(paused)</span>}
+                          {scheduleState === 'ended' ? (
+                            <span
+                              className="ml-2 inline-flex items-center gap-1 text-[11px] font-medium text-gray-500"
+                              title={alert.endAt ? `Ended ${new Date(alert.endAt).toLocaleString()}` : 'Ended'}
+                            >
+                              <Clock className="w-3 h-3" />Ended
+                            </span>
+                          ) : scheduleState === 'scheduled' ? (
+                            <span
+                              className="ml-2 inline-flex items-center gap-1 text-[11px] font-medium text-blue-500"
+                              title={alert.startAt ? `Starts ${new Date(alert.startAt).toLocaleString()}` : 'Scheduled'}
+                            >
+                              <Clock className="w-3 h-3" />Scheduled
+                            </span>
+                          ) : !alert.isActive ? (
+                            <span className="ml-2 text-xs text-gray-400">(paused)</span>
+                          ) : null}
                         </td>
                         <td className="px-4 py-3 text-gray-700">
                           <button
@@ -260,11 +401,17 @@ export default function CustomAlerts() {
                           </button>
                         </td>
                         <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
-                          <span className="font-mono text-xs">{alert.columnName}</span>{' '}
+                          <span className="font-mono text-xs">{aggregateLabel(alert.sqlQuery)}</span>{' '}
                           <span className="font-semibold">{OP_SYMBOL[alert.operator]}</span>{' '}
                           <span className="font-mono text-xs">{alert.thresholdValue}</span>
                         </td>
-                        <td className="px-4 py-3 text-gray-500">{alert.intervalMinutes}m</td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">
+                          {describeSchedule(
+                            alert.scheduleType ?? 'INTERVAL',
+                            alert.scheduleConfig ?? { times: [], daysOfWeek: [], daysOfMonth: [] },
+                            alert.intervalMinutes,
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           {results.length === 0 ? (
                             <span className="text-gray-400 text-xs">-</span>
@@ -281,16 +428,6 @@ export default function CustomAlerts() {
                           <div className="flex items-center justify-end gap-1">
                             {canManage && (
                               <>
-                                <button
-                                  onClick={() => runNow(alert)}
-                                  disabled={runningId === alert.id}
-                                  title="Run now"
-                                  className="p-1.5 text-gray-400 hover:text-zebra-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
-                                >
-                                  {runningId === alert.id
-                                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                                    : <Play className="w-4 h-4" />}
-                                </button>
                                 <button
                                   onClick={() => toggleMutation.mutate(alert)}
                                   title={alert.isActive ? 'Pause' : 'Resume'}
@@ -343,7 +480,12 @@ export default function CustomAlerts() {
                                     const r = results.find(x => x.clientId === cid);
                                     const nm = alert.clientNames?.[i] ?? '';
                                     return (
-                                      <tr key={cid}>
+                                      <tr
+                                        key={cid}
+                                        onClick={() => setDetailAlert(alert)}
+                                        title="View alert details"
+                                        className="cursor-pointer hover:bg-zebra-50/60 transition-colors"
+                                      >
                                         <td className="px-3 py-2 text-gray-700">
                                           <span className="font-mono text-xs">{cid}</span>
                                           {nm && <span className="text-gray-400"> — {nm}</span>}
@@ -390,6 +532,10 @@ export default function CustomAlerts() {
           onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
         />
       )}
+
+      {detailAlert && (
+        <CustomAlertDetailModal alert={detailAlert} onClose={() => setDetailAlert(null)} />
+      )}
     </div>
   );
 }
@@ -416,20 +562,46 @@ function AlertModal({
             ? editing.clientNames
             : editing.clientName ? [editing.clientName] : [],
           sqlQuery: editing.sqlQuery,
-          columnName: editing.columnName,
           operator: editing.operator,
           thresholdValue: editing.thresholdValue,
           intervalMinutes: editing.intervalMinutes,
+          scheduleType: editing.scheduleType ?? 'INTERVAL',
+          scheduleConfig: {
+            times: editing.scheduleConfig?.times ?? [],
+            daysOfWeek: editing.scheduleConfig?.daysOfWeek ?? [],
+            daysOfMonth: editing.scheduleConfig?.daysOfMonth ?? [],
+          },
           isActive: editing.isActive,
           notifyEmails: editing.notifyEmails ?? [],
+          startAt: isoToLocalInput(editing.startAt),
+          endAt: isoToLocalInput(editing.endAt),
         }
-      : { ...EMPTY_FORM },
+      : (() => {
+          // Sensible defaults for a new alert: start now, end in 24 hours.
+          const now = new Date();
+          const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+          return { ...EMPTY_FORM, startAt: toLocalInput(now), endAt: toLocalInput(end) };
+        })(),
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResults, setTestResults] = useState<CustomAlertClientResult[] | null>(null);
   const [emailInput, setEmailInput] = useState('');
+  const [validating, setValidating] = useState(false);
+  const [validation, setValidation] = useState<CustomAlertValidateResult | null>(null);
+
+  const isValidated = validation?.validated === true;
+  const slowClients = validation?.clients.filter(c => c.status === 'SLOW') ?? [];
+  const erroredClients = validation?.clients.filter(c => c.status === 'ERROR') ?? [];
+  const maxElapsedMs = validation && validation.clients.length > 0
+    ? Math.max(...validation.clients.map(c => c.elapsedMs))
+    : 0;
+
+  // Any change to the query or client selection invalidates a prior validation.
+  useEffect(() => {
+    setValidation(null);
+  }, [form.sqlQuery, form.clientIds]);
 
   const addEmail = (raw: string) => {
     const candidates = raw.split(/[,\s;]+/).map(s => s.trim()).filter(Boolean);
@@ -478,14 +650,83 @@ function AlertModal({
       : { ...prev, clientIds: [], clientNames: [] });
   };
 
+  // ---- Schedule frequency builder helpers ----
+  const cfg = form.scheduleConfig;
+
+  const setScheduleType = (t: CustomAlertScheduleType) => {
+    setForm(prev => {
+      const c = prev.scheduleConfig;
+      if (t === 'INTERVAL') return { ...prev, scheduleType: t };
+      // Seed sensible defaults when entering a time-based mode.
+      const times = c.times.length ? c.times : ['09:00'];
+      const daysOfWeek = t === 'WEEKLY' && c.daysOfWeek.length === 0 ? [1] : c.daysOfWeek;
+      const daysOfMonth = t === 'MONTHLY' && c.daysOfMonth.length === 0 ? [1] : c.daysOfMonth;
+      return { ...prev, scheduleType: t, scheduleConfig: { times, daysOfWeek, daysOfMonth } };
+    });
+  };
+
+  const updateCfg = (patch: Partial<CustomAlertScheduleConfig>) =>
+    setForm(prev => ({ ...prev, scheduleConfig: { ...prev.scheduleConfig, ...patch } }));
+
+  const addTime = () => updateCfg({ times: [...cfg.times, '09:00'] });
+  const updateTime = (i: number, v: string) => updateCfg({ times: cfg.times.map((t, idx) => (idx === i ? v : t)) });
+  const removeTime = (i: number) => updateCfg({ times: cfg.times.filter((_, idx) => idx !== i) });
+  const toggleDow = (d: number) =>
+    updateCfg({ daysOfWeek: cfg.daysOfWeek.includes(d) ? cfg.daysOfWeek.filter(x => x !== d) : [...cfg.daysOfWeek, d] });
+  const toggleDom = (d: number) =>
+    updateCfg({ daysOfMonth: cfg.daysOfMonth.includes(d) ? cfg.daysOfMonth.filter(x => x !== d) : [...cfg.daysOfMonth, d] });
+
   const validate = (): string | null => {
     if (!form.name.trim()) return 'Name is required';
     if (!form.clientIds || form.clientIds.length === 0) return 'Please select at least one client';
     if (!form.sqlQuery.trim()) return 'SQL query is required';
-    if (!form.columnName.trim()) return 'Column name is required';
+    const aggErr = validateAggregateQuery(form.sqlQuery);
+    if (aggErr) return aggErr;
     if (!String(form.thresholdValue).trim()) return 'Threshold value is required';
-    if (form.intervalMinutes < 1 || form.intervalMinutes > 1440) return 'Interval must be between 1 and 1440 minutes';
+    if (form.scheduleType === 'INTERVAL') {
+      if (form.intervalMinutes < MIN_INTERVAL_MINUTES || form.intervalMinutes > 1440) {
+        return `Interval must be between ${MIN_INTERVAL_MINUTES} and 1440 minutes`;
+      }
+    } else {
+      if (cfg.times.length === 0) return 'Please add at least one check time';
+      if (form.scheduleType === 'WEEKLY' && cfg.daysOfWeek.length === 0) return 'Please select at least one day of the week';
+      if (form.scheduleType === 'MONTHLY' && cfg.daysOfMonth.length === 0) return 'Please select at least one day of the month';
+    }
+    if (!form.startAt) return 'Start date & time is required';
+    if (!form.endAt) return 'End date & time is required';
+    const start = new Date(form.startAt).getTime();
+    const end = new Date(form.endAt).getTime();
+    if (Number.isNaN(start)) return 'Start date & time is invalid';
+    if (Number.isNaN(end)) return 'End date & time is invalid';
+    // Only enforce "not in the past" for new alerts (an existing alert may have
+    // already started). Small 60s grace for the clock.
+    if (!editing && start < Date.now() - 60 * 1000) return 'Start date & time cannot be before the current time';
+    if (end <= start) return 'End date & time must be after the start date & time';
     return null;
+  };
+
+  // Run the timing validation. Returns the result (or null on request error).
+  const performValidation = async (): Promise<CustomAlertValidateResult | null> => {
+    if (!form.clientIds || form.clientIds.length === 0) { setError('Please select at least one client'); return null; }
+    if (!form.sqlQuery.trim()) { setError('SQL query is required'); return null; }
+    setError(null);
+    setValidating(true);
+    try {
+      const res = await customAlertsApi.validate({
+        clientIds: form.clientIds,
+        clientNames: form.clientNames,
+        sqlQuery: form.sqlQuery,
+      });
+      const result = (res.data ?? null) as CustomAlertValidateResult | null;
+      setValidation(result);
+      return result;
+    } catch (err: any) {
+      setError(err.message || 'Validation failed');
+      setValidation(null);
+      return null;
+    } finally {
+      setValidating(false);
+    }
   };
 
   const runTest = async () => {
@@ -499,7 +740,6 @@ function AlertModal({
         clientIds: form.clientIds,
         clientNames: form.clientNames,
         sqlQuery: form.sqlQuery,
-        columnName: form.columnName,
         operator: form.operator,
         thresholdValue: String(form.thresholdValue),
       });
@@ -521,7 +761,20 @@ function AlertModal({
     const finalEmails = pending && !form.notifyEmails.includes(pending)
       ? [...form.notifyEmails, pending]
       : form.notifyEmails;
-    const payload: CustomAlertInput = { ...form, notifyEmails: finalEmails };
+
+    // Enforce query timing: if not already validated, validate now and block on slow queries.
+    if (!isValidated) {
+      const result = await performValidation();
+      if (!result) return;                 // request failed — message already shown
+      if (!result.validated) return;       // slow/errored — the inline message explains why
+    }
+
+    const payload: CustomAlertInput = {
+      ...form,
+      notifyEmails: finalEmails,
+      startAt: localInputToIso(form.startAt),
+      endAt: localInputToIso(form.endAt),
+    };
     setSaving(true);
     try {
       if (editing) {
@@ -540,8 +793,9 @@ function AlertModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-auto">
-        {/* Modal header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 sticky top-0 bg-white">
+        {/* Modal header — z-30 keeps it above the scrolling body and the
+            client dropdown panel (z-20) when content scrolls underneath. */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 sticky top-0 z-30 bg-white">
           <h2 className="text-lg font-bold text-gray-900">
             {editing ? 'Edit Custom Alert' : 'New Custom Alert'}
           </h2>
@@ -593,26 +847,55 @@ function AlertModal({
               value={form.sqlQuery}
               onChange={e => set('sqlQuery', e.target.value)}
               rows={4}
-              placeholder="SELECT COUNT(*) AS PENDING FROM RWSUSER.BATCH_STATUS WHERE STATUS = 'N'"
+              placeholder="SELECT COUNT(*) FROM RWSUSER.BATCH_STATUS WHERE STATUS = 'N'"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-zebra-500"
             />
             <p className="text-xs text-gray-400 mt-1">
-              Read-only SELECT only. The first row of the result is evaluated.
+              Aggregate SELECT only ({ALLOWED_AGGREGATE_FUNCTIONS.join(', ')}) returning a single number.
+              Selecting individual columns or <span className="font-mono">*</span> is not allowed.
             </p>
+
+            {/* Validation message (left) + Validate button (right) */}
+            <div className="flex items-center justify-end gap-3 mt-2">
+              <div className="flex-1 text-xs">
+                {validating ? (
+                  <span className="inline-flex items-center gap-1 text-gray-500">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Validating query…
+                  </span>
+                ) : isValidated ? (
+                  <span className="inline-flex items-center gap-1 text-green-600 font-medium">
+                    <CheckCircle className="w-3.5 h-3.5" /> Validated ({(maxElapsedMs / 1000).toFixed(1)}s
+                    {validation && validation.clients.length > 1 ? ' max' : ''})
+                  </span>
+                ) : validation && slowClients.length > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-red-600 font-medium" title={slowClients.map(c => c.clientId).join(', ')}>
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Query is taking longer than {validation.timeoutSec}s
+                    {slowClients.length > 1 || (validation.clients.length > 1)
+                      ? ` (${slowClients.length}/${validation.clients.length} client${slowClients.length > 1 ? 's' : ''})`
+                      : ''}
+                  </span>
+                ) : validation && erroredClients.length > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-red-600 font-medium" title={erroredClients[0].error ?? ''}>
+                    <XCircle className="w-3.5 h-3.5" />
+                    Query error{erroredClients.length > 1 ? ` (${erroredClients.length} clients)` : ''}: {erroredClients[0].error}
+                  </span>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={performValidation}
+                disabled={validating || saving}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50 flex-shrink-0"
+              >
+                {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                Validate
+              </button>
+            </div>
           </div>
 
-          {/* Column + operator + threshold */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Track Column</label>
-              <input
-                type="text"
-                value={form.columnName}
-                onChange={e => set('columnName', e.target.value)}
-                placeholder="PENDING"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-zebra-500"
-              />
-            </div>
+          {/* Operator + threshold (the query returns a single aggregate value) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Operator</label>
               <select
@@ -637,33 +920,171 @@ function AlertModal({
             </div>
           </div>
 
-          {/* Interval + active */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Check Every (minutes)</label>
-              <input
-                type="number"
-                min={1}
-                max={1440}
-                value={form.intervalMinutes}
-                onChange={e => set('intervalMinutes', Number(e.target.value))}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zebra-500"
-              />
+          {/* Frequency + active */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Check Frequency</label>
+                <select
+                  value={form.scheduleType}
+                  onChange={e => setScheduleType(e.target.value as CustomAlertScheduleType)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500"
+                >
+                  {FREQUENCY_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end">
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700 pb-2">
+                  <input
+                    type="checkbox"
+                    checked={!!form.isActive}
+                    onChange={e => set('isActive', e.target.checked)}
+                    className="rounded border-gray-300 text-zebra-600 focus:ring-zebra-500"
+                  />
+                  Active
+                </label>
+              </div>
             </div>
-            <div className="flex items-end">
-              <label className="inline-flex items-center gap-2 text-sm text-gray-700 pb-2">
+
+            {form.scheduleType === 'INTERVAL' ? (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Check every (minutes)</label>
                 <input
-                  type="checkbox"
-                  checked={!!form.isActive}
-                  onChange={e => set('isActive', e.target.checked)}
-                  className="rounded border-gray-300 text-zebra-600 focus:ring-zebra-500"
+                  type="number"
+                  min={MIN_INTERVAL_MINUTES}
+                  max={1440}
+                  value={form.intervalMinutes}
+                  onChange={e => set('intervalMinutes', Number(e.target.value))}
+                  onBlur={e => {
+                    const n = Number(e.target.value);
+                    const clamped = !Number.isFinite(n)
+                      ? MIN_INTERVAL_MINUTES
+                      : Math.min(1440, Math.max(MIN_INTERVAL_MINUTES, Math.round(n)));
+                    set('intervalMinutes', clamped);
+                  }}
+                  className="w-full sm:w-48 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zebra-500"
                 />
-                Active (start checking immediately)
-              </label>
+                <p className="text-xs text-gray-400 mt-1">Minimum {MIN_INTERVAL_MINUTES} minutes.</p>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-gray-200 p-3 space-y-3 bg-gray-50/50">
+                {form.scheduleType === 'WEEKLY' && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Days of week</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DOW_LABELS.map((lbl, d) => {
+                        const on = cfg.daysOfWeek.includes(d);
+                        return (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => toggleDow(d)}
+                            className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${on ? 'bg-zebra-600 text-white border-zebra-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-100'}`}
+                          >
+                            {lbl}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {form.scheduleType === 'MONTHLY' && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Days of month</label>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map(d => {
+                        const on = cfg.daysOfMonth.includes(d);
+                        return (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => toggleDom(d)}
+                            className={`w-7 h-7 rounded text-xs font-medium border transition-colors ${on ? 'bg-zebra-600 text-white border-zebra-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-100'}`}
+                          >
+                            {d}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Check time(s) — IST</label>
+                  <div className="space-y-1.5">
+                    {cfg.times.map((t, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          type="time"
+                          value={t}
+                          onChange={e => updateTime(i, e.target.value)}
+                          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-zebra-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeTime(i)}
+                          disabled={cfg.times.length <= 1}
+                          className="p-1 text-gray-400 hover:text-red-600 disabled:opacity-30"
+                          title="Remove time"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addTime}
+                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-zebra-600 hover:text-zebra-700"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add time
+                  </button>
+                </div>
+
+                <p className="text-xs text-gray-500">
+                  <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  {describeSchedule(form.scheduleType, cfg, form.intervalMinutes)}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Schedule window */}
+          <div className="rounded-lg border border-gray-200 p-3 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <Clock className="w-4 h-4 text-gray-400" />
+              Schedule
+              <span className="text-xs font-normal text-gray-400">
+                — first check fires at the start time, then repeats until the end time
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Start date &amp; time</label>
+                <input
+                  type="datetime-local"
+                  value={form.startAt ?? ''}
+                  min={editing ? undefined : toLocalInput(new Date())}
+                  onChange={e => set('startAt', e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zebra-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">End date &amp; time</label>
+                <input
+                  type="datetime-local"
+                  value={form.endAt ?? ''}
+                  min={form.startAt || (editing ? undefined : toLocalInput(new Date()))}
+                  onChange={e => set('endAt', e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zebra-500"
+                />
+              </div>
             </div>
           </div>
 
-          {/* Email recipients */}
+          {/* Email recipients (bottom) */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Email Recipients <span className="text-xs font-normal text-gray-400">(optional — leave empty for in-app only)</span>

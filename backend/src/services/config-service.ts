@@ -563,6 +563,7 @@ class ConfigService {
       ['engine.punchSyncEnabled', 'true', 'ENGINE', 'Punch Sync Enabled', 'Master switch for unprocessed punch DB2 queries (Refresh, progressive load, background polling). Set false during production incidents.', false] as const,
       ['engine.cronSyncSchedule', '0 3 * * *', 'ENGINE', 'Daily Cron Sync Schedule', 'Cron expression for automatic nightly cron discovery from all appservers (server local time). Requires restart to change.', false] as const,
       ['engine.autoEscalationNotifyEnabled', 'true', 'ENGINE', 'Auto Escalation Email', 'When true, automatically email notification recipients and system-acknowledge escalated alerts for Default Suppress (min) after they cross the escalation threshold.', false] as const,
+      ['engine.customAlertQueryTimeoutSec', '30', 'ENGINE', 'Custom Alert Query Timeout (sec)', 'Maximum seconds a Custom Alert SQL query may take during Validate / save. Queries slower than this for any selected client are rejected and not saved.', false] as const,
     ];
 
     for (const [key, value, category, label, description, isSecret] of defaults) {

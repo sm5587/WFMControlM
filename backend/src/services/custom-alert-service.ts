@@ -11,11 +11,132 @@ import { createServiceLogger } from '../utils/logger';
 import { db2DirectService } from './db2-direct-service';
 import { prisma } from '../database/prisma';
 import { alertService } from './alert-service';
+import { parseExpression } from 'cron-parser';
 
 const logger = createServiceLogger('CustomAlert');
 
+// All schedule times are interpreted in this timezone (IST). Cron occurrences
+// are computed against the real server time converted to this zone.
+export const CUSTOM_ALERT_TZ = 'Asia/Kolkata';
+
+// Minimum allowed interval for INTERVAL-mode alerts.
+export const CUSTOM_ALERT_MIN_INTERVAL = 15;
+
 export const CUSTOM_ALERT_OPERATORS = ['GT', 'GTE', 'LT', 'LTE', 'EQ'] as const;
 export type CustomAlertOperator = (typeof CUSTOM_ALERT_OPERATORS)[number];
+
+// Only aggregate SELECTs are allowed for custom alerts. This guarantees a query
+// returns a single number (a count/sum/etc.) rather than any individual row or
+// column of personal data. Anything selecting columns or "*" is rejected.
+// Add/remove functions here to adjust what's permitted.
+export const CUSTOM_ALERT_AGGREGATE_FUNCTIONS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'] as const;
+
+// Extract the outermost SELECT projection (everything between the leading
+// SELECT and its matching top-level FROM), respecting nesting and quotes so
+// subqueries/parentheses don't confuse the boundary. Returns null if the text
+// does not begin with SELECT.
+function extractTopLevelSelectList(sql: string): string | null {
+  const upper = sql.toUpperCase();
+  if (!upper.startsWith('SELECT')) return null;
+  const startIdx = 6; // length of "SELECT"
+  let depth = 0;
+  let inSingle = false;
+  for (let i = startIdx; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (ch === "'") { inSingle = true; continue; }
+    if (ch === '(') { depth++; continue; }
+    if (ch === ')') { depth = Math.max(0, depth - 1); continue; }
+    if (depth === 0 && (ch === 'F' || ch === 'f') && upper.startsWith('FROM', i)) {
+      const before = sql[i - 1];
+      const after = sql[i + 4];
+      const beforeOk = before === undefined || /[\s),]/.test(before);
+      const afterOk = after === undefined || /[\s(]/.test(after);
+      if (beforeOk && afterOk) return sql.slice(startIdx, i);
+    }
+  }
+  return sql.slice(startIdx); // no top-level FROM (e.g. SELECT COUNT(*) FROM SYSIBM.SYSDUMMY1 handled above)
+}
+
+// Human-readable label for what a query measures, derived from its aggregate
+// projection (e.g. "COUNT(*)"). Falls back to "value" when it can't be read.
+export function aggregateLabel(sqlQuery: string | null | undefined): string {
+  const cleaned = (sqlQuery ?? '').trim().replace(/;\s*$/, '');
+  const list = extractTopLevelSelectList(cleaned);
+  const label = list?.trim();
+  return label || 'value';
+}
+
+// True if the projection contains a comma outside of any parentheses/quotes,
+// i.e. it selects more than one expression.
+function hasTopLevelComma(s: string): boolean {
+  let depth = 0;
+  let inSingle = false;
+  for (const ch of s) {
+    if (inSingle) { if (ch === "'") inSingle = false; continue; }
+    if (ch === "'") { inSingle = true; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    else if (ch === ',' && depth === 0) return true;
+  }
+  return false;
+}
+
+export const CUSTOM_ALERT_SCHEDULE_TYPES = ['INTERVAL', 'DAILY', 'WEEKLY', 'MONTHLY'] as const;
+export type CustomAlertScheduleType = (typeof CUSTOM_ALERT_SCHEDULE_TYPES)[number];
+
+// Structured schedule definition for the non-interval frequency modes.
+export interface CustomAlertScheduleConfig {
+  times: string[];        // "HH:mm" clock times (IST). One or more per day.
+  daysOfWeek: number[];   // 0-6 (0=Sunday) — used by WEEKLY
+  daysOfMonth: number[];  // 1-31 — used by MONTHLY
+}
+
+// Safely parse the stored scheduleConfig JSON into a normalized object.
+export function parseScheduleConfig(raw: string | null | undefined): CustomAlertScheduleConfig {
+  const empty: CustomAlertScheduleConfig = { times: [], daysOfWeek: [], daysOfMonth: [] };
+  try {
+    const p = JSON.parse(raw || '{}');
+    return {
+      times: Array.isArray(p.times) ? p.times.filter((t: any) => typeof t === 'string') : [],
+      daysOfWeek: Array.isArray(p.daysOfWeek)
+        ? p.daysOfWeek.map(Number).filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 6)
+        : [],
+      daysOfMonth: Array.isArray(p.daysOfMonth)
+        ? p.daysOfMonth.map(Number).filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 31)
+        : [],
+    };
+  } catch {
+    return empty;
+  }
+}
+
+// Convert a frequency type + config into one cron expression per clock time.
+// Each expression has a single minute/hour to avoid cron's cartesian product
+// of minutes×hours when multiple times are configured.
+export function buildCronExpressions(type: string, cfg: CustomAlertScheduleConfig): string[] {
+  const crons: string[] = [];
+  for (const raw of cfg.times) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw).trim());
+    if (!m) continue;
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) continue;
+    if (type === 'DAILY') {
+      crons.push(`${mm} ${hh} * * *`);
+    } else if (type === 'WEEKLY') {
+      if (cfg.daysOfWeek.length === 0) continue;
+      crons.push(`${mm} ${hh} * * ${[...cfg.daysOfWeek].sort((a, b) => a - b).join(',')}`);
+    } else if (type === 'MONTHLY') {
+      if (cfg.daysOfMonth.length === 0) continue;
+      crons.push(`${mm} ${hh} ${[...cfg.daysOfMonth].sort((a, b) => a - b).join(',')} * *`);
+    }
+  }
+  return crons;
+}
 
 export const OPERATOR_SYMBOLS: Record<CustomAlertOperator, string> = {
   GT: '>',
@@ -50,17 +171,35 @@ export interface RuleClient {
   clientName: string;
 }
 
+// Result of the timing "Validate" check for a single client.
+export interface CustomAlertValidateClient {
+  clientId: string;
+  clientName: string;
+  status: 'OK' | 'SLOW' | 'ERROR';
+  elapsedMs: number;
+  error: string | null;
+}
+
+export interface CustomAlertValidateResult {
+  validated: boolean;              // true only if every client returned within the threshold
+  timeoutSec: number;              // the threshold that was applied
+  clients: CustomAlertValidateClient[];
+}
+
 // Concurrency cap for the scheduled sweep so we never spawn too many
 // JVM connector processes at once.
 const SWEEP_CONCURRENCY = 3;
 
 class CustomAlertService {
   /**
-   * Validate a user-supplied SQL statement. We only allow read-only
-   * SELECT / WITH queries and reject anything that could mutate data or
-   * stack multiple statements.
+   * Validate a user-supplied SQL statement. Custom alerts may only run a single
+   * read-only, aggregate SELECT that returns exactly one number
+   * (COUNT/SUM/AVG/MIN/MAX). Selecting individual columns or "*" is rejected so
+   * no personal row data is ever fetched — only an aggregate value.
+   * On success, `label` is the aggregate projection (e.g. "COUNT(*)") used for
+   * display and to describe the condition.
    */
-  validateQuery(sql: string): { ok: boolean; error?: string } {
+  validateQuery(sql: string): { ok: boolean; error?: string; label?: string } {
     const trimmed = (sql ?? '').trim();
     if (!trimmed) return { ok: false, error: 'SQL query is required' };
 
@@ -72,8 +211,8 @@ class CustomAlertService {
     }
 
     const firstWord = withoutTrailing.split(/\s+/)[0]?.toUpperCase() ?? '';
-    if (firstWord !== 'SELECT' && firstWord !== 'WITH') {
-      return { ok: false, error: 'Only read-only SELECT (or WITH ... SELECT) queries are allowed' };
+    if (firstWord !== 'SELECT') {
+      return { ok: false, error: 'Query must be a single aggregate SELECT, e.g. SELECT COUNT(*) FROM ...' };
     }
 
     const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE|CALL|EXEC|EXECUTE)\b/i;
@@ -81,7 +220,27 @@ class CustomAlertService {
       return { ok: false, error: 'Query contains a forbidden keyword. Only SELECT statements are permitted.' };
     }
 
-    return { ok: true };
+    // Enforce aggregate-only projection: the outermost SELECT must return a
+    // single aggregate value. Subqueries inside (e.g. SELECT COUNT(*) FROM (...))
+    // are fine because only the aggregate result leaves the database.
+    const selectList = extractTopLevelSelectList(withoutTrailing);
+    if (selectList === null || !selectList.trim()) {
+      return { ok: false, error: 'Could not read the SELECT clause. Use a single aggregate, e.g. SELECT COUNT(*) FROM ...' };
+    }
+    const projection = selectList.trim();
+    if (hasTopLevelComma(projection)) {
+      return { ok: false, error: 'Only a single aggregate value may be selected (no multiple columns).' };
+    }
+    const aggRe = new RegExp(`^(${CUSTOM_ALERT_AGGREGATE_FUNCTIONS.join('|')})\\s*\\(`, 'i');
+    if (!aggRe.test(projection)) {
+      return {
+        ok: false,
+        error: `Query must select a single aggregate value (${CUSTOM_ALERT_AGGREGATE_FUNCTIONS.join(', ')}). `
+          + 'Selecting columns or "*" is not allowed — e.g. SELECT COUNT(*) FROM ...',
+      };
+    }
+
+    return { ok: true, label: projection };
   }
 
   isValidOperator(op: string): op is CustomAlertOperator {
@@ -125,12 +284,11 @@ class CustomAlertService {
   async evaluate(params: {
     clientId: string;
     sqlQuery: string;
-    columnName: string;
     operator: CustomAlertOperator;
     thresholdValue: string;
   }): Promise<CustomAlertEvaluation> {
     const startMs = Date.now();
-    const { clientId, sqlQuery, columnName, operator, thresholdValue } = params;
+    const { clientId, sqlQuery, operator, thresholdValue } = params;
 
     const validation = this.validateQuery(sqlQuery);
     if (!validation.ok) {
@@ -149,21 +307,14 @@ class CustomAlertService {
       return { value: null, triggered: false, error: 'Query returned no rows', executionMs: Date.now() - startMs };
     }
 
+    // Aggregate queries return a single column; read the first (only) value.
     const row = rows[0];
-    // Case-insensitive column match against the returned keys.
-    const wanted = columnName.trim().toUpperCase();
-    const matchKey = Object.keys(row).find(k => k.trim().toUpperCase() === wanted);
-    if (!matchKey) {
-      const available = Object.keys(row).join(', ');
-      return {
-        value: null,
-        triggered: false,
-        error: `Column "${columnName}" not found in result. Available columns: ${available}`,
-        executionMs: Date.now() - startMs,
-      };
+    const keys = Object.keys(row);
+    if (keys.length === 0) {
+      return { value: null, triggered: false, error: 'Query returned no columns', executionMs: Date.now() - startMs };
     }
 
-    const rawValue = row[matchKey];
+    const rawValue = row[keys[0]];
     const value = rawValue === null || rawValue === undefined ? null : String(rawValue).trim();
     const triggered = this.compare(value, operator, thresholdValue);
 
@@ -199,11 +350,10 @@ class CustomAlertService {
   async evaluateMany(params: {
     clients: RuleClient[];
     sqlQuery: string;
-    columnName: string;
     operator: CustomAlertOperator;
     thresholdValue: string;
   }): Promise<CustomAlertClientResult[]> {
-    const { clients, sqlQuery, columnName, operator, thresholdValue } = params;
+    const { clients, sqlQuery, operator, thresholdValue } = params;
     const results: CustomAlertClientResult[] = new Array(clients.length);
 
     let idx = 0;
@@ -212,7 +362,7 @@ class CustomAlertService {
         const myIdx = idx++;
         const client = clients[myIdx];
         const evaluation = await this.evaluate({
-          clientId: client.clientId, sqlQuery, columnName, operator, thresholdValue,
+          clientId: client.clientId, sqlQuery, operator, thresholdValue,
         });
         results[myIdx] = {
           clientId: client.clientId,
@@ -232,6 +382,73 @@ class CustomAlertService {
     );
 
     return results;
+  }
+
+  /**
+   * Timing validation: run the query against each selected client with a soft
+   * timeout (the configured threshold). "validated" is true only when every
+   * client returns successfully within the threshold. Does NOT persist.
+   * Note: JDBC queries can't always be hard-cancelled, so on timeout we stop
+   * waiting and mark the client SLOW (the DB may finish it in the background).
+   */
+  async validateTiming(params: {
+    clients: RuleClient[];
+    sqlQuery: string;
+    timeoutSec: number;
+  }): Promise<CustomAlertValidateResult> {
+    const { clients, sqlQuery } = params;
+    const timeoutSec = Math.max(1, Math.round(params.timeoutSec || 30));
+    const timeoutMs = timeoutSec * 1000;
+
+    const check = this.validateQuery(sqlQuery);
+    if (!check.ok) {
+      return {
+        validated: false,
+        timeoutSec,
+        clients: clients.map(c => ({
+          clientId: c.clientId, clientName: c.clientName, status: 'ERROR', elapsedMs: 0, error: check.error!,
+        })),
+      };
+    }
+
+    const sql = sqlQuery.trim().replace(/;\s*$/, '');
+    const out: CustomAlertValidateClient[] = new Array(clients.length);
+
+    let idx = 0;
+    const worker = async () => {
+      while (idx < clients.length) {
+        const myIdx = idx++;
+        const c = clients[myIdx];
+        const start = Date.now();
+        let timer: NodeJS.Timeout | undefined;
+        const timeoutP = new Promise<{ __timeout: true }>(resolve => {
+          timer = setTimeout(() => resolve({ __timeout: true }), timeoutMs);
+        });
+        try {
+          const result: any = await Promise.race([
+            db2DirectService.queryClient(c.clientId, sql, 'CustomAlertValidate'),
+            timeoutP,
+          ]);
+          if (result && result.__timeout) {
+            out[myIdx] = { clientId: c.clientId, clientName: c.clientName, status: 'SLOW', elapsedMs: Date.now() - start, error: null };
+          } else if (!result?.success) {
+            out[myIdx] = { clientId: c.clientId, clientName: c.clientName, status: 'ERROR', elapsedMs: Date.now() - start, error: result?.error || 'Query failed' };
+          } else {
+            out[myIdx] = { clientId: c.clientId, clientName: c.clientName, status: 'OK', elapsedMs: Date.now() - start, error: null };
+          }
+        } catch (err: any) {
+          out[myIdx] = { clientId: c.clientId, clientName: c.clientName, status: 'ERROR', elapsedMs: Date.now() - start, error: err?.message || String(err) };
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(SWEEP_CONCURRENCY, Math.max(clients.length, 1)) }, () => worker()),
+    );
+
+    return { validated: out.every(r => r.status === 'OK'), timeoutSec, clients: out };
   }
 
   /**
@@ -258,7 +475,6 @@ class CustomAlertService {
     const results = await this.evaluateMany({
       clients,
       sqlQuery: rule.sqlQuery,
-      columnName: rule.columnName,
       operator,
       thresholdValue: rule.thresholdValue,
     });
@@ -287,7 +503,7 @@ class CustomAlertService {
 
     const triggeredList = results.filter(r => r.status === 'TRIGGERED').map(r => r.clientId).join(', ');
     logger.info(
-      `Custom alert "${rule.name}" [${clients.length} client(s)]: ${rule.columnName} ` +
+      `Custom alert "${rule.name}" [${clients.length} client(s)]: ${aggregateLabel(rule.sqlQuery)} ` +
       `${OPERATOR_SYMBOLS[operator]} ${rule.thresholdValue} → ${lastStatus}` +
       (triggeredList ? ` (triggered: ${triggeredList})` : '') +
       (errorSummary ? ` (${errorSummary})` : ''),
@@ -317,14 +533,14 @@ class CustomAlertService {
 
   /** Compose and send the "threshold crossed" email. Never throws. */
   private async sendTriggerEmail(
-    rule: { name: string; columnName: string; thresholdValue: string },
+    rule: { name: string; sqlQuery: string; thresholdValue: string },
     operator: CustomAlertOperator,
     results: CustomAlertClientResult[],
     emails: string[],
   ): Promise<void> {
     const triggered = results.filter(r => r.status === 'TRIGGERED');
     const symbol = OPERATOR_SYMBOLS[operator];
-    const condition = `${rule.columnName} ${symbol} ${rule.thresholdValue}`;
+    const condition = `${aggregateLabel(rule.sqlQuery)} ${symbol} ${rule.thresholdValue}`;
     const subject = `[WFM Watch] Custom Alert triggered: ${rule.name}`;
 
     const rows = triggered.map(r => `
@@ -370,7 +586,35 @@ class CustomAlertService {
     const active = await prisma.customAlert.findMany({ where: { isActive: true } });
     const now = Date.now();
 
+    // Auto-pause any rule whose schedule window has ended. Once paused it no
+    // longer runs and the UI shows it as "Ended".
+    const ended = active.filter(rule => rule.endAt && now >= new Date(rule.endAt).getTime());
+    if (ended.length > 0) {
+      await Promise.all(
+        ended.map(rule =>
+          prisma.customAlert
+            .update({ where: { id: rule.id }, data: { isActive: false } })
+            .catch((err: any) =>
+              logger.error(`Custom alert auto-pause failed for ${rule.id}: ${err?.message || err}`),
+            ),
+        ),
+      );
+      logger.info(`Custom alert schedule ended, auto-paused ${ended.length} rule(s)`);
+    }
+    const endedIds = new Set(ended.map(r => r.id));
+
     const due = active.filter(rule => {
+      if (endedIds.has(rule.id)) return false; // window ended → paused
+      // Not started yet: first check must fire at/after startAt.
+      if (rule.startAt && now < new Date(rule.startAt).getTime()) return false;
+
+      // Cron-based frequencies (DAILY/WEEKLY/MONTHLY): due when a scheduled
+      // occurrence has passed that we haven't run yet.
+      if (rule.scheduleType && rule.scheduleType !== 'INTERVAL') {
+        return this.isCronDue(rule, now);
+      }
+
+      // INTERVAL mode: run when the interval has elapsed since the last check.
       if (!rule.lastCheckedAt) return true;
       const elapsedMin = (now - new Date(rule.lastCheckedAt).getTime()) / 60000;
       return elapsedMin >= rule.intervalMinutes;
@@ -397,6 +641,31 @@ class CustomAlertService {
     );
 
     return { checked: due.length, skipped: active.length - due.length };
+  }
+
+  /**
+   * True when a cron-scheduled rule has a due occurrence: the most recent
+   * scheduled time (in IST) is at/after the schedule start and strictly after
+   * the last check. Evaluated across all configured times (each its own cron).
+   */
+  private isCronDue(rule: any, nowMs: number): boolean {
+    const cfg = parseScheduleConfig(rule.scheduleConfig);
+    const crons = buildCronExpressions(rule.scheduleType, cfg);
+    if (crons.length === 0) return false;
+
+    const startMs = rule.startAt ? new Date(rule.startAt).getTime() : 0;
+    const lastMs = rule.lastCheckedAt ? new Date(rule.lastCheckedAt).getTime() : 0;
+
+    for (const expr of crons) {
+      try {
+        const it = parseExpression(expr, { currentDate: new Date(nowMs), tz: CUSTOM_ALERT_TZ });
+        const prevMs = it.prev().toDate().getTime(); // most recent occurrence <= now
+        if (prevMs >= startMs && prevMs > lastMs) return true;
+      } catch {
+        // Invalid expression — ignore this one.
+      }
+    }
+    return false;
   }
 }
 

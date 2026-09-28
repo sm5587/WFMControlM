@@ -13,15 +13,22 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
 import { requirePermission } from '../middleware';
+import { configService } from '../services/config-service';
 import {
   customAlertService,
   CUSTOM_ALERT_OPERATORS,
+  CUSTOM_ALERT_SCHEDULE_TYPES,
+  CUSTOM_ALERT_MIN_INTERVAL,
+  buildCronExpressions,
   type CustomAlertOperator,
 } from '../services/custom-alert-service';
 
+const CUSTOM_ALERT_QUERY_TIMEOUT_KEY = 'engine.customAlertQueryTimeoutSec';
+const DEFAULT_QUERY_TIMEOUT_SEC = 30;
+
 const router = Router();
 
-const MIN_INTERVAL = 1;
+const MIN_INTERVAL = CUSTOM_ALERT_MIN_INTERVAL; // 15 minutes
 const MAX_INTERVAL = 1440; // 24h
 
 interface RuleInput {
@@ -31,15 +38,29 @@ interface RuleInput {
   clientIds?: unknown;
   clientNames?: unknown;
   sqlQuery?: unknown;
-  columnName?: unknown;
   operator?: unknown;
   thresholdValue?: unknown;
   intervalMinutes?: unknown;
   isActive?: unknown;
   notifyEmails?: unknown;
+  startAt?: unknown;
+  endAt?: unknown;
+  scheduleType?: unknown;
+  scheduleConfig?: unknown;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Grace period (ms) allowed for a start time in the past, to absorb the delay
+// between the user picking "now" and the request reaching the server.
+const START_GRACE_MS = 2 * 60 * 1000;
+
+// Parse an ISO date-time string into a Date, or null if missing/invalid.
+function parseDateTime(value: unknown): Date | null {
+  if (value === undefined || value === null || value === '') return null;
+  const d = new Date(value as string);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 // Parse + validate the optional notifyEmails array. Returns null if a value
 // is not a valid email; empty array is allowed (in-app only).
@@ -91,7 +112,74 @@ function serializeRule(rule: any) {
     clientNames: safeParse(rule.clientNames, []),
     results: safeParse(rule.results, []),
     notifyEmails: safeParse(rule.notifyEmails, []),
+    scheduleConfig: safeParse(rule.scheduleConfig, { times: [], daysOfWeek: [], daysOfMonth: [] }),
   };
+}
+
+// Validate + normalize the schedule frequency portion of a request. Returns the
+// fields to persist, or an error string.
+function parseSchedule(body: RuleInput, partial: boolean):
+  | { ok: true; data: { scheduleType?: string; scheduleConfig?: string } }
+  | { ok: false; error: string } {
+  const effectiveType = body.scheduleType !== undefined
+    ? String(body.scheduleType).toUpperCase()
+    : (partial ? undefined : 'INTERVAL');
+
+  if (effectiveType === undefined) return { ok: true, data: {} }; // partial update, unchanged
+
+  if (!(CUSTOM_ALERT_SCHEDULE_TYPES as readonly string[]).includes(effectiveType)) {
+    return { ok: false, error: `Schedule type must be one of: ${CUSTOM_ALERT_SCHEDULE_TYPES.join(', ')}` };
+  }
+
+  if (effectiveType === 'INTERVAL') {
+    return { ok: true, data: { scheduleType: 'INTERVAL', scheduleConfig: '{}' } };
+  }
+
+  const raw: any = body.scheduleConfig ?? {};
+  const times = Array.isArray(raw.times) ? raw.times.map((t: any) => String(t).trim()).filter(Boolean) : [];
+  const daysOfWeek = Array.isArray(raw.daysOfWeek)
+    ? raw.daysOfWeek.map(Number).filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 6)
+    : [];
+  const daysOfMonth = Array.isArray(raw.daysOfMonth)
+    ? raw.daysOfMonth.map(Number).filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 31)
+    : [];
+
+  if (times.length === 0) return { ok: false, error: 'Please add at least one check time' };
+  for (const t of times) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) {
+      return { ok: false, error: `Invalid time "${t}" — use HH:mm` };
+    }
+  }
+  if (effectiveType === 'WEEKLY' && daysOfWeek.length === 0) {
+    return { ok: false, error: 'Please select at least one day of the week' };
+  }
+  if (effectiveType === 'MONTHLY' && daysOfMonth.length === 0) {
+    return { ok: false, error: 'Please select at least one day of the month' };
+  }
+
+  const cfg = { times, daysOfWeek, daysOfMonth };
+  if (buildCronExpressions(effectiveType, cfg).length === 0) {
+    return { ok: false, error: 'Schedule is incomplete' };
+  }
+  return { ok: true, data: { scheduleType: effectiveType, scheduleConfig: JSON.stringify(cfg) } };
+}
+
+// True when the current time is inside the rule's schedule window, i.e. it is
+// eligible to run right now. Used to decide whether to fire an immediate check.
+function withinWindow(rule: any): boolean {
+  const now = Date.now();
+  if (rule.startAt && now < new Date(rule.startAt).getTime()) return false;
+  if (rule.endAt && now >= new Date(rule.endAt).getTime()) return false;
+  return true;
+}
+
+// Whether to fire an immediate check right after create/update. Interval alerts
+// run straight away for fast feedback; cron alerts wait for their next
+// scheduled occurrence so they only run "exactly at" the configured time.
+function shouldRunImmediately(rule: any): boolean {
+  const type = rule.scheduleType || 'INTERVAL';
+  return type === 'INTERVAL' && withinWindow(rule);
 }
 
 function validateRuleInput(body: RuleInput, partial = false): { ok: true; data: any } | { ok: false; error: string } {
@@ -140,9 +228,6 @@ function validateRuleInput(body: RuleInput, partial = false): { ok: true; data: 
       return { ok: false, error: 'SQL query is required' };
     }
 
-    const columnName = requireStr('columnName', 'Column name');
-    if (columnName !== undefined) data.columnName = columnName;
-
     if (body.operator !== undefined) {
       const op = String(body.operator).toUpperCase();
       if (!(CUSTOM_ALERT_OPERATORS as readonly string[]).includes(op)) {
@@ -171,6 +256,12 @@ function validateRuleInput(body: RuleInput, partial = false): { ok: true; data: 
       data.intervalMinutes = 15;
     }
 
+    // Schedule frequency (INTERVAL vs DAILY/WEEKLY/MONTHLY).
+    const sched = parseSchedule(body, partial);
+    if (!sched.ok) return { ok: false, error: sched.error };
+    if (sched.data.scheduleType !== undefined) data.scheduleType = sched.data.scheduleType;
+    if (sched.data.scheduleConfig !== undefined) data.scheduleConfig = sched.data.scheduleConfig;
+
     if (body.isActive !== undefined) {
       data.isActive = !!body.isActive;
     }
@@ -181,6 +272,27 @@ function validateRuleInput(body: RuleInput, partial = false): { ok: true; data: 
       data.notifyEmails = JSON.stringify(parsed.emails);
     } else if (!partial) {
       data.notifyEmails = '[]';
+    }
+
+    // Schedule window. Both start and end are required and are provided
+    // together by the client. Start must not be in the past (create only),
+    // and end must be strictly after start.
+    const scheduleProvided = body.startAt !== undefined || body.endAt !== undefined;
+    if (scheduleProvided || !partial) {
+      const startAt = parseDateTime(body.startAt);
+      const endAt = parseDateTime(body.endAt);
+      if (!startAt) return { ok: false, error: 'Start date & time is required' };
+      if (!endAt) return { ok: false, error: 'End date & time is required' };
+      // Allow a small grace so a start time chosen "now" isn't rejected by the
+      // few seconds elapsed between selecting it and submitting.
+      if (!partial && startAt.getTime() < Date.now() - START_GRACE_MS) {
+        return { ok: false, error: 'Start date & time cannot be before the current time' };
+      }
+      if (endAt.getTime() <= startAt.getTime()) {
+        return { ok: false, error: 'End date & time must be after the start date & time' };
+      }
+      data.startAt = startAt;
+      data.endAt = endAt;
     }
 
     return { ok: true, data };
@@ -217,8 +329,11 @@ router.post('/', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), async (req:
       },
     });
 
-    // Kick off an initial check in the background so the user sees a status fast.
-    customAlertService.runCheck(rule.id).catch(() => { /* logged in service */ });
+    // Kick off an initial check in the background so the user sees a status fast,
+    // but only for interval alerts inside their schedule window.
+    if (shouldRunImmediately(rule)) {
+      customAlertService.runCheck(rule.id).catch(() => { /* logged in service */ });
+    }
 
     res.status(201).json({ success: true, data: serializeRule(rule) });
   } catch (err: any) {
@@ -241,8 +356,11 @@ router.put('/:id', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), async (re
       data: validation.data,
     });
 
-    // Re-evaluate immediately since the definition may have changed.
-    customAlertService.runCheck(rule.id).catch(() => { /* logged in service */ });
+    // Re-evaluate immediately since the definition may have changed, but only
+    // for interval alerts inside their schedule window.
+    if (shouldRunImmediately(rule)) {
+      customAlertService.runCheck(rule.id).catch(() => { /* logged in service */ });
+    }
 
     res.json({ success: true, data: serializeRule(rule) });
   } catch (err: any) {
@@ -281,14 +399,11 @@ router.post('/:id/run', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), asyn
 
 // POST /api/custom-alerts/test — evaluate a draft rule (all selected clients) without saving
 router.post('/test', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), async (req: Request, res: Response) => {
-  const { sqlQuery, columnName, operator, thresholdValue } = req.body ?? {};
+  const { sqlQuery, operator, thresholdValue } = req.body ?? {};
 
   const selection = parseClientSelection(req.body ?? {});
   if (!selection) {
     return res.status(400).json({ success: false, error: 'Please select at least one client' });
-  }
-  if (!columnName || typeof columnName !== 'string') {
-    return res.status(400).json({ success: false, error: 'Column name is required' });
   }
   const op = String(operator ?? 'GT').toUpperCase();
   if (!customAlertService.isValidOperator(op)) {
@@ -302,13 +417,39 @@ router.post('/test', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), async (
     const results = await customAlertService.evaluateMany({
       clients,
       sqlQuery: String(sqlQuery),
-      columnName,
       operator: op,
       thresholdValue: String(thresholdValue ?? ''),
     });
     res.json({ success: true, data: results });
   } catch (err: any) {
     logger.error(`Custom alert test error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/custom-alerts/validate — timing check: does the query return within the configured threshold for every selected client?
+router.post('/validate', requirePermission('CUSTOM_ALERTS_MANAGE', 'write'), async (req: Request, res: Response) => {
+  const { sqlQuery } = req.body ?? {};
+
+  const selection = parseClientSelection(req.body ?? {});
+  if (!selection) {
+    return res.status(400).json({ success: false, error: 'Please select at least one client to validate against' });
+  }
+  const check = customAlertService.validateQuery(String(sqlQuery ?? ''));
+  if (!check.ok) return res.status(400).json({ success: false, error: check.error });
+
+  const timeoutSec = configService.getInt(CUSTOM_ALERT_QUERY_TIMEOUT_KEY, DEFAULT_QUERY_TIMEOUT_SEC);
+
+  try {
+    const clients = selection.ids.map((id, i) => ({ clientId: id, clientName: selection.names[i] ?? '' }));
+    const result = await customAlertService.validateTiming({
+      clients,
+      sqlQuery: String(sqlQuery),
+      timeoutSec,
+    });
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    logger.error(`Custom alert validate error: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });

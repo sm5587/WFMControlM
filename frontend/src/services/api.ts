@@ -753,11 +753,17 @@ export const customAlertsApi = {
     clientIds: string[];
     clientNames?: string[];
     sqlQuery: string;
-    columnName: string;
     operator: import('../types').CustomAlertOperator;
     thresholdValue: string;
   }): Promise<ApiResponse<import('../types').CustomAlertClientResult[]>> =>
     api.post('/custom-alerts/test', data, { timeout: 300000 }),
+
+  validate: (data: {
+    clientIds: string[];
+    clientNames?: string[];
+    sqlQuery: string;
+  }): Promise<ApiResponse<import('../types').CustomAlertValidateResult>> =>
+    api.post('/custom-alerts/validate', data, { timeout: 300000 }),
 };
 
 // ============================================================

@@ -768,15 +768,24 @@ model CustomAlert {
   clientIds       String    @default("[]")     // JSON array of Client.clientId short codes
   clientNames     String    @default("[]")     // JSON array of display names (parallel to clientIds)
 
-  sqlQuery        String                       // User-provided SELECT statement
-  columnName      String                       // Column in the result row to evaluate
+  sqlQuery        String                       // User-provided aggregate SELECT (returns a single number)
   operator        String    @default("GT")     // GT | GTE | LT | LTE | EQ
   thresholdValue  String                       // Threshold 'a' (compared numerically when both sides are numeric)
-  intervalMinutes Int       @default(15)       // How often to re-run the check
+  intervalMinutes Int       @default(15)       // How often to re-run the check (INTERVAL mode; min 15)
+
+  // Schedule frequency. INTERVAL uses intervalMinutes; DAILY/WEEKLY/MONTHLY use
+  // scheduleConfig (evaluated as cron in Asia/Kolkata / IST).
+  scheduleType    String    @default("INTERVAL") // INTERVAL | DAILY | WEEKLY | MONTHLY
+  scheduleConfig  String    @default("{}")     // JSON { times: ["HH:mm"], daysOfWeek: number[], daysOfMonth: number[] }
 
   isActive        Boolean   @default(true)
 
   notifyEmails    String    @default("[]")     // JSON array of email recipients (empty = in-app only)
+
+  // Schedule window. First check fires at/after startAt; checks stop after
+  // endAt (the rule is auto-paused). Stored in UTC.
+  startAt         DateTime?                    // When the alert begins running
+  endAt           DateTime?                    // When the alert stops running
 
   // Runtime state (updated after each check)
   lastStatus      String?                      // Aggregate: OK | TRIGGERED | ERROR | PENDING

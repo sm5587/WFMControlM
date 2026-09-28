@@ -432,6 +432,14 @@ export interface CustomAlertClientResult {
   checkedAt: string;
 }
 
+export type CustomAlertScheduleType = 'INTERVAL' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+export interface CustomAlertScheduleConfig {
+  times: string[];        // "HH:mm" clock times (IST)
+  daysOfWeek: number[];   // 0-6 (0 = Sunday), used by WEEKLY
+  daysOfMonth: number[];  // 1-31, used by MONTHLY
+}
+
 export interface CustomAlert {
   id: string;
   name: string;
@@ -440,12 +448,15 @@ export interface CustomAlert {
   clientIds: string[];
   clientNames: string[];
   sqlQuery: string;
-  columnName: string;
   operator: CustomAlertOperator;
   thresholdValue: string;
   intervalMinutes: number;
+  scheduleType: CustomAlertScheduleType;
+  scheduleConfig: CustomAlertScheduleConfig;
   isActive: boolean;
   notifyEmails: string[];
+  startAt: string | null;
+  endAt: string | null;
   lastStatus: CustomAlertStatus | null;
   lastValue: string | null;
   lastError: string | null;
@@ -462,14 +473,31 @@ export interface CustomAlertInput {
   clientIds: string[];
   clientNames: string[];
   sqlQuery: string;
-  columnName: string;
   operator: CustomAlertOperator;
   thresholdValue: string;
   intervalMinutes: number;
+  scheduleType: CustomAlertScheduleType;
+  scheduleConfig: CustomAlertScheduleConfig;
   isActive?: boolean;
   notifyEmails: string[];
+  startAt: string | null;
+  endAt: string | null;
 }
 
 // The test endpoint returns one result per selected client.
 export type CustomAlertTestResult = CustomAlertClientResult;
+
+export interface CustomAlertValidateClient {
+  clientId: string;
+  clientName: string;
+  status: 'OK' | 'SLOW' | 'ERROR';
+  elapsedMs: number;
+  error: string | null;
+}
+
+export interface CustomAlertValidateResult {
+  validated: boolean;
+  timeoutSec: number;
+  clients: CustomAlertValidateClient[];
+}
 
