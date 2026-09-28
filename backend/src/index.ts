@@ -37,7 +37,7 @@ import alertsRouter from './routes/alerts';
 import clientsRouter from './routes/clients';
 import dbMonitorRouter from './routes/db-monitor';
 import payrollRouter from './routes/payroll';
-import wipRouter from './routes/wip';
+import heatMapRouter from './routes/heatmap';
 import unprocessedPunchRouter from './routes/unprocessed-punch';
 import escalationsRouter from './routes/escalations';
 import dbJobsRouter from './routes/db-jobs';
@@ -184,7 +184,9 @@ async function bootstrap() {
   apiRouter.use('/clients', clientsRouter);
   apiRouter.use('/db-monitor', dbMonitorRouter);
   apiRouter.use('/payroll', payrollRouter);
-  apiRouter.use('/wip', wipRouter);
+  apiRouter.use('/heatmap', heatMapRouter);
+  // Legacy alias — prefer /heatmap
+  apiRouter.use('/wip', heatMapRouter);
   apiRouter.use('/unprocessed-punch', unprocessedPunchRouter);
   apiRouter.use('/escalations', escalationsRouter);
   apiRouter.use('/db-jobs', dbJobsRouter);

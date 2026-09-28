@@ -4,10 +4,10 @@ import {
 } from 'lucide-react';
 import { ClearableSearchInput } from '../ui/ClearableFilter';
 import {
-  useProgressiveWipHeatMap,
-  type WipHeatMapRow,
-  type WipWeekCounts,
-} from '../../hooks/useProgressiveWipHeatMap';
+  useProgressiveHeatMap,
+  type HeatMapRow,
+  type HeatMapWeekCounts,
+} from '../../hooks/useProgressiveHeatMap';
 
 type StatusFilter = 'all' | 'match' | 'mismatch' | 'error';
 /** 0 = each client's current week, 1 = one week prior */
@@ -30,7 +30,7 @@ function formatYmdLong(ymd: string): string {
   return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
 }
 
-function sortedWeeks(row: WipHeatMapRow): WipWeekCounts[] {
+function sortedWeeks(row: HeatMapRow): HeatMapWeekCounts[] {
   return [...row.weeks].sort((a, b) => {
     if (a.fiscalYear !== b.fiscalYear) return a.fiscalYear - b.fiscalYear;
     if (a.fiscalWeek !== b.fiscalWeek) return a.fiscalWeek - b.fiscalWeek;
@@ -38,7 +38,7 @@ function sortedWeeks(row: WipHeatMapRow): WipWeekCounts[] {
   });
 }
 
-function weekForOffset(row: WipHeatMapRow, offset: WeekOffset): WipWeekCounts | null {
+function weekForOffset(row: HeatMapRow, offset: WeekOffset): HeatMapWeekCounts | null {
   const weeks = sortedWeeks(row);
   if (weeks.length === 0) return null;
   const idx = weeks.length - 1 - offset;
@@ -46,7 +46,7 @@ function weekForOffset(row: WipHeatMapRow, offset: WeekOffset): WipWeekCounts | 
 }
 
 /** Compact dual bars for the grid — counts only, no chrome. */
-function MiniBars({ week }: { week: WipWeekCounts }) {
+function MiniBars({ week }: { week: HeatMapWeekCounts }) {
   const max = Math.max(week.iter6Stores, week.iter7Stores, 1);
   const h6 = Math.max(3, Math.round((week.iter6Stores / max) * 22));
   const h7 = Math.max(3, Math.round((week.iter7Stores / max) * 22));
@@ -69,7 +69,7 @@ function MiniBars({ week }: { week: WipWeekCounts }) {
   );
 }
 
-function DetailBars({ week }: { week: WipWeekCounts }) {
+function DetailBars({ week }: { week: HeatMapWeekCounts }) {
   const max = Math.max(week.iter6Stores, week.iter7Stores, 1);
   const h6 = Math.max(8, Math.round((week.iter6Stores / max) * 80));
   const h7 = Math.max(8, Math.round((week.iter7Stores / max) * 80));
@@ -101,8 +101,8 @@ function ClientCell({
   onOpen,
   onRefresh,
 }: {
-  row: WipHeatMapRow;
-  week: WipWeekCounts | null;
+  row: HeatMapRow;
+  week: HeatMapWeekCounts | null;
   busy: boolean;
   onOpen: () => void;
   onRefresh: () => void;
@@ -185,8 +185,8 @@ function ClientDetailModal({
   onClose,
   onRefresh,
 }: {
-  row: WipHeatMapRow;
-  week: WipWeekCounts | null;
+  row: HeatMapRow;
+  week: HeatMapWeekCounts | null;
   weekOffset: WeekOffset;
   refreshing: boolean;
   onClose: () => void;
@@ -320,7 +320,7 @@ function ClientDetailModal({
   );
 }
 
-export default function WipHeatMap() {
+export default function HeatMap() {
   const {
     rows,
     total,
@@ -332,7 +332,7 @@ export default function WipHeatMap() {
     refreshingClientId,
     start,
     refreshClient,
-  } = useProgressiveWipHeatMap();
+  } = useProgressiveHeatMap();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');

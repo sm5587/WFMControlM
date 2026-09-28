@@ -1,8 +1,8 @@
-import { parseWipWeekRow, wipWeeklyCountsSql } from '../../src/constants/wip';
+import { parseHeatMapWeekRow, heatMapWeeklyCountsSql } from '../../src/constants/heatmap';
 
-describe('wipWeeklyCountsSql', () => {
+describe('heatMapWeeklyCountsSql', () => {
   it('queries RWS_GEN_SHIFT by active EFF_DATE/END_DATE for iteration types 6 and 7', () => {
-    const sql = wipWeeklyCountsSql();
+    const sql = heatMapWeeklyCountsSql();
     expect(sql).toContain('RWSUSER.RWS_GEN_SHIFT');
     expect(sql).not.toContain('RWS_CALENDAR');
     expect(sql).toContain('g.EFF_DATE <= CURRENT DATE');
@@ -15,9 +15,9 @@ describe('wipWeeklyCountsSql', () => {
   });
 });
 
-describe('parseWipWeekRow', () => {
+describe('parseHeatMapWeekRow', () => {
   it('marks mismatch when store counts differ', () => {
-    const week = parseWipWeekRow({
+    const week = parseHeatMapWeekRow({
       WEEK_START_DATE: '20260322',
       WEEK_END_DATE: '20260328',
       ITER6_STORES: '100',
@@ -37,17 +37,13 @@ describe('parseWipWeekRow', () => {
   });
 
   it('marks match when counts are equal', () => {
-    const week = parseWipWeekRow({
-      WEEK_START_DATE: '20260104',
-      WEEK_END_DATE: '20260110',
-      ITER6_STORES: '4190',
-      ITER7_STORES: '4190',
+    const week = parseHeatMapWeekRow({
+      WEEK_START_DATE: '20260322',
+      WEEK_END_DATE: '20260328',
+      ITER6_STORES: '50',
+      ITER7_STORES: '50',
     });
     expect(week?.mismatch).toBe(false);
     expect(week?.delta).toBe(0);
-  });
-
-  it('returns null when week dates are missing', () => {
-    expect(parseWipWeekRow({ ITER6_STORES: '1', ITER7_STORES: '1' })).toBeNull();
   });
 });

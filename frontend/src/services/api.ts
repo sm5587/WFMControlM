@@ -561,16 +561,19 @@ export const payrollApi = {
 };
 
 // ---- Heat Map ----
-export const wipApi = {
+export const heatMapApi = {
   getClients: (): Promise<ApiResponse<any>> =>
-    api.get('/wip/clients'),
+    api.get('/heatmap/clients'),
 
   getClientScan: (clientId: string): Promise<ApiResponse<any>> =>
-    api.get(`/wip/client/${encodeURIComponent(clientId)}`, { timeout: 120000 }),
+    api.get(`/heatmap/client/${encodeURIComponent(clientId)}`, { timeout: 120000 }),
 
   getSnapshot: (): Promise<ApiResponse<any>> =>
-    api.get('/wip', { timeout: 300000 }),
+    api.get('/heatmap', { timeout: 300000 }),
 };
+
+/** @deprecated Use heatMapApi */
+export const wipApi = heatMapApi;
 
 // ---- DB Jobs (RFX_QUEUE) ----
 export const dbJobsApi = {

@@ -4,7 +4,7 @@ Compares **Manager schedule** (`ITERATION_TYPE = 6`) vs **WIP copy** (`ITERATION
 
 WIP is created at the start of every fiscal week. For a healthy week, distinct `UNIT_SKEY` counts for types 6 and 7 must match.
 
-Implementation: `backend/src/services/wip-heatmap-service.ts`, `backend/src/routes/wip.ts`, `frontend/src/components/Wip/WipHeatMap.tsx`. Canonical SQL: `database/client-db2-queries.sql` (section *heat map*).
+Implementation: `backend/src/services/heatmap-service.ts`, `backend/src/routes/heatmap.ts`, `frontend/src/components/HeatMap/HeatMap.tsx`. Canonical SQL: `database/client-db2-queries.sql` (section *heat map*).
 
 ---
 
@@ -22,9 +22,11 @@ Fresh code deploys do **not** require a manual Profiles/Config click — restart
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/wip/clients` | Active clients with DB2 |
-| GET | `/api/wip/client/:clientId` | Weekly 6 vs 7 counts for one client |
-| GET | `/api/wip` | Full snapshot (concurrency pool) |
+| GET | `/api/heatmap/clients` | Active clients with DB2 |
+| GET | `/api/heatmap/client/:clientId` | Weekly 6 vs 7 counts for one client |
+| GET | `/api/heatmap` | Full snapshot (concurrency pool) |
+
+Legacy aliases: `/api/wip/*` still routes to the same handlers.
 
 ---
 

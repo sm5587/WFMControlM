@@ -15,8 +15,8 @@ import ClientsList from './components/Clients/ClientsList';
 import DBMonitor from './components/DBMonitor/DBMonitor';
 import PayrollJobs from './components/Payroll/PayrollJobs';
 import PayrollMonitor from './components/Payroll/PayrollMonitor';
-import WipHeatMap from './components/Wip/WipHeatMap';
-import HeatMapDemo from './components/Wip/HeatMapDemo';
+import HeatMap from './components/HeatMap/HeatMap';
+import HeatMapDemo from './components/HeatMap/HeatMapDemo';
 import DBJobs from './components/DBJobs/DBJobs';
 import AdminUsers from './components/Admin/AdminUsers';
 import AdminProfiles from './components/Admin/AdminProfiles';
@@ -230,7 +230,7 @@ function AppRoutes() {
           } />
           <Route path="payroll" element={<PayrollGate configKey={PAYROLL_ENABLED_KEY} permission="PAYROLL_VIEW"><PayrollJobs /></PayrollGate>} />
           <Route path="payroll-monitor" element={<PayrollGate configKey={PAYROLL_MONITOR_ENABLED_KEY} permission="PAYROLL_MONITOR_VIEW"><PayrollMonitor /></PayrollGate>} />
-          <Route path="heatmap" element={<PayrollGate configKey={HEATMAP_ENABLED_KEY} permission="HEATMAP_VIEW"><WipHeatMap /></PayrollGate>} />
+          <Route path="heatmap" element={<PayrollGate configKey={HEATMAP_ENABLED_KEY} permission="HEATMAP_VIEW"><HeatMap /></PayrollGate>} />
           <Route path="wip-heatmap" element={<Navigate to="/heatmap" replace />} />
           <Route path="demo" element={<HeatMapDemo />} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />

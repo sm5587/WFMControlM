@@ -3,7 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { wipHeatMapService } from '../services/wip-heatmap-service';
+import { heatMapService } from '../services/heatmap-service';
 import { configService } from '../services/config-service';
 import { HEATMAP_ENABLED_KEY } from '../constants/app-display';
 import { requirePermission } from '../middleware';
@@ -25,7 +25,7 @@ router.get(
   requirePermission('HEATMAP_VIEW', 'read'),
   async (_req: Request, res: Response) => {
     try {
-      const clients = await wipHeatMapService.listClients();
+      const clients = await heatMapService.listClients();
       logger.info(`Heat Map: clients list → ${clients.length} client(s)`);
       res.json({ success: true, data: { clients } });
     } catch (err) {
@@ -46,7 +46,7 @@ router.get(
         res.status(400).json({ success: false, error: 'clientId is required' });
         return;
       }
-      const row = await wipHeatMapService.scanClient(clientId);
+      const row = await heatMapService.scanClient(clientId);
       res.json({ success: true, data: row });
     } catch (err) {
       logger.error('Heat Map client scan failed', err);
@@ -61,7 +61,7 @@ router.get(
   requirePermission('HEATMAP_VIEW', 'read'),
   async (_req: Request, res: Response) => {
     try {
-      const snapshot = await wipHeatMapService.getSnapshot();
+      const snapshot = await heatMapService.getSnapshot();
       res.json({ success: true, data: snapshot });
     } catch (err) {
       logger.error('Heat Map snapshot failed', err);

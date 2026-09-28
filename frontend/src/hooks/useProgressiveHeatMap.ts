@@ -1,5 +1,5 @@
 // ============================================================
-// useProgressiveWipHeatMap
+// useProgressiveHeatMap
 // List clients, then scan each one (bounded concurrency).
 // Snapshot kept in React Query; auto-refresh hourly with a
 // phase offset so it does not pile onto batch/punch DB2 polls.
@@ -7,13 +7,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { wipApi } from '../services/api';
+import { heatMapApi } from '../services/api';
 import { useConfig } from '../contexts/ConfigContext';
 import { waitForAllBatchStatusIdle } from './useAllClientsBatchData';
 import { useBatchLookbackDays } from './useBatchLookbackDays';
 import { waitForPunchRefreshIdle } from './useBackgroundPolling';
 
-export interface WipWeekCounts {
+export interface HeatMapWeekCounts {
   fiscalYear: number;
   fiscalWeek: number;
   weekInd: number;
@@ -25,28 +25,28 @@ export interface WipWeekCounts {
   delta: number;
 }
 
-export interface WipHeatMapClient {
+export interface HeatMapClient {
   clientId: string;
   name: string;
   timezone: string;
   cluster: string | null;
 }
 
-export interface WipHeatMapRow {
+export interface HeatMapRow {
   clientId: string;
   name: string;
   timezone: string;
   cluster: string | null;
-  weeks: WipWeekCounts[];
+  weeks: HeatMapWeekCounts[];
   mismatchCount: number;
   hasMismatch: boolean;
   error?: string;
   loading?: boolean;
 }
 
-export interface ProgressiveWipHeatMapState {
-  rows: WipHeatMapRow[];
-  clients: WipHeatMapClient[];
+export interface ProgressiveHeatMapState {
+  rows: HeatMapRow[];
+  clients: HeatMapClient[];
   mismatchClients: number;
   total: number;
   loaded: number;
@@ -61,16 +61,16 @@ export interface ProgressiveWipHeatMapState {
 
 export const HEATMAP_CACHE_KEY = ['heatmap-progressive'] as const;
 
-interface WipHeatMapCache {
-  rows: WipHeatMapRow[];
-  clients: WipHeatMapClient[];
+interface HeatMapCache {
+  rows: HeatMapRow[];
+  clients: HeatMapClient[];
   fetchedAt: string;
 }
 
 /** Survives navigation — 60s tick uses this so remount does not reset the hour window. */
 let heatMapLastStartedMs = 0;
 
-function skeletonRow(c: WipHeatMapClient): WipHeatMapRow {
+function skeletonRow(c: HeatMapClient): HeatMapRow {
   return {
     clientId: c.clientId,
     name: c.name,
@@ -83,7 +83,7 @@ function skeletonRow(c: WipHeatMapClient): WipHeatMapRow {
   };
 }
 
-function summarize(rows: WipHeatMapRow[]) {
+function summarize(rows: HeatMapRow[]) {
   return {
     mismatchClients: rows.filter((r) => !r.loading && r.hasMismatch).length,
   };
@@ -96,7 +96,7 @@ function isInHeatMapPhaseWindow(refreshMs: number, offsetMs: number, now = Date.
   return phase < 60_000;
 }
 
-export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
+export function useProgressiveHeatMap(): ProgressiveHeatMapState {
   const queryClient = useQueryClient();
   const { getInt } = useConfig();
   const lookbackDays = useBatchLookbackDays();
@@ -113,9 +113,9 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
     gcTime: refreshMs * 2,
   });
 
-  const cached = queryClient.getQueryData<WipHeatMapCache>(HEATMAP_CACHE_KEY);
-  const [rows, setRows] = useState<WipHeatMapRow[]>(cached?.rows || []);
-  const [clients, setClients] = useState<WipHeatMapClient[]>(cached?.clients || []);
+  const cached = queryClient.getQueryData<HeatMapCache>(HEATMAP_CACHE_KEY);
+  const [rows, setRows] = useState<HeatMapRow[]>(cached?.rows || []);
+  const [clients, setClients] = useState<HeatMapClient[]>(cached?.clients || []);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'streaming' | 'done' | 'error'>(
     cached?.rows?.length ? 'done' : 'idle',
   );
@@ -150,10 +150,10 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
       heatMapLastStartedMs = Date.now();
       setStatus((prev) => (prev === 'idle' || rowsRef.current.length === 0 ? 'connecting' : 'streaming'));
 
-      const listRes = await wipApi.getClients();
+      const listRes = await heatMapApi.getClients();
       if (controller.signal.aborted || runId !== runIdRef.current) return;
 
-      const nextClients: WipHeatMapClient[] = listRes?.data?.clients || [];
+      const nextClients: HeatMapClient[] = listRes?.data?.clients || [];
       setClients(nextClients);
 
       const keepExisting = rowsRef.current.length > 0;
@@ -164,7 +164,7 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
       setStatus('streaming');
 
       let completed = 0;
-      const results = new Map<string, WipHeatMapRow>();
+      const results = new Map<string, HeatMapRow>();
       let idx = 0;
 
       const worker = async () => {
@@ -172,10 +172,10 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
           if (controller.signal.aborted || runId !== runIdRef.current) return;
           const c = nextClients[idx++];
           try {
-            const scanRes = await wipApi.getClientScan(c.clientId);
+            const scanRes = await heatMapApi.getClientScan(c.clientId);
             if (controller.signal.aborted || runId !== runIdRef.current) return;
             const data = scanRes?.data;
-            const row: WipHeatMapRow = data
+            const row: HeatMapRow = data
               ? { ...data, loading: false }
               : {
                   ...skeletonRow(c),
@@ -223,7 +223,7 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
         staleTime: refreshMs,
         gcTime: refreshMs * 2,
       });
-      queryClient.setQueryData<WipHeatMapCache>(HEATMAP_CACHE_KEY, {
+      queryClient.setQueryData<HeatMapCache>(HEATMAP_CACHE_KEY, {
         rows: finalRows,
         clients: nextClients,
         fetchedAt: at,
@@ -246,9 +246,9 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
       prev.map((r) => (r.clientId === clientId ? { ...r, loading: true, error: undefined } : r)),
     );
     try {
-      const scanRes = await wipApi.getClientScan(clientId);
+      const scanRes = await heatMapApi.getClientScan(clientId);
       const data = scanRes?.data;
-      const nextRow: WipHeatMapRow = data
+      const nextRow: HeatMapRow = data
         ? { ...data, loading: false }
         : {
             clientId,
@@ -263,9 +263,9 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
           };
       setRows((prev) => {
         const updated = prev.map((r) => (r.clientId === clientId ? { ...r, ...nextRow, name: nextRow.name || r.name } : r));
-        const cache = queryClient.getQueryData<WipHeatMapCache>(HEATMAP_CACHE_KEY);
+        const cache = queryClient.getQueryData<HeatMapCache>(HEATMAP_CACHE_KEY);
         if (cache) {
-          queryClient.setQueryData<WipHeatMapCache>(HEATMAP_CACHE_KEY, {
+          queryClient.setQueryData<HeatMapCache>(HEATMAP_CACHE_KEY, {
             ...cache,
             rows: updated,
             fetchedAt: new Date().toISOString(),
@@ -293,7 +293,7 @@ export function useProgressiveWipHeatMap(): ProgressiveWipHeatMapState {
 
   // Mount: hydrate from cache if fresh; otherwise scan. Auto-refresh hourly in phase window.
   useEffect(() => {
-    const cache = queryClient.getQueryData<WipHeatMapCache>(HEATMAP_CACHE_KEY);
+    const cache = queryClient.getQueryData<HeatMapCache>(HEATMAP_CACHE_KEY);
     const cacheAge = queryClient.getQueryState(HEATMAP_CACHE_KEY)?.dataUpdatedAt
       || (cache?.fetchedAt ? Date.parse(cache.fetchedAt) : 0);
 

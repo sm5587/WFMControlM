@@ -1,15 +1,15 @@
 // ============================================================
 // Heat Map — SQL helpers & types
 // Compare RWS_GEN_SHIFT store counts: ITERATION_TYPE 6 (Manager)
-// vs 7 (Week-in-progress / WIP copy) for shifts active as-of a date.
+// vs 7 (week-in-progress copy) for shifts active as-of a date.
 // ============================================================
 
 /**
- * Distinct UNIT_SKEY counts for Manager (6) vs WIP (7).
+ * Distinct UNIT_SKEY counts for Manager (6) vs week-in-progress copy (7).
  * Active window: EFF_DATE <= as-of AND END_DATE >= as-of (no calendar join).
  * Returns current week + previous week (as-of CURRENT DATE - 7 DAYS).
  */
-export function wipWeeklyCountsSql(): string {
+export function heatMapWeeklyCountsSql(): string {
   return (
     `SELECT ` +
     `VARCHAR_FORMAT(COALESCE(MIN(g.EFF_DATE), CURRENT DATE), 'yyyyMMdd') AS WEEK_START_DATE, ` +
@@ -33,7 +33,7 @@ export function wipWeeklyCountsSql(): string {
   );
 }
 
-export interface WipWeekCounts {
+export interface HeatMapWeekCounts {
   fiscalYear: number;
   fiscalWeek: number;
   weekInd: number;
@@ -45,7 +45,7 @@ export interface WipWeekCounts {
   delta: number;
 }
 
-export function parseWipWeekRow(row: Record<string, string | null> | undefined): WipWeekCounts | null {
+export function parseHeatMapWeekRow(row: Record<string, string | null> | undefined): HeatMapWeekCounts | null {
   if (!row) return null;
   const weekStartDate = (row.WEEK_START_DATE || '').trim();
   const weekEndDate = (row.WEEK_END_DATE || '').trim();

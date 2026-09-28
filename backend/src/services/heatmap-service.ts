@@ -7,28 +7,28 @@ import { prisma } from '../database/prisma';
 import { db2DirectService } from './db2-direct-service';
 import { configService } from './config-service';
 import { logger } from '../utils/logger';
-import { parseWipWeekRow, wipWeeklyCountsSql, type WipWeekCounts } from '../constants/wip';
+import { parseHeatMapWeekRow, heatMapWeeklyCountsSql, type HeatMapWeekCounts } from '../constants/heatmap';
 
-export interface WipHeatMapClient {
+export interface HeatMapClient {
   clientId: string;
   name: string;
   timezone: string;
   cluster: string | null;
 }
 
-export interface WipHeatMapRow {
+export interface HeatMapRow {
   clientId: string;
   name: string;
   timezone: string;
   cluster: string | null;
-  weeks: WipWeekCounts[];
+  weeks: HeatMapWeekCounts[];
   mismatchCount: number;
   hasMismatch: boolean;
   error?: string;
 }
 
-class WipHeatMapService {
-  async listClients(): Promise<WipHeatMapClient[]> {
+class HeatMapService {
+  async listClients(): Promise<HeatMapClient[]> {
     const clients = await prisma.client.findMany({
       where: {
         isActive: true,
@@ -50,7 +50,7 @@ class WipHeatMapService {
     }));
   }
 
-  async scanClient(clientId: string): Promise<WipHeatMapRow> {
+  async scanClient(clientId: string): Promise<HeatMapRow> {
     const startMs = Date.now();
     logger.info(`Heat Map: scan start ${clientId}`);
     const client = await prisma.client.findUnique({
@@ -74,16 +74,16 @@ class WipHeatMapService {
     try {
       const result = await db2DirectService.queryClient(
         clientId,
-        wipWeeklyCountsSql(),
-        'Wip/WeeklyCounts',
+        heatMapWeeklyCountsSql(),
+        'HeatMap/WeeklyCounts',
       );
       if (!result.success) {
-        throw new Error(result.error || 'WIP weekly query failed');
+        throw new Error(result.error || 'Heat Map weekly query failed');
       }
 
-      const weeks: WipWeekCounts[] = [];
+      const weeks: HeatMapWeekCounts[] = [];
       for (const raw of result.rows || []) {
-        const week = parseWipWeekRow(raw);
+        const week = parseHeatMapWeekRow(raw);
         if (week) weeks.push(week);
       }
 
@@ -118,12 +118,12 @@ class WipHeatMapService {
     }
   }
 
-  async getSnapshot(): Promise<{ rows: WipHeatMapRow[]; fetchedAt: string }> {
+  async getSnapshot(): Promise<{ rows: HeatMapRow[]; fetchedAt: string }> {
     const startMs = Date.now();
     const clients = await this.listClients();
     logger.info(`Heat Map: snapshot start (${clients.length} client(s))`);
     const concurrency = Math.max(1, Math.min(10, configService.getInt('engine.db2QueryConcurrency', 5)));
-    const rows: WipHeatMapRow[] = [];
+    const rows: HeatMapRow[] = [];
     let idx = 0;
 
     const worker = async () => {
@@ -148,4 +148,4 @@ class WipHeatMapService {
   }
 }
 
-export const wipHeatMapService = new WipHeatMapService();
+export const heatMapService = new HeatMapService();
