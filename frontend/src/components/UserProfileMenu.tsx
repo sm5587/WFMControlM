@@ -12,7 +12,7 @@ function initialsFromName(name: string): string {
 export default function UserProfileMenu() {
   const { user, logout, canWrite } = useAuth();
 
-  const isAdminUser = canWrite('PERMISSIONS_EDIT') || canWrite('USERS_MANAGE');
+  const isAdminUser = canWrite('PERMISSIONS_EDIT') || canWrite('USERS_VIEW');
   const initials = useMemo(
     () => initialsFromName(user?.displayName || user?.username || ''),
     [user?.displayName, user?.username],
@@ -25,7 +25,7 @@ export default function UserProfileMenu() {
     : null;
 
   return (
-    <div className="ml-auto flex items-center gap-3 pl-3 border-l border-gray-200">
+    <div className="flex items-center gap-3 pl-3 border-l border-gray-200">
       <div
         className="w-8 h-8 rounded-full bg-zebra-600 text-white text-xs font-semibold flex items-center justify-center flex-shrink-0"
         title={user.displayName}

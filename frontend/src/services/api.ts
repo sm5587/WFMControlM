@@ -351,7 +351,7 @@ export const adminApi = {
 
   approveAccessRequest: (
     id: string,
-    data: { profileId: string; displayName?: string; username?: string },
+    data: { profileId: string; displayName?: string },
   ): Promise<ApiResponse<{ userId: string; username: string }>> =>
     api.post(`/admin/access-requests/${id}/approve`, data),
 
@@ -454,6 +454,9 @@ export const clientsApi = {
   syncAllCrons: (opts?: { force?: boolean }): Promise<ApiResponse<any>> =>
     api.post('/clients/sync-all-crons', opts ?? {}, { timeout: 0 }),
 
+  syncWfmVersions: (opts?: { force?: boolean; refreshAppUrl?: boolean }): Promise<ApiResponse<any>> =>
+    api.post('/clients/sync-wfm-versions', opts ?? {}),
+
   resetCrons: (opts?: { clientId?: string }): Promise<ApiResponse<any>> =>
     api.post('/clients/reset-crons', opts ?? {}, { timeout: 0 }),
 
@@ -505,12 +508,18 @@ export const payrollApi = {
   getClients: (): Promise<ApiResponse<any>> =>
     api.get('/payroll/clients'),
 
-  getPayrollStatus: (clientId: string, weekEnd?: string, frequency?: string): Promise<ApiResponse<any>> =>
+  getPayrollStatus: (
+    clientId: string,
+    weekEnd?: string,
+    frequency?: string,
+    includeRecords = false,
+  ): Promise<ApiResponse<any>> =>
     api.get(`/payroll/${encodeURIComponent(clientId)}`, {
       timeout: 120000,
       params: {
         ...(weekEnd ? { weekEnd } : {}),
         ...(frequency ? { frequency } : {}),
+        includeRecords: includeRecords ? 'true' : 'false',
       },
     }),
 
@@ -519,9 +528,21 @@ export const payrollApi = {
 
   updateDeadline: (
     clientId: string,
-    payload: { daysAfterWeekEnd: number | null; localTime: string | null },
+    payload: {
+      frequency?: string | null;
+      daysAfterWeekEnd?: number | null;
+      dayOfMonth?: number | null;
+      localTime: string | null;
+      clear?: boolean;
+    },
   ): Promise<ApiResponse<any>> =>
     api.patch(`/payroll/${encodeURIComponent(clientId)}/deadline`, payload),
+
+  updateMonitorEnabled: (
+    clientId: string,
+    enabled: boolean,
+  ): Promise<ApiResponse<any>> =>
+    api.patch(`/payroll/${encodeURIComponent(clientId)}/monitor`, { enabled }),
 
   getMonitorSnapshot: (): Promise<ApiResponse<any>> =>
     api.get('/payroll/monitor', { timeout: 180000 }),
@@ -537,6 +558,18 @@ export const payrollApi = {
       timeout: 120000,
       params: { distListId },
     }),
+};
+
+// ---- Heat Map ----
+export const wipApi = {
+  getClients: (): Promise<ApiResponse<any>> =>
+    api.get('/wip/clients'),
+
+  getClientScan: (clientId: string): Promise<ApiResponse<any>> =>
+    api.get(`/wip/client/${encodeURIComponent(clientId)}`, { timeout: 120000 }),
+
+  getSnapshot: (): Promise<ApiResponse<any>> =>
+    api.get('/wip', { timeout: 300000 }),
 };
 
 // ---- DB Jobs (RFX_QUEUE) ----
@@ -625,6 +658,9 @@ export const escalationsApi = {
 
   acknowledgePayrollDeadline: (clientId: string, userId?: string): Promise<ApiResponse> =>
     api.post(`/escalations/payroll-deadlines/${encodeURIComponent(clientId)}/acknowledge`, { userId }),
+
+  resolvePayrollDeadline: (clientId: string, reason: string, userId?: string): Promise<ApiResponse> =>
+    api.post(`/escalations/payroll-deadlines/${encodeURIComponent(clientId)}/resolve`, { userId, reason }),
 
   suppressPayrollDeadline: (clientId: string, durationMinutes: number, userId?: string, reason?: string): Promise<ApiResponse> =>
     api.post(`/escalations/payroll-deadlines/${encodeURIComponent(clientId)}/suppress`, { userId, durationMinutes, reason }),

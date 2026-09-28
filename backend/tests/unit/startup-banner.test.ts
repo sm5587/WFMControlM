@@ -2,7 +2,7 @@ import { buildStartupBanner } from '../../src/utils/startup-banner';
 
 describe('buildStartupBanner', () => {
   const base = {
-    appName: 'WFM Watch',
+    appName: 'Workcloud Pulse',
     port: 4005,
     deploymentLabel: 'Docker',
   };

@@ -2,25 +2,32 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   DollarSign, Search, Loader2, RefreshCw, Building2,
-  CheckCircle, XCircle, ChevronDown, ChevronRight,
+  CheckCircle, XCircle, ChevronDown, ChevronRight, ChevronLeft,
   RotateCcw, AlertCircle, ArrowUpDown, ArrowUp, ArrowDown,
-  PanelLeftClose, PanelLeftOpen, Calendar, Files, Clock,
+  PanelLeftClose, PanelLeftOpen, Calendar, Files, Clock, Eye, EyeOff,
 } from 'lucide-react';
 import { payrollApi } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
+import { ClearableSearchInput } from '../ui/ClearableFilter';
 import {
   FREQUENCY_LABELS,
   FREQUENCY_ORDER,
+  PAY_DEADLINE_DAY_OF_MONTH_OPTIONS,
+  PAY_DEADLINE_DAYS_AFTER_OPTIONS,
   PAY_DEADLINE_WEEKDAYS,
   daysAfterWeekEndForWeekday,
   fileGenLabel,
+  formatDeadlineBadge,
   formatYyyymmdd,
+  isAllStoreFileGen,
+  ordinalDay,
   parseFrequencies,
+  payrollDeadlinePickerKind,
   weekdayFromDaysAfter,
-  weekdayShortLabel,
 } from '../../constants/payroll';
 
+const DETAIL_PAGE_SIZE = 20;
 interface PayrollClient {
   clientId: string;
   name: string;
@@ -30,7 +37,9 @@ interface PayrollClient {
   priorPeriodEdit: boolean;
   priorPeriodEditLimit: number;
   payrollSyncedAt: string | null;
+  payrollMonitorEnabled?: boolean;
   payrollDeadlineDaysAfterWeekEnd?: number | null;
+  payrollDeadlineDayOfMonth?: number | null;
   payrollDeadlineLocalTime?: string | null;
   timezone?: string;
 }
@@ -84,6 +93,11 @@ interface PayrollResult {
     distinctFileIds: number;
     fileIds: string[];
     generatedAt?: string | null;
+    priorWeek?: {
+      weekEndDate: string;
+      total: number;
+      generated: number;
+    } | null;
   };
   adj: {
     costSegCount: number;
@@ -92,9 +106,12 @@ interface PayrollResult {
     error?: string;
   } | null;
   timezone?: string;
+  payrollMonitorEnabled?: boolean;
   payrollDeadlineDaysAfterWeekEnd?: number | null;
+  payrollDeadlineDayOfMonth?: number | null;
   payrollDeadlineLocalTime?: string | null;
   deadlineAt?: string | null;
+  deadlineResolved?: boolean;
   late?: boolean;
   lateMinutes?: number | null;
   executionTimeMs: number;
@@ -111,6 +128,12 @@ function frequencyMeta(code: string): { label: string; color: string } {
   return FREQUENCY_LABELS[code] || { label: code, color: 'bg-gray-400' };
 }
 
+function displayProcessValue(value: string | null | undefined): string {
+  const s = (value ?? '').trim();
+  if (!s || /^null$/i.test(s) || /^undefined$/i.test(s)) return '—';
+  return s;
+}
+
 function isAdjEligibleWeek(weekEnd: string, periods: PayPeriod[], limit: number): boolean {
   if (!limit) return false;
   const current = periods.find(p => p.isCurrent);
@@ -124,6 +147,7 @@ function isAdjEligibleWeek(weekEnd: string, periods: PayPeriod[], limit: number)
 export default function PayrollJobs() {
   const { fmt, fmtDb2 } = useTimezone();
   const canSync = usePermission('PAYROLL_SYNC', 'write');
+  const canViewDetails = usePermission('PAYROLL_DETAILS_VIEW', 'read');
   const [selectedClientId, setSelectedClientId] = useState('');
   const [selectedFrequency, setSelectedFrequency] = useState('');
   const [selectedWeekEnd, setSelectedWeekEnd] = useState('');
@@ -137,7 +161,13 @@ export default function PayrollJobs() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'generated' | 'pending'>('all');
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [showDetailedData, setShowDetailedData] = useState(false);
+  /** Once true for a client/week, keep requesting unit rows so hide/show is UI-only. */
+  const [detailsRequested, setDetailsRequested] = useState(false);
+  const [detailPage, setDetailPage] = useState(1);
   const [deadlineDow, setDeadlineDow] = useState('1');
+  const [deadlineDaysAfter, setDeadlineDaysAfter] = useState('1');
+  const [deadlineDayOfMonth, setDeadlineDayOfMonth] = useState('5');
   const [deadlineTime, setDeadlineTime] = useState('10:00');
   const [deadlineMsg, setDeadlineMsg] = useState('');
 
@@ -168,8 +198,13 @@ export default function PayrollJobs() {
   });
 
   const deadlineMutation = useMutation({
-    mutationFn: (payload: { daysAfterWeekEnd: number | null; localTime: string | null }) =>
-      payrollApi.updateDeadline(selectedClientId, payload),
+    mutationFn: (payload: {
+      frequency?: string | null;
+      daysAfterWeekEnd?: number | null;
+      dayOfMonth?: number | null;
+      localTime: string | null;
+      clear?: boolean;
+    }) => payrollApi.updateDeadline(selectedClientId, payload),
     onSuccess: () => {
       setDeadlineMsg('Deadline saved');
       qc.invalidateQueries({ queryKey: ['payroll-clients'] });
@@ -181,6 +216,22 @@ export default function PayrollJobs() {
     },
   });
 
+  const [monitorMsg, setMonitorMsg] = useState('');
+  const monitorMutation = useMutation({
+    mutationFn: (enabled: boolean) => payrollApi.updateMonitorEnabled(selectedClientId, enabled),
+    onSuccess: (_res, enabled) => {
+      setMonitorMsg(enabled ? 'Monitor enabled' : 'Monitor disabled');
+      qc.invalidateQueries({ queryKey: ['payroll-clients'] });
+      qc.invalidateQueries({ queryKey: ['payroll-status', selectedClientId] });
+      qc.invalidateQueries({ queryKey: ['payroll-monitor-progressive'] });
+      qc.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] });
+      setTimeout(() => setMonitorMsg(''), 2500);
+    },
+    onError: (err: any) => {
+      setMonitorMsg(err?.message || 'Failed to update monitor');
+    },
+  });
+
   const {
     data: payrollRes,
     isLoading: payrollLoading,
@@ -188,32 +239,51 @@ export default function PayrollJobs() {
     refetch,
     error: payrollError,
   } = useQuery({
-    queryKey: ['payroll-status', selectedClientId, selectedWeekEnd, selectedFrequency],
-    queryFn: () => payrollApi.getPayrollStatus(selectedClientId, selectedWeekEnd || undefined, selectedFrequency || undefined),
+    queryKey: ['payroll-status', selectedClientId, selectedWeekEnd, selectedFrequency, detailsRequested && canViewDetails],
+    queryFn: () => payrollApi.getPayrollStatus(
+      selectedClientId,
+      selectedWeekEnd || undefined,
+      selectedFrequency || undefined,
+      detailsRequested && canViewDetails,
+    ),
     enabled: fetchEnabled && !!selectedClientId,
     staleTime: 5 * 60 * 1000,
     retry: false,
+    placeholderData: (prev) => prev,
   });
 
+  useEffect(() => {
+    if (!canViewDetails) {
+      setShowDetailedData(false);
+      setDetailsRequested(false);
+    }
+  }, [canViewDetails]);
   const payrollData: PayrollResult | null = (payrollRes as any)?.data || null;
 
   useEffect(() => {
     const weekEnd = selectedWeekEnd || payrollData?.weekEndDate || '';
     const days = payrollData?.payrollDeadlineDaysAfterWeekEnd
       ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd;
+    const dayOfMonth = payrollData?.payrollDeadlineDayOfMonth
+      ?? selectedClient?.payrollDeadlineDayOfMonth;
     const time = payrollData?.payrollDeadlineLocalTime
       ?? selectedClient?.payrollDeadlineLocalTime;
     const dow = days != null ? weekdayFromDaysAfter(weekEnd, days) : 1;
     setDeadlineDow(dow != null ? String(dow) : '1');
+    setDeadlineDaysAfter(days != null ? String(days) : '1');
+    setDeadlineDayOfMonth(dayOfMonth != null ? String(dayOfMonth) : '5');
     setDeadlineTime(time || '10:00');
     setDeadlineMsg('');
   }, [
     selectedClientId,
     selectedWeekEnd,
+    selectedFrequency,
     payrollData?.weekEndDate,
     selectedClient?.payrollDeadlineDaysAfterWeekEnd,
+    selectedClient?.payrollDeadlineDayOfMonth,
     selectedClient?.payrollDeadlineLocalTime,
     payrollData?.payrollDeadlineDaysAfterWeekEnd,
+    payrollData?.payrollDeadlineDayOfMonth,
     payrollData?.payrollDeadlineLocalTime,
   ]);
 
@@ -298,6 +368,21 @@ export default function PayrollJobs() {
     return result;
   }, [records, searchTerm, statusFilter, sortColumn, sortDirection]);
 
+  const detailPageCount = Math.max(1, Math.ceil(filtered.length / DETAIL_PAGE_SIZE));
+  const safeDetailPage = Math.min(detailPage, detailPageCount);
+  const pagedRecords = useMemo(() => {
+    const start = (safeDetailPage - 1) * DETAIL_PAGE_SIZE;
+    return filtered.slice(start, start + DETAIL_PAGE_SIZE);
+  }, [filtered, safeDetailPage]);
+
+  useEffect(() => {
+    setDetailPage(1);
+  }, [searchTerm, statusFilter, sortColumn, sortDirection, selectedClientId, selectedWeekEnd, selectedFrequency]);
+
+  useEffect(() => {
+    if (detailPage > detailPageCount) setDetailPage(detailPageCount);
+  }, [detailPage, detailPageCount]);
+
   const handleClientClick = (clientId: string, frequency: string) => {
     setSelectedClientId(clientId);
     setSelectedFrequency(frequency);
@@ -308,8 +393,20 @@ export default function PayrollJobs() {
     setSortColumn(null);
     setFileTab('regular');
     setLeftPanelOpen(false);
+    setShowDetailedData(false);
+    setDetailsRequested(false);
+    setDetailPage(1);
   };
 
+  const toggleDetailedData = () => {
+    if (!canViewDetails) return;
+    if (showDetailedData) {
+      setShowDetailedData(false);
+      return;
+    }
+    setDetailsRequested(true);
+    setShowDetailedData(true);
+  };
   const handleSort = (col: string) => {
     if (sortColumn === col) {
       if (sortDirection === 'asc') setSortDirection('desc');
@@ -333,34 +430,68 @@ export default function PayrollJobs() {
   const adjWeek = isAdjEligibleWeek(activeWeekEnd, periods, selectedClient?.priorPeriodEditLimit || 0);
   const clientTz = payrollData?.timezone || selectedClient?.timezone || 'America/Chicago';
   const formatGeneratedAt = (raw?: string) => raw ? (fmtDb2(raw, clientTz, 'full') || raw) : '';
-  const deadlineConfigured = !!(
-    (payrollData?.payrollDeadlineDaysAfterWeekEnd ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd) != null
-    && (payrollData?.payrollDeadlineLocalTime ?? selectedClient?.payrollDeadlineLocalTime)
-  );
+  const activeFrequency = selectedFrequency || payrollData?.frequency || 'WK';
+  const deadlinePickerKind = payrollDeadlinePickerKind(activeFrequency);
   const deadlineDaysStored = payrollData?.payrollDeadlineDaysAfterWeekEnd
-    ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd;
-  const deadlineDowSaved = deadlineDaysStored != null
-    ? weekdayFromDaysAfter(activeWeekEnd, deadlineDaysStored)
-    : null;
-  const deadlineDayLabel = weekdayShortLabel(deadlineDowSaved);
+    ?? selectedClient?.payrollDeadlineDaysAfterWeekEnd
+    ?? null;
+  const deadlineDomStored = payrollData?.payrollDeadlineDayOfMonth
+    ?? selectedClient?.payrollDeadlineDayOfMonth
+    ?? null;
+  const deadlineTimeStored = payrollData?.payrollDeadlineLocalTime
+    ?? selectedClient?.payrollDeadlineLocalTime
+    ?? null;
+  const deadlineConfigured = !!(
+    deadlineTimeStored
+    && (deadlineDomStored != null || deadlineDaysStored != null)
+  );
+  const deadlineSummaryLabel = formatDeadlineBadge({
+    frequency: activeFrequency,
+    daysAfterWeekEnd: deadlineDaysStored,
+    dayOfMonth: deadlineDomStored,
+    localTime: deadlineTimeStored,
+    weekEndYmd: activeWeekEnd,
+  });
   const isLate = !!payrollData?.late && fileTab === 'regular';
+  const monitorEnabled = payrollData?.payrollMonitorEnabled
+    ?? selectedClient?.payrollMonitorEnabled
+    ?? true;
 
   const saveDeadline = () => {
-    const dow = parseInt(deadlineDow, 10);
-    const days = daysAfterWeekEndForWeekday(activeWeekEnd, dow);
-    if (days == null) {
-      setDeadlineMsg('Select a pay week before setting the deadline day');
-      return;
-    }
     if (!/^\d{1,2}:\d{2}$/.test(deadlineTime.trim())) {
       setDeadlineMsg('Time must be HH:mm');
       return;
     }
-    deadlineMutation.mutate({ daysAfterWeekEnd: days, localTime: deadlineTime.trim() });
+    const localTime = deadlineTime.trim();
+    if (deadlinePickerKind === 'dayOfMonth') {
+      const dayOfMonth = parseInt(deadlineDayOfMonth, 10);
+      if (!Number.isFinite(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 28) {
+        setDeadlineMsg('Day of month must be 1–28');
+        return;
+      }
+      deadlineMutation.mutate({ frequency: activeFrequency, dayOfMonth, localTime });
+      return;
+    }
+    if (deadlinePickerKind === 'daysAfter') {
+      const daysAfterWeekEnd = parseInt(deadlineDaysAfter, 10);
+      if (!Number.isFinite(daysAfterWeekEnd) || daysAfterWeekEnd < 0 || daysAfterWeekEnd > 14) {
+        setDeadlineMsg('Days after period end must be 0–14');
+        return;
+      }
+      deadlineMutation.mutate({ frequency: activeFrequency, daysAfterWeekEnd, localTime });
+      return;
+    }
+    const dow = parseInt(deadlineDow, 10);
+    const daysAfterWeekEnd = daysAfterWeekEndForWeekday(activeWeekEnd, dow);
+    if (daysAfterWeekEnd == null) {
+      setDeadlineMsg('Select a pay week before setting the deadline day');
+      return;
+    }
+    deadlineMutation.mutate({ frequency: activeFrequency, daysAfterWeekEnd, localTime });
   };
 
   const clearDeadline = () => {
-    deadlineMutation.mutate({ daysAfterWeekEnd: null, localTime: null });
+    deadlineMutation.mutate({ clear: true, localTime: null });
   };
 
   const columns: Array<{ key: keyof PayrollRecord | 'generated'; label: string }> = [
@@ -412,24 +543,12 @@ export default function PayrollJobs() {
         <div className="w-80 flex-shrink-0 flex flex-col min-h-0">
           {!clientsLoading && clients.length > 0 && (
             <div className="relative mb-2 flex-shrink-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search client..."
-                className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-zebra-500"
+              <ClearableSearchInput
                 value={clientSearch}
-                onChange={e => setClientSearch(e.target.value)}
+                onChange={setClientSearch}
+                placeholder="Search client..."
+                inputClassName="w-full py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-zebra-500"
               />
-              {clientSearch && (
-                <button
-                  type="button"
-                  onClick={() => setClientSearch('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs px-1"
-                  title="Clear"
-                >
-                  ✕
-                </button>
-              )}
             </div>
           )}
           <div className="space-y-2 overflow-y-auto flex-1 min-h-0">
@@ -503,15 +622,39 @@ export default function PayrollJobs() {
                                 Adj {c.priorPeriodEditLimit}
                               </span>
                             )}
-                            {c.payrollDeadlineDaysAfterWeekEnd != null && c.payrollDeadlineLocalTime && (
+                            {(c.payrollMonitorEnabled ?? true) ? (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-800 inline-flex items-center gap-0.5"
+                                title="Included on Payroll Monitor"
+                              >
+                                <Eye className="w-2.5 h-2.5" />
+                                Monitor
+                              </span>
+                            ) : (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 inline-flex items-center gap-0.5"
+                                title="Excluded from Payroll Monitor"
+                              >
+                                <EyeOff className="w-2.5 h-2.5" />
+                                Off
+                              </span>
+                            )}
+                            {(c.payrollDeadlineDayOfMonth != null || c.payrollDeadlineDaysAfterWeekEnd != null)
+                              && c.payrollDeadlineLocalTime && (
                               <span
                                 className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 inline-flex items-center gap-0.5"
                                 title={`SLA ${c.payrollDeadlineLocalTime} ${c.timezone || ''}`}
                               >
                                 <Clock className="w-2.5 h-2.5" />
-                                {c.clientId === selectedClientId && deadlineDayLabel
-                                  ? `${deadlineDayLabel} ${c.payrollDeadlineLocalTime}`
-                                  : c.payrollDeadlineLocalTime}
+                                {c.clientId === selectedClientId && deadlineSummaryLabel
+                                  ? deadlineSummaryLabel
+                                  : formatDeadlineBadge({
+                                    frequency: cycle,
+                                    daysAfterWeekEnd: c.payrollDeadlineDaysAfterWeekEnd,
+                                    dayOfMonth: c.payrollDeadlineDayOfMonth,
+                                    localTime: c.payrollDeadlineLocalTime,
+                                    weekEndYmd: activeWeekEnd,
+                                  })}
                               </span>
                             )}
                           </div>
@@ -528,7 +671,7 @@ export default function PayrollJobs() {
         </div>
         )}
 
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
           <div className="bg-white rounded-xl shadow-sm border p-3 flex items-center gap-3 flex-shrink-0 flex-wrap">
             <button
               onClick={() => setLeftPanelOpen(prev => !prev)}
@@ -549,7 +692,10 @@ export default function PayrollJobs() {
                       return (
                         <button
                           key={freq}
-                          onClick={() => setSelectedFrequency(freq)}
+                          onClick={() => {
+                            setSelectedFrequency(freq);
+                            if (!showDetailedData) setDetailsRequested(false);
+                          }}
                           className={`text-[11px] px-2 py-1 rounded-full font-medium transition-colors ${
                             active
                               ? 'bg-zebra-600 text-white'
@@ -576,7 +722,10 @@ export default function PayrollJobs() {
                   <select
                     className="border border-gray-300 rounded-lg text-sm px-2 py-1.5 focus:ring-2 focus:ring-zebra-500"
                     value={activeWeekEnd}
-                    onChange={e => setSelectedWeekEnd(e.target.value)}
+                    onChange={e => {
+                      setSelectedWeekEnd(e.target.value);
+                      if (!showDetailedData) setDetailsRequested(false);
+                    }}
                   >
                     {periods.map(p => (
                       <option key={p.weekEndDate} value={p.weekEndDate}>
@@ -590,27 +739,27 @@ export default function PayrollJobs() {
               </>
             )}
 
-            <div className="relative flex-1 min-w-[12rem]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search unit or file id..."
-                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-zebra-500"
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-              />
-            </div>
+            {showDetailedData && (
+            <ClearableSearchInput
+              className="flex-1 min-w-[12rem]"
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search unit or file id..."
+              inputClassName="w-full py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-zebra-500"
+            />
+            )}
           </div>
 
-          {(payrollLoading || payrollFetching) && (
-            <div className="bg-white rounded-xl shadow-sm border p-12 flex flex-col items-center justify-center text-gray-500 mt-4">
+          <div className="flex-1 min-h-0 overflow-y-auto mt-4">
+          {payrollLoading && !(payrollData && payrollData.clientId === selectedClientId) && (
+            <div className="bg-white rounded-xl shadow-sm border p-12 flex flex-col items-center justify-center text-gray-500">
               <Loader2 className="w-8 h-8 animate-spin mb-3 text-zebra-600" />
               <p className="text-sm">Loading pay periods and file status from DB2...</p>
             </div>
           )}
 
-          {payrollError && !payrollFetching && (
-            <div className="bg-white rounded-xl shadow-sm border p-8 mt-4">
+          {payrollError && !payrollLoading && !(payrollData && payrollData.clientId === selectedClientId) && (
+            <div className="bg-white rounded-xl shadow-sm border p-8">
               <div className="flex items-center gap-3 text-red-600">
                 <XCircle className="w-6 h-6" />
                 <div>
@@ -621,9 +770,9 @@ export default function PayrollJobs() {
             </div>
           )}
 
-          {payrollData && summary && !payrollFetching && (
+          {payrollData && summary && payrollData.clientId === selectedClientId && (
             <>
-              <div className="flex gap-2 mt-4 flex-shrink-0">
+              <div className="flex gap-2">
                 <button
                   onClick={() => setFileTab('regular')}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
@@ -643,7 +792,7 @@ export default function PayrollJobs() {
               </div>
 
               {fileTab === 'adjustment' && !adjConfigured ? (
-                <div className="bg-white rounded-xl shadow-sm border flex-1 min-h-0 flex flex-col items-center justify-center p-12 mt-4 text-center">
+                <div className="bg-white rounded-xl shadow-sm border flex flex-col items-center justify-center p-12 mt-4 text-center min-h-[16rem]">
                   <AlertCircle className="w-10 h-10 text-gray-300 mb-3" />
                   <p className="text-base font-semibold text-gray-800">Adjustment is not enabled</p>
                   <p className="text-sm text-gray-500 mt-2 max-w-md">
@@ -659,7 +808,7 @@ export default function PayrollJobs() {
               ) : (
               <>
               {isLate && (
-                <div className="mt-3 flex-shrink-0 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
                   <Clock className="w-5 h-5 text-amber-700 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="text-sm font-semibold text-amber-900">
@@ -676,62 +825,132 @@ export default function PayrollJobs() {
                   </div>
                 </div>
               )}
-              <div className={`gap-3 flex-shrink-0 mt-3 min-w-0 [&>*]:min-w-0 ${fileTab === 'regular' ? 'grid grid-cols-5' : 'grid grid-cols-2 md:grid-cols-4'}`}>
-                <div className="bg-white rounded-xl shadow-sm border p-4">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Generator</p>
+              <div className={`gap-3 mt-3 min-w-0 ${fileTab === 'regular' ? 'grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4' : 'grid grid-cols-2 md:grid-cols-4'}`}>
+                {/* Status: generator + monitor */}
+                <div className="bg-white rounded-xl shadow-sm border p-4 min-w-0 flex flex-col">
+                  <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Status</p>
                   {fileTab === 'regular' ? (
-                    <p className={`text-sm font-semibold mt-1 ${regularJobRunning ? 'text-green-700' : 'text-amber-700'}`}>
-                      {regularJobRunning ? 'Running' : 'Not running'}
-                    </p>
+                    <>
+                      <p className={`text-base font-semibold mt-1.5 ${regularJobRunning ? 'text-green-700' : 'text-amber-700'}`}>
+                        {regularJobRunning ? 'Generator running' : 'Generator idle'}
+                      </p>
+                      <p
+                        className="text-[11px] text-gray-400 mt-0.5 font-mono truncate"
+                        title={generators?.regular.jobType || 'RTANewPayFileGeneratorJob / RTAPayrollFeedGeneratorJob'}
+                      >
+                        {generators?.regular.jobType || 'RTANewPayFile / RTAPayrollFeed'}
+                      </p>
+                      <div className="mt-auto pt-3 flex items-center justify-between gap-2 border-t border-gray-100">
+                        <span className="inline-flex items-center gap-1 text-[11px] text-gray-600">
+                          {monitorEnabled ? <Eye className="w-3 h-3 text-emerald-600" /> : <EyeOff className="w-3 h-3 text-gray-400" />}
+                          Monitor {monitorEnabled ? 'on' : 'off'}
+                        </span>
+                        {canSync ? (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={monitorEnabled}
+                            disabled={monitorMutation.isPending}
+                            onClick={() => monitorMutation.mutate(!monitorEnabled)}
+                            className={`text-[11px] px-2 py-0.5 rounded disabled:opacity-50 ${
+                              monitorEnabled
+                                ? 'border border-gray-300 text-gray-600 hover:bg-gray-50'
+                                : 'bg-zebra-600 text-white hover:bg-zebra-700'
+                            }`}
+                          >
+                            {monitorMutation.isPending ? '…' : monitorEnabled ? 'Disable' : 'Enable'}
+                          </button>
+                        ) : null}
+                      </div>
+                      {monitorMsg && (
+                        <p className={`text-[11px] mt-1.5 ${monitorMsg.includes('enabled') || monitorMsg.includes('disabled') ? 'text-green-700' : 'text-amber-700'}`}>
+                          {monitorMsg}
+                        </p>
+                      )}
+                    </>
                   ) : (
-                    <p className={`text-sm font-semibold mt-1 ${adjJobRunning ? 'text-green-700' : 'text-amber-700'}`}>
-                      {adjJobRunning ? 'Running' : 'Not running'}
-                    </p>
+                    <>
+                      <p className={`text-base font-semibold mt-1.5 ${adjJobRunning ? 'text-green-700' : 'text-amber-700'}`}>
+                        {adjJobRunning ? 'Generator running' : 'Generator idle'}
+                      </p>
+                      <p className="text-[11px] text-gray-400 mt-0.5 font-mono truncate">
+                        {generators?.adjustment.jobType || 'RTAPriorAdjPayGeneratorJob'}
+                      </p>
+                    </>
                   )}
-                  <p className="text-[11px] text-gray-400 mt-1 font-mono truncate">
-                    {fileTab === 'regular'
-                      ? (generators?.regular.jobType || 'RTANewPayFile / RTAPayrollFeed')
-                      : (generators?.adjustment.jobType || 'RTAPriorAdjPayGeneratorJob')}
-                  </p>
                 </div>
 
                 {fileTab === 'regular' && (
-                <div className="bg-white rounded-xl shadow-sm border p-4">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Generated (F)</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{summary.generatedCount}</p>
-                  <p className="text-xs text-gray-400 mt-1">{summary.pendingCount} pending · {summary.totalStores} stores</p>
+                <div className="bg-white rounded-xl shadow-sm border p-4 min-w-0 flex flex-col">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Units generated</p>
+                    <p className="text-[11px] text-gray-400 tabular-nums whitespace-nowrap" title={`Query ${payrollData.executionTimeMs}ms`}>
+                      {formatYyyymmdd(activeWeekEnd)}
+                    </p>
+                  </div>
+                  <p
+                    className="text-2xl font-bold text-gray-900 mt-1.5 tabular-nums leading-none"
+                    title={summary.generatedAt ? `Last file update ${formatGeneratedAt(summary.generatedAt)}` : undefined}
+                  >
+                    {summary.generatedCount}
+                    <span className="text-lg font-semibold text-gray-400">/{summary.totalStores}</span>
+                  </p>
+                  <p
+                    className="text-xs text-gray-500 mt-2"
+                    title={
+                      summary.priorWeek
+                        ? `Baseline = FILE_STATUS=F count for week ending ${formatYyyymmdd(summary.priorWeek.weekEndDate)}`
+                        : undefined
+                    }
+                  >
+                    <span className={summary.pendingCount > 0 ? 'text-amber-700 font-medium' : undefined}>
+                      {summary.pendingCount} pending
+                    </span>
+                    {summary.priorWeek ? (
+                      <span className="text-gray-400"> · prior week {summary.priorWeek.generated} F</span>
+                    ) : null}
+                  </p>
                   {summary.generatedAt && (
-                    <p className="text-xs text-gray-500 mt-1" title="Latest TA_PAY_FILE.LAST_UPDATE_TIME">
-                      {formatGeneratedAt(summary.generatedAt)}
+                    <p className="text-[11px] text-gray-400 mt-auto pt-2 truncate" title={formatGeneratedAt(summary.generatedAt)}>
+                      Updated {formatGeneratedAt(summary.generatedAt)}
                     </p>
                   )}
                 </div>
                 )}
 
                 {fileTab === 'regular' && (
-                <div className="bg-white rounded-xl shadow-sm border p-4">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-1">
+                <div className="bg-white rounded-xl shadow-sm border p-4 min-w-0 flex flex-col">
+                  <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide flex items-center gap-1">
+                    <Files className="w-3 h-3" /> File split
+                  </p>
+                  <p className="text-base font-semibold text-gray-900 mt-1.5">
+                    {fileGenLabel(selectedClient?.payrollFileGen)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {summary.distinctFileIds} file id{summary.distinctFileIds === 1 ? '' : 's'}
+                    {isAllStoreFileGen(selectedClient?.payrollFileGen) ? ' · shared' : ''}
+                  </p>
+                </div>
+                )}
+
+                {fileTab === 'regular' && (
+                <div className="bg-white rounded-xl shadow-sm border p-4 min-w-0 flex flex-col">
+                  <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide flex items-center gap-1">
                     <Clock className="w-3 h-3" /> Pay deadline
                   </p>
-                  {deadlineConfigured ? (
-                    <p className={`text-sm font-semibold mt-1 ${isLate ? 'text-amber-800' : 'text-gray-900'}`}>
-                      {deadlineDayLabel || 'Set'}
-                      {' '}
-                      @ {payrollData?.payrollDeadlineLocalTime ?? selectedClient?.payrollDeadlineLocalTime}
-                    </p>
-                  ) : (
-                    <p className="text-sm font-semibold text-gray-400 mt-1">Not set</p>
-                  )}
-                  <p className="text-[11px] text-gray-400 mt-1 truncate" title={clientTz}>
+                  <p className={`text-base font-semibold mt-1.5 ${deadlineConfigured ? (isLate ? 'text-amber-800' : 'text-gray-900') : 'text-gray-400'}`}>
+                    {deadlineConfigured ? (deadlineSummaryLabel || 'Set') : 'Not set'}
+                  </p>
+                  <p className="text-[11px] text-gray-400 mt-0.5 truncate" title={clientTz}>
                     {payrollData?.deadlineAt
                       ? fmt(payrollData.deadlineAt, 'full')
-                      : `Weekday after week end · ${clientTz}`}
+                      : clientTz}
                   </p>
                   {canSync ? (
-                    <div className="mt-2 space-y-1.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="mt-auto pt-3 flex flex-wrap items-center gap-1.5">
+                      {deadlinePickerKind === 'weekday' && (
                         <select
-                          className="border border-gray-300 rounded text-xs px-1.5 py-1"
+                          className="border border-gray-300 rounded text-xs px-1.5 py-1 bg-white"
                           value={deadlineDow}
                           onChange={e => setDeadlineDow(e.target.value)}
                           title="Deadline weekday"
@@ -740,75 +959,80 @@ export default function PayrollJobs() {
                             <option key={d.dow} value={d.dow}>{d.label}</option>
                           ))}
                         </select>
-                        <input
-                          type="time"
-                          className="border border-gray-300 rounded text-xs px-1.5 py-1 min-w-0"
-                          value={deadlineTime}
-                          onChange={e => setDeadlineTime(e.target.value)}
-                        />
-                      </div>
-                      <div className="flex items-center gap-1.5">
+                      )}
+                      {deadlinePickerKind === 'daysAfter' && (
+                        <select
+                          className="border border-gray-300 rounded text-xs px-1.5 py-1 bg-white"
+                          value={deadlineDaysAfter}
+                          onChange={e => setDeadlineDaysAfter(e.target.value)}
+                          title="Days after bi-weekly period end"
+                        >
+                          {PAY_DEADLINE_DAYS_AFTER_OPTIONS.map(d => (
+                            <option key={d} value={d}>
+                              {d === 0 ? 'Period end' : `+${d} day${d === 1 ? '' : 's'}`}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {deadlinePickerKind === 'dayOfMonth' && (
+                        <select
+                          className="border border-gray-300 rounded text-xs px-1.5 py-1 bg-white"
+                          value={deadlineDayOfMonth}
+                          onChange={e => setDeadlineDayOfMonth(e.target.value)}
+                          title="Deadline day of month"
+                        >
+                          {PAY_DEADLINE_DAY_OF_MONTH_OPTIONS.map(d => (
+                            <option key={d} value={d}>{ordinalDay(d)}</option>
+                          ))}
+                        </select>
+                      )}
+                      <input
+                        type="time"
+                        className="border border-gray-300 rounded text-xs px-1.5 py-1 w-[7.5rem] bg-white"
+                        value={deadlineTime}
+                        onChange={e => setDeadlineTime(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={saveDeadline}
+                        disabled={deadlineMutation.isPending}
+                        className="text-[11px] px-2 py-0.5 rounded bg-zebra-600 text-white hover:bg-zebra-700 disabled:opacity-50"
+                      >
+                        {deadlineMutation.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                      {deadlineConfigured && (
                         <button
                           type="button"
-                          onClick={saveDeadline}
+                          onClick={clearDeadline}
                           disabled={deadlineMutation.isPending}
-                          className="text-[11px] px-2 py-0.5 rounded bg-zebra-600 text-white hover:bg-zebra-700 disabled:opacity-50"
+                          className="text-[11px] px-2 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
                         >
-                          {deadlineMutation.isPending ? 'Saving…' : 'Save'}
+                          Clear
                         </button>
-                        {deadlineConfigured && (
-                          <button
-                            type="button"
-                            onClick={clearDeadline}
-                            disabled={deadlineMutation.isPending}
-                            className="text-[11px] px-2 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
+                      )}
                       {deadlineMsg && (
-                        <p className={`text-[11px] ${deadlineMsg === 'Deadline saved' ? 'text-green-700' : 'text-amber-700'}`}>
+                        <span className={`text-[11px] ${deadlineMsg === 'Deadline saved' ? 'text-green-700' : 'text-amber-700'}`}>
                           {deadlineMsg}
-                        </p>
+                        </span>
                       )}
                     </div>
                   ) : (
-                    <p className="text-[11px] text-gray-400 mt-2">PAYROLL_SYNC required to edit</p>
+                    <p className="text-[11px] text-gray-400 mt-auto pt-3">PAYROLL_SYNC required to edit</p>
                   )}
                 </div>
                 )}
 
-                {fileTab === 'regular' && (
-                <div className="bg-white rounded-xl shadow-sm border p-4">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-1">
-                    <Files className="w-3 h-3" /> File split
-                  </p>
-                  <p className="text-sm font-semibold text-gray-900 mt-1">{fileGenLabel(selectedClient?.payrollFileGen)}</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    {summary.distinctFileIds} distinct file id{summary.distinctFileIds === 1 ? '' : 's'}
-                    {selectedClient?.payrollFileGen?.toUpperCase() === 'ALL_STORE' ? ' (shared when generated)' : ''}
-                  </p>
-                </div>
-                )}
-
-                {fileTab === 'adjustment' ? (
+                {fileTab === 'adjustment' && (
                   <div className="bg-white rounded-xl shadow-sm border p-4">
-                    <p className="text-xs text-gray-500 uppercase tracking-wide">Adj outstanding</p>
-                    <p className={`text-2xl font-bold mt-1 ${adj && adj.outstanding > 0 ? 'text-amber-700' : 'text-gray-900'}`}>
+                    <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Adj outstanding</p>
+                    <p className={`text-2xl font-bold mt-1.5 tabular-nums ${adj && adj.outstanding > 0 ? 'text-amber-700' : 'text-gray-900'}`}>
                       {adj?.outstanding ?? '—'}
                     </p>
-                    <p className="text-xs text-gray-400 mt-1">
+                    <p className="text-xs text-gray-500 mt-2">
                       {adj
                         ? `${adj.costSegCount} cost-seg − ${adj.diffPayCount} already paid`
                         : 'No adj counts'}
                     </p>
-                  </div>
-                ) : (
-                  <div className="bg-white rounded-xl shadow-sm border p-4">
-                    <p className="text-xs text-gray-500 uppercase tracking-wide">Period</p>
-                    <p className="text-sm font-semibold text-gray-900 mt-1">{formatYyyymmdd(activeWeekEnd)}</p>
-                    <p className="text-xs text-gray-400 mt-1">{payrollData.executionTimeMs}ms</p>
                   </div>
                 )}
               </div>
@@ -860,12 +1084,12 @@ export default function PayrollJobs() {
                       <tbody className="divide-y divide-gray-100">
                         {processes.map((p, idx) => (
                           <tr key={`${p.unitGrpId}-${p.fileType}-${idx}`}>
-                            <td className="px-4 py-2 font-mono text-gray-800">{p.unitGrpId || '—'}</td>
-                            <td className="px-4 py-2 text-gray-700">{p.fileType || '—'}</td>
-                            <td className="px-4 py-2 text-gray-700">{p.splitPayfile || '—'}</td>
+                            <td className="px-4 py-2 font-mono text-gray-800">{displayProcessValue(p.unitGrpId)}</td>
+                            <td className="px-4 py-2 text-gray-700">{displayProcessValue(p.fileType)}</td>
+                            <td className="px-4 py-2 text-gray-700">{displayProcessValue(p.splitPayfile)}</td>
                             <td className="px-4 py-2 text-gray-700">{p.priorPeriodAdjLimit}</td>
-                            <td className="px-4 py-2 text-gray-700">{p.reopenForEdits || '—'}</td>
-                            <td className="px-4 py-2 text-gray-700">{p.payConfigName || '—'}</td>
+                            <td className="px-4 py-2 text-gray-700">{displayProcessValue(p.reopenForEdits)}</td>
+                            <td className="px-4 py-2 text-gray-700">{displayProcessValue(p.payConfigName)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -875,84 +1099,155 @@ export default function PayrollJobs() {
               )}
 
               {fileTab === 'regular' && (
-              <div className="bg-white rounded-xl shadow-sm border flex-1 min-h-0 flex flex-col mt-4">
-                <div className="px-4 py-2 border-b bg-gray-50 flex items-center justify-between rounded-t-xl flex-shrink-0">
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="text-gray-500">
-                      {filtered.length}{filtered.length !== records.length ? ` of ${records.length}` : ''} store{filtered.length !== 1 ? 's' : ''}
+              <div className="bg-white rounded-xl shadow-sm border mt-4">
+                <div className="px-4 py-2 border-b bg-gray-50 flex items-center justify-between rounded-t-xl gap-3 flex-wrap">
+                  <div className="flex items-center gap-3 text-sm min-w-0 flex-wrap">
+                    <span className="text-gray-500 whitespace-nowrap">
+                      {showDetailedData
+                        ? `${filtered.length}${filtered.length !== records.length ? ` of ${records.length}` : ''} store${filtered.length !== 1 ? 's' : ''}`
+                        : `${summary.totalStores} store${summary.totalStores !== 1 ? 's' : ''} · stats only`}
                     </span>
-                    <button
-                      onClick={() => setStatusFilter('all')}
-                      className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'all' ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
-                    >All</button>
-                    <button
-                      onClick={() => setStatusFilter('generated')}
-                      className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'generated' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}
-                    >Generated</button>
-                    <button
-                      onClick={() => setStatusFilter('pending')}
-                      className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'pending' ? 'bg-amber-100 text-amber-800' : 'hover:bg-gray-100'}`}
-                    >Pending</button>
+                    {showDetailedData && (
+                      <>
+                        <button
+                          onClick={() => setStatusFilter('all')}
+                          className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'all' ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
+                        >All</button>
+                        <button
+                          onClick={() => setStatusFilter('generated')}
+                          className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'generated' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}
+                        >Generated</button>
+                        <button
+                          onClick={() => setStatusFilter('pending')}
+                          className={`text-xs px-2 py-0.5 rounded ${statusFilter === 'pending' ? 'bg-amber-100 text-amber-800' : 'hover:bg-gray-100'}`}
+                        >Pending</button>
+                      </>
+                    )}
+                    {showDetailedData && filtered.length > DETAIL_PAGE_SIZE && (
+                      <div className="flex items-center gap-1 text-xs text-gray-600">
+                        <button
+                          type="button"
+                          disabled={safeDetailPage <= 1}
+                          onClick={() => setDetailPage(p => Math.max(1, p - 1))}
+                          className="inline-flex items-center gap-0.5 px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" /> Prev
+                        </button>
+                        <span className="px-2 tabular-nums">
+                          {safeDetailPage} / {detailPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={safeDetailPage >= detailPageCount}
+                          onClick={() => setDetailPage(p => Math.min(detailPageCount, p + 1))}
+                          className="inline-flex items-center gap-0.5 px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Next <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  {(searchTerm || statusFilter !== 'all') && (
-                    <button
-                      onClick={() => { setSearchTerm(''); setStatusFilter('all'); }}
-                      className="text-xs text-zebra-600 hover:text-zebra-800"
-                    >
-                      Clear filters
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {showDetailedData && filtered.length > 0 && (
+                      <span className="text-xs text-gray-500 whitespace-nowrap">
+                        Showing {(safeDetailPage - 1) * DETAIL_PAGE_SIZE + 1}
+                        –
+                        {Math.min(safeDetailPage * DETAIL_PAGE_SIZE, filtered.length)}
+                        {' '}of {filtered.length}
+                      </span>
+                    )}
+                    {showDetailedData && (searchTerm || statusFilter !== 'all') && (
+                      <button
+                        onClick={() => { setSearchTerm(''); setStatusFilter('all'); }}
+                        className="text-xs text-zebra-600 hover:text-zebra-800"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                    {canViewDetails && (
+                      <button
+                        type="button"
+                        onClick={toggleDetailedData}
+                        className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border border-gray-300 text-gray-700 hover:bg-white bg-white/80"
+                        title={showDetailedData ? 'Hide per-unit release status' : 'Show per-unit release status'}
+                      >
+                        {showDetailedData ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        {showDetailedData ? 'Hide details' : 'Show details'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {filtered.length > 0 ? (
-                  <div className="overflow-auto flex-1 min-h-0">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50 border-b sticky top-0 z-10">
-                        <tr>
-                          {columns.map(col => (
-                            <th
-                              key={col.key}
-                              onClick={() => handleSort(col.key)}
-                              className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap cursor-pointer select-none hover:bg-gray-100"
-                            >
-                              <span className="inline-flex items-center gap-1">
-                                {col.label}
-                                {sortColumn === col.key ? (
-                                  sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-zebra-600" /> : <ArrowDown className="w-3 h-3 text-zebra-600" />
-                                ) : (
-                                  <ArrowUpDown className="w-3 h-3 text-gray-300" />
-                                )}
-                              </span>
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {filtered.map((r, idx) => (
-                          <tr key={`${r.unitId}-${idx}`} className="hover:bg-gray-50">
-                            <td className="px-4 py-2.5 font-mono text-gray-900">{r.unitId}</td>
-                            <td className="px-4 py-2.5">
-                              {r.generated ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                  <CheckCircle className="w-3 h-3" /> Generated
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                                  {r.fileStatus || 'Pending'}
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5 font-mono text-gray-700">{r.fileId || '—'}</td>
-                            <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap" title={r.fileName || ''}>
-                              {r.generatedAt ? formatGeneratedAt(r.generatedAt) : '—'}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatYyyymmdd(r.weekStartDate)}</td>
-                            <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatYyyymmdd(r.weekEndDate)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {!canViewDetails ? (
+                  <div className="p-8 text-center text-gray-500 text-sm">
+                    <p>Last payroll stats are shown above.</p>
+                    <p className="mt-2 text-xs text-gray-400">
+                      Unit-level details are not available for your account.
+                    </p>
                   </div>
+                ) : !showDetailedData ? (
+                  <div className="p-8 text-center text-gray-500 text-sm">
+                    <p>Last payroll stats are shown above. Unit-level release status is hidden by default.</p>
+                    <button
+                      type="button"
+                      onClick={toggleDetailedData}
+                      className="mt-3 inline-flex items-center gap-1.5 text-sm text-zebra-600 hover:text-zebra-800 font-medium"
+                    >
+                      <Eye className="w-4 h-4" /> Show detailed data
+                    </button>
+                  </div>
+                ) : detailsRequested && payrollFetching && records.length === 0 ? (
+                  <div className="p-10 flex flex-col items-center justify-center text-gray-500">
+                    <Loader2 className="w-6 h-6 animate-spin mb-2 text-zebra-600" />
+                    <p className="text-sm">Loading unit release status…</p>
+                  </div>
+                ) : filtered.length > 0 ? (
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b">
+                      <tr>
+                        {columns.map(col => (
+                          <th
+                            key={col.key}
+                            onClick={() => handleSort(col.key)}
+                            className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap cursor-pointer select-none hover:bg-gray-100"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {col.label}
+                              {sortColumn === col.key ? (
+                                sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-zebra-600" /> : <ArrowDown className="w-3 h-3 text-zebra-600" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 text-gray-300" />
+                              )}
+                            </span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {pagedRecords.map((r, idx) => (
+                        <tr key={`${r.unitId}-${idx}`} className="hover:bg-gray-50">
+                          <td className="px-4 py-2.5 font-mono text-gray-900">{r.unitId}</td>
+                          <td className="px-4 py-2.5">
+                            {r.generated ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                <CheckCircle className="w-3 h-3" /> Generated
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                                {r.fileStatus || 'Pending'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono text-gray-700">{r.fileId || '—'}</td>
+                          <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap" title={r.fileName || ''}>
+                            {r.generatedAt ? formatGeneratedAt(r.generatedAt) : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatYyyymmdd(r.weekStartDate)}</td>
+                          <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatYyyymmdd(r.weekEndDate)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 ) : (
                   <div className="p-8 text-center text-gray-500 text-sm">
                     {searchTerm ? 'No stores match your search.' : 'No TA_UNIT_PAY_STATUS rows for this pay period.'}
@@ -964,13 +1259,13 @@ export default function PayrollJobs() {
               )}
             </>
           )}
-
-          {!payrollData && !payrollLoading && !payrollFetching && !payrollError && (
-            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400 mt-4">
+          {!payrollData && !payrollLoading && !payrollError && (
+            <div className="bg-white rounded-xl shadow-sm border p-12 text-center text-gray-400">
               <Building2 className="w-12 h-12 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">Select a client under a frequency (Weekly, Bi-Weekly, …) to load pay periods and file status</p>
+              <p className="text-sm">Select a client under a frequency (Weekly, Bi-Weekly, …) to load last payroll stats</p>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

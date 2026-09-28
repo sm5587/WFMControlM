@@ -5,13 +5,22 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { payrollService } from '../services/payroll-service';
+import { payrollDeadlineAlertService } from '../services/payroll-deadline-alert-service';
 import { db2DirectService } from '../services/db2-direct-service';
 import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
 import { configService } from '../services/config-service';
 import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
-import { parseFrequencies, parsePayrollDeadlineLocalTime, sanitizePayrollDeadlineDays } from '../constants/payroll';
-import { requirePermission } from '../middleware';
+import {
+  parseFrequencies,
+  parsePayrollDeadlineLocalTime,
+  payrollDeadlinePickerKind,
+  sanitizePayrollDeadlineDayOfMonth,
+  sanitizePayrollDeadlineDays,
+  PAYROLL_DEADLINE_DAYS_MAX_BIWEEKLY,
+  PAYROLL_DEADLINE_DAYS_MAX_WEEKLY,
+} from '../constants/payroll';
+import { hasPermission, requirePermission } from '../middleware';
 
 const router = Router();
 
@@ -114,7 +123,7 @@ async function syncPayrollClients(): Promise<void> {
 router.get('/clients', requirePayrollJobsEnabled, requirePermission('PAYROLL_VIEW', 'read'), async (_req: Request, res: Response) => {
   try {
     const clients = await prisma.client.findMany({
-      where: { payrollEnabled: true },
+      where: { payrollEnabled: true, isActive: true },
       select: {
         clientId: true,
         name: true,
@@ -123,7 +132,9 @@ router.get('/clients', requirePayrollJobsEnabled, requirePermission('PAYROLL_VIE
         priorPeriodEdit: true,
         priorPeriodEditLimit: true,
         payrollSyncedAt: true,
+        payrollMonitorEnabled: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
         timezone: true,
       },
@@ -168,37 +179,62 @@ router.patch('/:clientId/deadline', requirePayrollJobsEnabled, requirePermission
 
     const body = req.body || {};
     const clear =
-      body.daysAfterWeekEnd === null
-      || body.daysAfterWeekEnd === undefined
-      || body.daysAfterWeekEnd === ''
+      body.clear === true
+      || (
+        (body.daysAfterWeekEnd === null || body.daysAfterWeekEnd === undefined || body.daysAfterWeekEnd === '')
+        && (body.dayOfMonth === null || body.dayOfMonth === undefined || body.dayOfMonth === '')
+      )
       || body.localTime === null
       || body.localTime === undefined
       || body.localTime === '';
 
     let payrollDeadlineDaysAfterWeekEnd: number | null = null;
+    let payrollDeadlineDayOfMonth: number | null = null;
     let payrollDeadlineLocalTime: string | null = null;
 
     if (!clear) {
-      const days = sanitizePayrollDeadlineDays(body.daysAfterWeekEnd);
       const time = parsePayrollDeadlineLocalTime(body.localTime);
-      if (days == null) {
-        res.status(400).json({ success: false, error: 'daysAfterWeekEnd must be an integer from 0 to 7' });
-        return;
-      }
       if (!time) {
         res.status(400).json({ success: false, error: 'localTime must be HH:mm (00:00–23:59)' });
         return;
       }
-      payrollDeadlineDaysAfterWeekEnd = days;
       payrollDeadlineLocalTime = time;
+
+      const kind = payrollDeadlinePickerKind(body.frequency);
+      if (kind === 'dayOfMonth') {
+        const dayOfMonth = sanitizePayrollDeadlineDayOfMonth(body.dayOfMonth);
+        if (dayOfMonth == null) {
+          res.status(400).json({ success: false, error: 'dayOfMonth must be an integer from 1 to 28' });
+          return;
+        }
+        payrollDeadlineDayOfMonth = dayOfMonth;
+      } else {
+        const maxDays = kind === 'daysAfter'
+          ? PAYROLL_DEADLINE_DAYS_MAX_BIWEEKLY
+          : PAYROLL_DEADLINE_DAYS_MAX_WEEKLY;
+        const days = sanitizePayrollDeadlineDays(body.daysAfterWeekEnd, maxDays);
+        if (days == null) {
+          res.status(400).json({
+            success: false,
+            error: `daysAfterWeekEnd must be an integer from 0 to ${maxDays}`,
+          });
+          return;
+        }
+        payrollDeadlineDaysAfterWeekEnd = days;
+      }
     }
 
     const updated = await prisma.client.update({
       where: { clientId },
-      data: { payrollDeadlineDaysAfterWeekEnd, payrollDeadlineLocalTime },
+      data: {
+        payrollDeadlineDaysAfterWeekEnd,
+        payrollDeadlineDayOfMonth,
+        payrollDeadlineLocalTime,
+      },
       select: {
         clientId: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
         timezone: true,
       },
@@ -207,6 +243,54 @@ router.patch('/:clientId/deadline', requirePayrollJobsEnabled, requirePermission
     res.json({ success: true, data: updated });
   } catch (error: any) {
     logger.error(`Payroll deadline update error for ${req.params.clientId}: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/:clientId/monitor', requirePayrollJobsEnabled, requirePermission('PAYROLL_SYNC', 'write'), async (req: Request, res: Response) => {
+  try {
+    const clientId = req.params.clientId;
+    const existing = await prisma.client.findUnique({
+      where: { clientId },
+      select: { clientId: true, name: true, payrollEnabled: true },
+    });
+    if (!existing) {
+      res.status(404).json({ success: false, error: `Client not found: ${clientId}` });
+      return;
+    }
+
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ success: false, error: 'enabled must be a boolean' });
+      return;
+    }
+
+    const updated = await prisma.client.update({
+      where: { clientId },
+      data: { payrollMonitorEnabled: enabled },
+      select: {
+        clientId: true,
+        payrollMonitorEnabled: true,
+      },
+    });
+
+    if (!enabled) {
+      // Drop any open deadline alert so Escalated/Reports stop flagging a disabled client.
+      await payrollDeadlineAlertService.sync({
+        clientId,
+        clientName: existing.name,
+        weekEndDate: '',
+        deadlineAt: null,
+        pendingUnits: 0,
+        totalUnits: 0,
+        lateMinutes: null,
+        late: false,
+      });
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    logger.error(`Payroll monitor toggle error for ${req.params.clientId}: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -225,6 +309,7 @@ router.get('/monitor/clients', requirePayrollMonitorEnabled, requirePermission('
   try {
     const clients = await payrollService.listMonitorClients();
     const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    logger.info(`Payroll monitor: clients list → ${clients.length} client(s)`);
     res.json({
       success: true,
       data: {
@@ -236,6 +321,7 @@ router.get('/monitor/clients', requirePayrollMonitorEnabled, requirePermission('
           payrollFileGen: c.payrollFileGen,
           frequencies: parseFrequencies(c.payrollCycle),
           payrollDeadlineDaysAfterWeekEnd: c.payrollDeadlineDaysAfterWeekEnd,
+          payrollDeadlineDayOfMonth: c.payrollDeadlineDayOfMonth,
           payrollDeadlineLocalTime: c.payrollDeadlineLocalTime,
         })),
       },
@@ -275,7 +361,23 @@ router.get('/:clientId', requirePayrollJobsEnabled, requirePermission('PAYROLL_V
   try {
     const weekEnd = typeof req.query.weekEnd === 'string' ? req.query.weekEnd : undefined;
     const frequency = typeof req.query.frequency === 'string' ? req.query.frequency : undefined;
-    const result = await payrollService.getPayrollStatus(req.params.clientId, weekEnd, frequency);
+    const includeRecordsRaw = typeof req.query.includeRecords === 'string'
+      ? req.query.includeRecords.toLowerCase()
+      : '';
+    const wantsRecords = includeRecordsRaw === '1' || includeRecordsRaw === 'true';
+    if (wantsRecords && !hasPermission((req as any).user, 'PAYROLL_DETAILS_VIEW', 'read')) {
+      res.status(403).json({
+        success: false,
+        error: 'Access denied. Required permission: PAYROLL_DETAILS_VIEW (read)',
+      });
+      return;
+    }
+    const result = await payrollService.getPayrollStatus(
+      req.params.clientId,
+      weekEnd,
+      frequency,
+      wantsRecords,
+    );
     res.json({ success: true, data: result });
   } catch (error: any) {
     logger.error(`Payroll query error for ${req.params.clientId}: ${error.message}`);

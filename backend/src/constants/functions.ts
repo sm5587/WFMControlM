@@ -52,6 +52,10 @@ export const APP_FUNCTIONS: Record<string, FunctionDef> = {
   PAYROLL_VIEW:         { id: 'PAYROLL_VIEW',         module: 'Payroll Jobs',    name: 'Payroll Jobs',              sortOrder: 70 },
   PAYROLL_MONITOR_VIEW: { id: 'PAYROLL_MONITOR_VIEW', module: 'Payroll Monitor', name: 'Payroll Monitor',           sortOrder: 71 },
   PAYROLL_SYNC:         { id: 'PAYROLL_SYNC',         module: 'Payroll Jobs',    name: 'Payroll Jobs — Sync Clients', description: 'Sync payroll product features from DB2', sortOrder: 72 },
+  PAYROLL_DETAILS_VIEW: { id: 'PAYROLL_DETAILS_VIEW', module: 'Payroll Jobs',    name: 'Payroll Jobs — Unit Details', description: 'View per-unit pay file release status on Payroll Jobs', sortOrder: 73 },
+
+  // ── Heat Map (menu: Heat Map) ───────────────────────────
+  HEATMAP_VIEW: { id: 'HEATMAP_VIEW', module: 'Heat Map', name: 'Heat Map', description: 'Weekly ITERATION_TYPE 6 vs 7 store count comparison', sortOrder: 74 },
 
   // ── Unprocessed Punch (menu: Unprocessed Punch) ─────────
   UNPROC_PUNCH_VIEW:         { id: 'UNPROC_PUNCH_VIEW',         module: 'Unprocessed Punch', name: 'Unprocessed Punch',                      sortOrder: 75 },
@@ -72,10 +76,8 @@ export const APP_FUNCTIONS: Record<string, FunctionDef> = {
   FILE_MONITOR_VIEW:  { id: 'FILE_MONITOR_VIEW',  module: 'Upload Monitor', name: 'Upload Monitor',            sortOrder: 58 },
 
   // ── Admin (menu: Users, Profiles, Purge, Config) ────────
-  USERS_VIEW:         { id: 'USERS_VIEW',         module: 'Admin',     name: 'Users',                           sortOrder: 80 },
-  USERS_MANAGE:       { id: 'USERS_MANAGE',       module: 'Admin',     name: 'Users — Manage',                sortOrder: 81 },
-  PROFILES_VIEW:      { id: 'PROFILES_VIEW',      module: 'Admin',     name: 'Profiles',                        sortOrder: 82 },
-  PROFILES_MANAGE:    { id: 'PROFILES_MANAGE',    module: 'Admin',     name: 'Profiles — Manage',               sortOrder: 83 },
+  USERS_VIEW:         { id: 'USERS_VIEW',         module: 'Admin',     name: 'Users',                           description: 'Read: view users & access requests. Write: edit users, approve/reject requests, revoke sessions.', sortOrder: 80 },
+  PROFILES_VIEW:      { id: 'PROFILES_VIEW',      module: 'Admin',     name: 'Profiles',                        description: 'Read: view profiles. Write: create/edit/delete profiles (permission matrix still needs Config write).', sortOrder: 82 },
   PERMISSIONS_EDIT:   { id: 'PERMISSIONS_EDIT',   module: 'Admin',     name: 'Config',                          sortOrder: 84 },
   USER_PROFILE_ASSIGN:{ id: 'USER_PROFILE_ASSIGN',module: 'Admin',     name: 'Users — Assign Profiles',         sortOrder: 85 },
   DATA_PURGE_VIEW:    { id: 'DATA_PURGE_VIEW',    module: 'Admin',     name: 'Purge',                           sortOrder: 86 },

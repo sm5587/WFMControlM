@@ -40,7 +40,7 @@ router.get('/users', requirePermission('USERS_VIEW', 'read'), async (_req: Reque
 });
 
 // PATCH /api/admin/users/:id — edit displayName, email, isActive
-router.patch('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.patch('/users/:id', requirePermission('USERS_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const { displayName, email, isActive, password, timezone } = req.body;
     const data: any = {};
@@ -64,7 +64,7 @@ router.patch('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (re
 });
 
 // DELETE /api/admin/users/:id — deactivate (soft delete)
-router.delete('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.delete('/users/:id', requirePermission('USERS_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     await tokenRevocationService.revokeAllUserTokens(req.params.id, 'deactivated');
     await prisma.user.update({ where: { id: req.params.id }, data: { isActive: false } });
@@ -75,7 +75,7 @@ router.delete('/users/:id', requirePermission('USERS_MANAGE', 'write'), async (r
 });
 
 // POST /api/admin/users/:id/revoke-sessions — invalidate all JWTs for a user
-router.post('/users/:id/revoke-sessions', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.post('/users/:id/revoke-sessions', requirePermission('USERS_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const actor = (req as any).user?.username || 'unknown';
     const tv = await tokenRevocationService.revokeAllUserTokens(req.params.id, `admin_revoke_by_${actor}`);
@@ -124,14 +124,15 @@ router.get('/access-requests', requirePermission('USERS_VIEW', 'read'), async (r
 });
 
 // POST /api/admin/access-requests/:id/approve
-router.post('/access-requests/:id/approve', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.post('/access-requests/:id/approve', requirePermission('USERS_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
-    const { profileId, displayName, username } = req.body || {};
+    const { profileId, displayName } = req.body || {};
     if (!profileId) {
       return res.status(400).json({ success: false, error: 'profileId is required' });
     }
     const reviewer = (req as any).user?.username || 'unknown';
-    const result = await approveAccessRequest(req.params.id, profileId, reviewer, { displayName, username });
+    // Username is derived server-side from LDAP/email — do not accept client override.
+    const result = await approveAccessRequest(req.params.id, profileId, reviewer, { displayName });
     res.json({ success: true, data: result, message: 'Access request approved and user created' });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -139,7 +140,7 @@ router.post('/access-requests/:id/approve', requirePermission('USERS_MANAGE', 'w
 });
 
 // POST /api/admin/access-requests/:id/reject
-router.post('/access-requests/:id/reject', requirePermission('USERS_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.post('/access-requests/:id/reject', requirePermission('USERS_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const reviewer = (req as any).user?.username || 'unknown';
     const { note } = req.body || {};
@@ -216,7 +217,7 @@ router.get('/profiles', requirePermission('PROFILES_VIEW', 'read'), async (_req:
 });
 
 // POST /api/admin/profiles — create profile
-router.post('/profiles', requirePermission('PROFILES_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.post('/profiles', requirePermission('PROFILES_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const { name, description } = req.body;
     if (!name) return res.status(400).json({ success: false, error: 'name is required' });
@@ -228,7 +229,7 @@ router.post('/profiles', requirePermission('PROFILES_MANAGE', 'write'), async (r
 });
 
 // PATCH /api/admin/profiles/:id
-router.patch('/profiles/:id', requirePermission('PROFILES_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.patch('/profiles/:id', requirePermission('PROFILES_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const { name, description } = req.body;
     const profile = await prisma.profile.update({
@@ -242,7 +243,7 @@ router.patch('/profiles/:id', requirePermission('PROFILES_MANAGE', 'write'), asy
 });
 
 // DELETE /api/admin/profiles/:id (non-system only)
-router.delete('/profiles/:id', requirePermission('PROFILES_MANAGE', 'write'), async (req: Request, res: Response) => {
+router.delete('/profiles/:id', requirePermission('PROFILES_VIEW', 'write'), async (req: Request, res: Response) => {
   try {
     const profile = await prisma.profile.findUnique({ where: { id: req.params.id } });
     if (!profile) return res.status(404).json({ success: false, error: 'Profile not found' });

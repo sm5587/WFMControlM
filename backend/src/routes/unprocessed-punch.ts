@@ -11,6 +11,7 @@ import {
   unprocessedPunchService,
   type PunchAllCache,
 } from '../services/unprocessed-punch-service';
+import { escalationService } from '../services/escalation-service';
 import { prisma } from '../database/prisma';
 import { logger } from '../utils/logger';
 import { configService } from '../services/config-service';
@@ -196,6 +197,8 @@ async function fetchAllPunchData(): Promise<PunchAllCache> {
 
   const entry: PunchAllCache = { data: results, fetchedAt: new Date().toISOString(), updatedAtMs: Date.now() };
   setPunchAllCache(entry);
+  // Auto-email escalated (stale) punch alerts when SMTP + flag are enabled
+  escalationService.scheduleAutoEscalationNotify(2000);
   return entry;
 }
 

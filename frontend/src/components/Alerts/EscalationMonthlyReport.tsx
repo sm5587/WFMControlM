@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  AlertTriangle, BarChart3, ChevronLeft, ChevronRight, Download, FileDown, Timer,
+  AlertTriangle, BarChart3, ChevronLeft, ChevronRight, Download, FileDown, Timer, CalendarClock,
 } from 'lucide-react';
 import { escalationsApi } from '../../services/api';
 import { useTimezone } from '../../hooks/useTimezone';
@@ -43,9 +43,11 @@ function csvEscape(v: string | number | boolean | null | undefined): string {
 function exportReportCsv(report: any, fmt: DateFmt) {
   const header = [
     'Alert Type', 'Client', 'Cluster', 'Server Code', 'Severity', 'Status',
-    'Stale Pending', 'Total Pending', 'Punch Count', 'Stale Age', 'First Seen', 'Resolved', 'Duration',
+    'Stale Pending', 'Total Pending', 'Punch Count', 'Stale Age',
+    'Week End', 'Deadline', 'Pending Units', 'Total Units', 'Late Minutes',
+    'First Seen', 'Resolved', 'Duration',
     'Acknowledged By', 'Acknowledged At', 'Suppressed By', 'Suppress Until',
-    'Email Sent At', 'Activities',
+    'Email Sent At', 'Activities', 'Resolved By', 'Resolve Reason',
   ];
   const lines: string[] = [];
 
@@ -61,6 +63,11 @@ function exportReportCsv(report: any, fmt: DateFmt) {
       r.totalPending,
       '',
       '',
+      '',
+      '',
+      '',
+      '',
+      '',
       fmt(r.firstSeenAt, 'full'),
       r.resolvedAt ? fmt(r.resolvedAt, 'full') : '',
       formatDurationMins(r.durationMins) || '',
@@ -69,6 +76,8 @@ function exportReportCsv(report: any, fmt: DateFmt) {
       r.suppressedBy ?? '',
       r.suppressUntil ? fmt(r.suppressUntil, 'full') : '',
       r.emailSentAt ? fmt(r.emailSentAt, 'full') : '',
+      '',
+      '',
       '',
     ].map(csvEscape).join(','));
   }
@@ -88,12 +97,50 @@ function exportReportCsv(report: any, fmt: DateFmt) {
       '',
       '',
       '',
+      '',
+      '',
+      '',
+      '',
+      '',
       r.acknowledgedBy ?? '',
       r.acknowledgedAt ? fmt(r.acknowledgedAt, 'full') : '',
       r.suppressedBy ?? '',
       r.suppressUntil ? fmt(r.suppressUntil, 'full') : '',
       r.emailSentAt ? fmt(r.emailSentAt, 'full') : '',
       r.activities.join('; '),
+      '',
+      '',
+    ].map(csvEscape).join(','));
+  }
+
+  for (const r of report.payrollDeadlineAlerts?.rows || []) {
+    lines.push([
+      'Payroll Deadline',
+      r.clientName,
+      r.cluster,
+      r.clientId,
+      '',
+      r.status,
+      '',
+      '',
+      '',
+      '',
+      r.weekEndDate ?? '',
+      r.deadlineAt ? fmt(r.deadlineAt, 'full') : '',
+      r.pendingUnits ?? '',
+      r.totalUnits ?? '',
+      r.lateMinutes ?? '',
+      fmt(r.firstSeenAt, 'full'),
+      r.resolvedAt ? fmt(r.resolvedAt, 'full') : '',
+      formatDurationMins(r.durationMins) || '',
+      r.acknowledgedBy ?? '',
+      r.acknowledgedAt ? fmt(r.acknowledgedAt, 'full') : '',
+      r.suppressedBy ?? '',
+      r.suppressUntil ? fmt(r.suppressUntil, 'full') : '',
+      r.emailSentAt ? fmt(r.emailSentAt, 'full') : '',
+      (r.activities || []).join('; '),
+      r.resolvedBy ?? '',
+      r.resolveReason ?? '',
     ].map(csvEscape).join(','));
   }
 
@@ -169,6 +216,7 @@ export default function EscalationMonthlyReport() {
 
   const qs = report?.queueBuildup?.summary;
   const ps = report?.punchAlerts?.summary;
+  const pds = report?.payrollDeadlineAlerts?.summary;
 
   return (
     <div className="space-y-6">
@@ -443,6 +491,104 @@ export default function EscalationMonthlyReport() {
               )}
             </div>
           </section>
+
+          {/* Payroll deadline alerts */}
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <CalendarClock className="w-4 h-4 text-violet-500" />
+              Payroll Deadline Alerts
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+              <SummaryCard label="Total" value={pds?.total ?? 0} />
+              <SummaryCard label="Still Open" value={pds?.open ?? 0} accent="text-amber-600" />
+              <SummaryCard label="Clients Affected" value={pds?.clientsAffected ?? 0} />
+              <SummaryCard label="Resolved" value={pds?.resolved ?? 0} accent="text-green-600" />
+              <SummaryCard label="Acknowledged" value={pds?.acknowledged ?? 0} />
+              <SummaryCard label="Notified" value={pds?.notified ?? 0} accent="text-indigo-600" />
+              <SummaryCard label="Avg Duration" value={formatDurationMins(pds?.avgDurationMins) || '—'} />
+            </div>
+
+            {pds?.byCluster && Object.keys(pds.byCluster).length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(pds.byCluster as Record<string, number>)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([cluster, count]) => (
+                    <span key={cluster} className="text-xs bg-violet-50 text-violet-700 px-2 py-1 rounded-full">
+                      {cluster}: {count}
+                    </span>
+                  ))}
+              </div>
+            )}
+
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+              {(report.payrollDeadlineAlerts?.rows || []).length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">No payroll deadline alerts in this period</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 border-b text-xs uppercase text-gray-500">
+                        <th className="px-4 py-3 text-left">Client</th>
+                        <th className="px-4 py-3 text-left">Cluster</th>
+                        <th className="px-4 py-3 text-left">Week End</th>
+                        <th className="px-4 py-3 text-right">Pending</th>
+                        <th className="px-4 py-3 text-right">Late</th>
+                        <th className="px-4 py-3 text-left">Status</th>
+                        <th className="px-4 py-3 text-left">Activity</th>
+                        <th className="px-4 py-3 text-left">First Seen</th>
+                        <th className="px-4 py-3 text-left">Resolved</th>
+                        <th className="px-4 py-3 text-left">Resolve Reason</th>
+                        <th className="px-4 py-3 text-right">Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {(report.payrollDeadlineAlerts?.rows || []).map((r: any) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-2.5">
+                            <div className="font-medium text-gray-900">{r.clientName}</div>
+                            <div className="text-xs text-gray-400 font-mono">{r.clientId}</div>
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-600">{r.cluster || '—'}</td>
+                          <td className="px-4 py-2.5 text-gray-600 font-mono text-xs">{r.weekEndDate || '—'}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-violet-700">
+                            {r.pendingUnits != null ? `${r.pendingUnits}/${r.totalUnits ?? '?'}` : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-600">
+                            {formatDurationMins(r.lateMinutes) || '—'}
+                          </td>
+                          <td className="px-4 py-2.5"><StatusBadge status={r.resolvedAt ? 'RESOLVED' : r.status} /></td>
+                          <td className="px-4 py-2.5">
+                            <div className="flex flex-wrap gap-1">
+                              {(r.activities || []).map((a: string) => (
+                                <span key={a} className="text-xs bg-violet-50 text-violet-700 px-1.5 py-0.5 rounded">
+                                  {a}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{fmt(r.firstSeenAt, 'full')}</td>
+                          <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">
+                            {r.resolvedAt ? (
+                              <div>
+                                <div>{fmt(r.resolvedAt, 'full')}</div>
+                                {r.resolvedBy && <div className="text-xs text-gray-400">{r.resolvedBy}</div>}
+                              </div>
+                            ) : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-600 max-w-[14rem]">
+                            {r.resolveReason ? (
+                              <span className="text-xs" title={r.resolveReason}>{r.resolveReason}</span>
+                            ) : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-600">{formatDurationMins(r.durationMins) || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
         </>
       )}
     </div>
@@ -470,6 +616,7 @@ function StatusBadge({ status }: { status: string }) {
     status === 'OPEN' ? 'bg-red-50 text-red-700'
     : status === 'ACKNOWLEDGED' ? 'bg-blue-50 text-blue-700'
     : status === 'SUPPRESSED' ? 'bg-gray-100 text-gray-600'
+    : status === 'RESOLVED' ? 'bg-green-50 text-green-700'
     : 'bg-gray-50 text-gray-600';
   return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cls}`}>{status}</span>;
 }

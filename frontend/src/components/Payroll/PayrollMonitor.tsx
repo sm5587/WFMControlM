@@ -2,18 +2,21 @@ import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Radio, Loader2, RefreshCw, Building2, CheckCircle, Clock,
-  Play, AlertCircle, AlertTriangle, Search,
+  Play, AlertCircle, AlertTriangle,
 } from 'lucide-react';
 import { payrollApi } from '../../services/api';
 import { useTimezone } from '../../hooks/useTimezone';
 import {
   useProgressivePayrollMonitor,
   type PayMonitorGenerator,
+  type PayrollFileStatusCounts,
   type PayrollMonitorPhase,
   type PayrollMonitorRow,
+  type PayrollUnitCounts,
 } from '../../hooks/useProgressivePayrollMonitor';
 import { formatYyyymmdd } from '../../constants/payroll';
 import { SortableHeader, useSortState } from '../ui/SortableHeader';
+import { ClearableSearchInput } from '../ui/ClearableFilter';
 
 type Phase = PayrollMonitorPhase;
 
@@ -26,11 +29,17 @@ interface MonitorDetail {
   distListId: string;
   distListName: string | null;
   generator: PayMonitorGenerator;
-  units: { total: number; generated: number; pending: number };
+  units: PayrollUnitCounts;
+  priorWeek?: {
+    weekEndDate: string;
+    total: number;
+    generated: number;
+  } | null;
   phase: Phase;
   stalled: boolean;
   stalledMinutes: number | null;
   deadlineAt: string | null;
+  deadlineResolved?: boolean;
   late: boolean;
   lateMinutes: number | null;
   records: Array<{
@@ -43,10 +52,46 @@ interface MonitorDetail {
 
 const PHASE_LABEL: Record<Phase, { label: string; className: string }> = {
   live: { label: 'Live', className: 'bg-green-100 text-green-800' },
+  late: { label: 'Late', className: 'bg-amber-100 text-amber-900' },
   upcoming: { label: 'Upcoming', className: 'bg-amber-100 text-amber-800' },
   complete: { label: 'Complete', className: 'bg-gray-100 text-gray-700' },
   unknown: { label: 'Unknown', className: 'bg-gray-100 text-gray-500' },
 };
+
+/** FILE_STATUS pipeline: Q pay released → D data generated → F file generated (complete). */
+const STATUS_SEGMENTS: Array<{
+  key: keyof PayrollFileStatusCounts;
+  label: string;
+  meaning: string;
+  barClass: string;
+  textClass: string;
+}> = [
+  { key: 'F', label: 'F', meaning: 'File generated', barClass: 'bg-emerald-500', textClass: 'text-emerald-700' },
+  { key: 'D', label: 'D', meaning: 'Data generated', barClass: 'bg-violet-500', textClass: 'text-violet-700' },
+  { key: 'Q', label: 'Q', meaning: 'Pay released', barClass: 'bg-sky-500', textClass: 'text-sky-700' },
+  { key: 'blank', label: '—', meaning: 'Not started', barClass: 'bg-slate-300', textClass: 'text-slate-500' },
+];
+
+function emptyByStatus(): PayrollFileStatusCounts {
+  return { F: 0, D: 0, Q: 0, blank: 0 };
+}
+
+function byStatusFromUnits(units: PayrollUnitCounts | undefined): PayrollFileStatusCounts {
+  return units?.byStatus ? { ...units.byStatus } : emptyByStatus();
+}
+
+function byStatusFromRecords(
+  records: Array<{ fileStatus: string }> | undefined,
+): PayrollFileStatusCounts {
+  const counts = emptyByStatus();
+  if (!records) return counts;
+  for (const r of records) {
+    const s = (r.fileStatus || '').trim().toUpperCase();
+    if (s === 'F' || s === 'D' || s === 'Q') counts[s] += 1;
+    else counts.blank += 1;
+  }
+  return counts;
+}
 
 function storeGroupLabel(distListId: string, distListName?: string | null): string {
   if (distListId === 'ALL') return 'All units';
@@ -63,6 +108,64 @@ function storeGroupTitle(distListId: string, distListName?: string | null): stri
 function progressPct(units: { total: number; generated: number }): number {
   if (!units.total) return 0;
   return Math.round((units.generated / units.total) * 100);
+}
+
+function UnitsStatusView({
+  units,
+  byStatus,
+  priorWeek,
+}: {
+  units: { total: number; generated: number };
+  byStatus: PayrollFileStatusCounts;
+  priorWeek?: { weekEndDate: string; generated: number } | null;
+}) {
+  const pct = progressPct(units);
+  const segmentSum = byStatus.F + byStatus.D + byStatus.Q + byStatus.blank;
+  const denom = Math.max(units.total, segmentSum, 1);
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center justify-between text-xs text-gray-600 mb-1 gap-2">
+        <span className="truncate">{units.generated}/{units.total}</span>
+        <span className="shrink-0">{pct}%</span>
+      </div>
+      <div
+        className="h-1.5 bg-gray-100 rounded-full overflow-hidden flex"
+        role="img"
+        aria-label={`File generated ${byStatus.F}, data generated ${byStatus.D}, pay released ${byStatus.Q}, not started ${byStatus.blank}`}
+      >
+        {STATUS_SEGMENTS.map(seg => {
+          const count = byStatus[seg.key];
+          if (count <= 0) return null;
+          return (
+            <div
+              key={seg.key}
+              className={`h-full ${seg.barClass}`}
+              style={{ width: `${(count / denom) * 100}%` }}
+              title={`${seg.meaning}: ${count}`}
+            />
+          );
+        })}
+      </div>
+      <div className="text-[11px] mt-0.5 truncate">
+        {STATUS_SEGMENTS.map((seg, i) => (
+          <span key={seg.key}>
+            {i > 0 ? <span className="text-gray-300"> · </span> : null}
+            <span className={seg.textClass} title={seg.meaning}>
+              {seg.label} {byStatus[seg.key]}
+            </span>
+          </span>
+        ))}
+      </div>
+      {priorWeek && priorWeek.generated > 0 && (
+        <div
+          className="text-[11px] text-gray-400 mt-0.5 truncate"
+          title={`Expected = prior week ${formatYyyymmdd(priorWeek.weekEndDate)} FILE_STATUS=F count (${priorWeek.generated})`}
+        >
+          vs prior F {priorWeek.generated}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function scheduleLabel(gen: PayMonitorGenerator): string {
@@ -113,14 +216,22 @@ function compareReleaseOrder(a: PayrollMonitorRow, b: PayrollMonitorRow): number
 }
 
 const PHASE_SORT_RANK: Record<Phase, number> = {
-  live: 0,
-  upcoming: 1,
-  complete: 2,
-  unknown: 3,
+  late: 0,
+  live: 1,
+  upcoming: 2,
+  complete: 3,
+  unknown: 4,
 };
 
 function lastJobSortMs(gen: PayMonitorGenerator): number {
   return parseReleaseSortMs(gen.lastJobTime) ?? Number.MAX_SAFE_INTEGER;
+}
+
+/** Earliest deadline first; missing deadline sorts last. */
+function deadlineSortMs(row: PayrollMonitorRow): number {
+  if (!row.deadlineAt) return Number.MAX_SAFE_INTEGER;
+  const t = Date.parse(row.deadlineAt);
+  return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
 }
 
 function compareMonitorRows(
@@ -195,13 +306,13 @@ export default function PayrollMonitor() {
   } = useProgressivePayrollMonitor();
 
   const selected = rows.find(r => r.rowKey === selectedKey) || null;
-  const activeSelected = selected?.phase === 'live' || selected?.stalled || selected?.late;
+  const activeSelected = selected?.phase === 'live' || selected?.phase === 'late'
+    || selected?.stalled || selected?.late;
   const canLoadDetail = !!selected?.clientId && !!selected?.distListId && !selected.loading;
 
   const {
     data: detailRes,
     isFetching: detailFetching,
-    isLoading: detailLoading,
   } = useQuery({
     queryKey: ['payroll-monitor-detail', selected?.clientId, selected?.distListId],
     queryFn: () => payrollApi.getMonitorDetail(selected!.clientId, selected!.distListId),
@@ -232,9 +343,11 @@ export default function PayrollMonitor() {
     }
     return [...list].sort((a, b) => {
       if (a.loading !== b.loading) return a.loading ? -1 : 1;
-      if (phaseFilter === 'live' && sortColumn === 'status' && sortDirection === 'asc') {
+      if ((phaseFilter === 'live' || phaseFilter === 'late') && sortColumn === 'status' && sortDirection === 'asc') {
         return (Number(b.stalled) - Number(a.stalled))
           || (Number(b.late) - Number(a.late))
+          || deadlineSortMs(a) - deadlineSortMs(b)
+          || ((a.lateMinutes ?? 0) - (b.lateMinutes ?? 0))
           || compareReleaseOrder(a, b)
           || a.clientId.localeCompare(b.clientId);
       }
@@ -318,7 +431,7 @@ export default function PayrollMonitor() {
           <p className="text-xs text-gray-500 uppercase tracking-wide">Live now</p>
           <p className="text-2xl font-bold text-green-700 mt-1">{rows.length ? liveCount : '—'}</p>
           <p className="text-xs text-gray-400 mt-1">
-            Release started — units still generating
+            Within ±12h of SLA deadline — units still pending
             {stalledCount > 0 && (
               <span className="text-red-600 font-medium"> · {stalledCount} stalled</span>
             )}
@@ -330,7 +443,7 @@ export default function PayrollMonitor() {
         <div className="bg-white rounded-xl border shadow-sm p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Upcoming</p>
           <p className="text-2xl font-bold text-amber-700 mt-1">{rows.length ? upcomingCount : '—'}</p>
-          <p className="text-xs text-gray-400 mt-1">Before EXEC_CRON release or pending after week end</p>
+          <p className="text-xs text-gray-400 mt-1">Pending outside the SLA Live window</p>
         </div>
         <div className="bg-white rounded-xl border shadow-sm p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Complete</p>
@@ -342,17 +455,14 @@ export default function PayrollMonitor() {
       <div className="flex gap-6 flex-1 min-h-0 mt-6">
         <div className="flex-1 min-w-0 flex flex-col">
           <div className="bg-white rounded-xl shadow-sm border p-3 flex items-center gap-3 flex-shrink-0 flex-wrap">
-            <div className="relative flex-1 min-w-[12rem]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search client, store group, job..."
-                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-zebra-500"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
-            </div>
-            {(['all', 'live', 'upcoming', 'complete'] as const).map(f => (
+            <ClearableSearchInput
+              className="flex-1 min-w-[12rem]"
+              value={search}
+              onChange={setSearch}
+              placeholder="Search client, store group, job..."
+              inputClassName="w-full py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-zebra-500"
+            />
+            {(['all', 'late', 'live', 'upcoming', 'complete'] as const).map(f => (
               <button
                 key={f}
                 onClick={() => setPhaseFilter(f)}
@@ -388,6 +498,14 @@ export default function PayrollMonitor() {
               ) : (
                 <div className="overflow-auto flex-1 min-h-0">
                   <table className="w-full text-sm resizable-cols" style={{ tableLayout: 'fixed' }}>
+                    <colgroup>
+                      <col style={{ width: '18%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '16%' }} />
+                      <col style={{ width: '12%' }} />
+                      <col style={{ width: '8%' }} />
+                      <col style={{ width: '32%' }} />
+                    </colgroup>
                     <thead className="bg-gray-50 border-b sticky top-0 z-10">
                       <tr>
                         <SortableHeader column="client" label="Client / group" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} className="px-4 py-2" />
@@ -400,7 +518,6 @@ export default function PayrollMonitor() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {filtered.map(r => {
-                        const pct = progressPct(r.units);
                         const active = selectedKey === r.rowKey;
                         const meta = PHASE_LABEL[r.phase];
                         const gen = r.generator;
@@ -440,9 +557,12 @@ export default function PayrollMonitor() {
                                   <div className="flex flex-wrap items-center gap-1">
                                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${meta.className}`}>
                                       {r.phase === 'live' && <Play className="w-3 h-3" />}
+                                      {r.phase === 'late' && <Clock className="w-3 h-3" />}
                                       {r.phase === 'upcoming' && <Clock className="w-3 h-3" />}
                                       {r.phase === 'complete' && <CheckCircle className="w-3 h-3" />}
-                                      {meta.label}
+                                      {r.phase === 'late' && r.lateMinutes != null
+                                        ? `Late ${r.lateMinutes}m`
+                                        : meta.label}
                                     </span>
                                     {r.stalled && (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
@@ -450,10 +570,12 @@ export default function PayrollMonitor() {
                                         Stalled{r.stalledMinutes != null ? ` ${r.stalledMinutes}m` : ''}
                                       </span>
                                     )}
-                                    {r.late && (
-                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-900">
-                                        <Clock className="w-3 h-3" />
-                                        Late{r.lateMinutes != null ? ` ${r.lateMinutes}m` : ''}
+                                    {r.deadlineResolved && (r.units?.pending || 0) > 0 && (
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600"
+                                        title="Deadline alert resolved for this pay week — not shown as Late"
+                                      >
+                                        Resolved
                                       </span>
                                     )}
                                   </div>
@@ -494,18 +616,11 @@ export default function PayrollMonitor() {
                                   <div className="h-full w-1/3 bg-gray-300 animate-pulse" />
                                 </div>
                               ) : (
-                                <>
-                                  <div className="flex items-center justify-between text-xs text-gray-600 mb-1 gap-2">
-                                    <span className="truncate">{r.units.generated}/{r.units.total}</span>
-                                    <span className="shrink-0">{pct}%</span>
-                                  </div>
-                                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                    <div
-                                      className={`h-full ${r.phase === 'live' ? 'bg-green-500' : r.phase === 'upcoming' ? 'bg-amber-500' : 'bg-gray-400'}`}
-                                      style={{ width: `${pct}%` }}
-                                    />
-                                  </div>
-                                </>
+                                <UnitsStatusView
+                                  units={r.units}
+                                  byStatus={byStatusFromUnits(r.units)}
+                                  priorWeek={r.priorWeek}
+                                />
                               )}
                             </td>
                           </tr>
@@ -588,6 +703,9 @@ export default function PayrollMonitor() {
                       detail?.timezone || selected.timezone || 'America/Chicago',
                     )}
                     {(detail?.late ?? selected.late) && ' (late)'}
+                    {(detail?.deadlineResolved ?? selected.deadlineResolved)
+                      && (detail?.units.pending ?? selected.units.pending) > 0
+                      && ' (resolved)'}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -605,49 +723,22 @@ export default function PayrollMonitor() {
                     {(detail?.generator.jobsPending ?? selected.generator.jobsPending) ?? '—'}
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Units</span>
-                  <span>
-                    {(detail?.units.generated ?? selected.units.generated) ?? 0}
-                    {' / '}
-                    {(detail?.units.total ?? selected.units.total) ?? 0}
-                  </span>
+                <div className="space-y-1">
+                  <span className="text-gray-500 text-xs">Units</span>
+                  <UnitsStatusView
+                    units={detail?.units ?? selected.units}
+                    byStatus={
+                      detail?.units?.byStatus
+                        ? byStatusFromUnits(detail.units)
+                        : detail?.records?.length
+                          ? byStatusFromRecords(detail.records)
+                          : byStatusFromUnits(selected.units)
+                    }
+                    priorWeek={detail?.priorWeek ?? selected.priorWeek}
+                  />
                 </div>
               </div>
-              <div className="overflow-auto flex-1 min-h-0">
-                {detailLoading && !detail ? (
-                  <div className="p-6 text-center text-gray-400 text-sm">Loading mapped units...</div>
-                ) : !detail ? (
-                  <div className="p-6 text-center text-gray-400 text-sm">Loading mapped units...</div>
-                ) : detail.records.length === 0 ? (
-                  <div className="p-6 text-center text-gray-400 text-sm">No mapped units in TA_UNIT_PAY_STATUS for this pay week.</div>
-                ) : (
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-50 sticky top-0">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium text-gray-500">Unit</th>
-                        <th className="px-3 py-2 text-left font-medium text-gray-500">File</th>
-                        <th className="px-3 py-2 text-left font-medium text-gray-500">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {detail.records.map(u => (
-                        <tr key={u.unitId}>
-                          <td className="px-3 py-1.5 font-mono text-gray-800">{u.unitId}</td>
-                          <td className="px-3 py-1.5 font-mono text-gray-600">{u.fileId || '—'}</td>
-                          <td className="px-3 py-1.5">
-                            {u.generated ? (
-                              <span className="text-green-700">Generated</span>
-                            ) : (
-                              <span className="text-amber-700">{u.fileStatus || 'Pending'}</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
+              <div className="flex-1 min-h-0" />
               {(detail?.stalled ?? selected.stalled) && (
                 <div className="px-3 py-2 border-t bg-red-50 text-[11px] text-red-800 flex items-start gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
@@ -658,9 +749,29 @@ export default function PayrollMonitor() {
                   </span>
                 </div>
               )}
+              {selected.phase === 'late' && !(detail?.stalled ?? selected.stalled) && (
+                <div className="px-3 py-2 border-t bg-amber-50 text-[11px] text-amber-900 flex items-start gap-1.5">
+                  <Clock className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Past payroll SLA deadline with units still pending — shown on Alerts → Escalated.
+                  </span>
+                </div>
+              )}
+              {(detail?.deadlineResolved ?? selected.deadlineResolved)
+                && (detail?.units.pending ?? selected.units.pending) > 0
+                && selected.phase !== 'late'
+                && !(detail?.stalled ?? selected.stalled) && (
+                <div className="px-3 py-2 border-t bg-gray-50 text-[11px] text-gray-600 flex items-start gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Deadline alert resolved for this pay week — pending units no longer flagged as Late
+                    on the dashboard or Monitor.
+                  </span>
+                </div>
+              )}
               {selected.phase === 'live' && !(detail?.stalled ?? selected.stalled) && (
                 <div className="px-3 py-2 border-t bg-green-50 text-[11px] text-green-800 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3" /> Refreshing every 10s while release is live
+                  <AlertCircle className="w-3 h-3" /> Refreshing every 10s while within ±12h of SLA deadline
                 </div>
               )}
             </div>

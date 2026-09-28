@@ -60,6 +60,34 @@ export async function triggerPunchRefresh(
   return punchInFlight;
 }
 
+/** True while a Layout-level punch /all refresh is running. */
+export function isPunchRefreshInFlight(): boolean {
+  return punchInFlight !== null;
+}
+
+/** Wait until punch refresh finishes (or resolve immediately if idle). */
+export function waitForPunchRefreshIdle(signal?: AbortSignal): Promise<void> {
+  if (!isPunchRefreshInFlight()) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearInterval(interval);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const check = () => {
+      if (!isPunchRefreshInFlight()) {
+        clearInterval(interval);
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }
+    };
+    const interval = setInterval(check, 250);
+    signal?.addEventListener('abort', onAbort);
+    check();
+  });
+}
+
 export function useBackgroundPolling() {
   const queryClient = useQueryClient();
   const { getInt, getBool } = useConfig();

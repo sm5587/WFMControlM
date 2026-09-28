@@ -10,8 +10,14 @@ import { createServiceLogger } from '../utils/logger';
 import { derivePunchActivities } from '../utils/escalation-report';
 import { filterStalePunchRows, staleAgeMins } from '../utils/punch-stale';
 import { unprocessedPunchService } from './unprocessed-punch-service';
+import { SYSTEM_ESCALATION_ACTOR } from '../constants/escalation';
 
 const logger = createServiceLogger('UnprocPunchAlertService');
+
+function getAutoAckDurationMins(): number {
+  const mins = configService.getInt('threshold.defaultSuppressMins', 60);
+  return mins > 0 ? mins : 60;
+}
 
 class UnprocPunchAlertService {
   /**
@@ -35,6 +41,36 @@ class UnprocPunchAlertService {
         continue; // OPEN is default, no need to include
       }
 
+      // System auto-ack expires after Default Suppress window → reopen for re-notification
+      if (
+        a.status === 'ACKNOWLEDGED'
+        && a.acknowledgedBy === SYSTEM_ESCALATION_ACTOR
+        && a.acknowledgedAt
+      ) {
+        const ackExpiresAt = a.acknowledgedAt.getTime() + getAutoAckDurationMins() * 60 * 1000;
+        if (now.getTime() >= ackExpiresAt) {
+          await prisma.unprocPunchAlert.update({
+            where: { id: a.id },
+            data: { status: 'OPEN', acknowledgedBy: null, acknowledgedAt: null },
+          });
+          logger.info(`Auto-ack expired for punch alert ${a.clientId}, reopened`);
+          if (a.emailSentAt) {
+            result[a.clientId] = {
+              id: a.id,
+              status: 'OPEN',
+              acknowledgedBy: null,
+              acknowledgedAt: null,
+              suppressedBy: null,
+              suppressedAt: null,
+              suppressUntil: null,
+              suppressReason: null,
+              emailSentAt: a.emailSentAt.toISOString(),
+            };
+          }
+          continue;
+        }
+      }
+
       if (a.status !== 'OPEN' || a.emailSentAt) {
         result[a.clientId] = {
           id: a.id,
@@ -51,6 +87,40 @@ class UnprocPunchAlertService {
     }
 
     return result;
+  }
+
+  /**
+   * Stale punch rows from server cache that are OPEN (or have no ack/suppress) and outside notify cooldown.
+   */
+  async getStaleOpenRowsForNotify(): Promise<Array<{
+    clientId: string;
+    name: string;
+    cluster: string;
+    punchCount: number;
+    lastUpdateTime: string | null;
+  }>> {
+    const cache = unprocessedPunchService.getPunchAllCache();
+    if (!cache?.data?.length) return [];
+
+    const punchCountMin = configService.getInt('threshold.punchCountMin', 100);
+    const staleHoursMins = configService.getInt('threshold.staleHoursMins', 60);
+    const stale = filterStalePunchRows(cache.data, punchCountMin, staleHoursMins);
+    if (!stale.length) return [];
+
+    const statuses = await this.getAlertStatuses();
+    return this.filterNotifyEligible(stale, statuses)
+      .filter(r => {
+        const st = statuses[r.clientId]?.status;
+        return !st || st === 'OPEN';
+      })
+      .filter((r): r is typeof r & { punchCount: number } => typeof r.punchCount === 'number')
+      .map(r => ({
+        clientId: r.clientId,
+        name: r.name || r.clientId,
+        cluster: r.cluster || '',
+        punchCount: r.punchCount,
+        lastUpdateTime: r.lastUpdateTime ?? null,
+      }));
   }
 
   /**

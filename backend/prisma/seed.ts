@@ -209,15 +209,24 @@ async function main() {
   // 2. Create default system profiles
   const adminProfileId  = uuidv4();
   const monitorProfileId = uuidv4();
+  const advancedMonitorProfileId = uuidv4();
   const readonlyProfileId = uuidv4();
 
-  const adminProfile = await prisma.profile.create({
+  await prisma.profile.create({
     data: { id: adminProfileId, name: 'System Admin', description: 'Full access to all features', isSystem: true },
   });
-  const monitorProfile = await prisma.profile.create({
+  await prisma.profile.create({
     data: { id: monitorProfileId, name: 'Monitor', description: 'Read-only + send email notifications', isSystem: true },
   });
-  const readonlyProfile = await prisma.profile.create({
+  await prisma.profile.create({
+    data: {
+      id: advancedMonitorProfileId,
+      name: 'Advanced Monitor',
+      description: 'Operational write access beyond Monitor (alerts, sync, maintenance, payroll) — no users/profiles/config admin',
+      isSystem: true,
+    },
+  });
+  await prisma.profile.create({
     data: { id: readonlyProfileId, name: 'Read Only', description: 'View all data, no write access', isSystem: true },
   });
 
@@ -231,7 +240,7 @@ async function main() {
   // 4. Permissions for Monitor — read all + write only ALERTS_NOTIFY and JOBS_TRIGGER
   const monitorWriteFns = new Set(['ALERTS_NOTIFY', 'JOBS_TRIGGER']);
   const monitorReadFns = new Set(Object.keys(APP_FUNCTIONS).filter(k =>
-    !['USERS_MANAGE', 'PROFILES_MANAGE', 'PERMISSIONS_EDIT', 'USER_PROFILE_ASSIGN', 'JOBS_LOG_TAIL', 'JOBS_DELETE',
+    !['PERMISSIONS_EDIT', 'USER_PROFILE_ASSIGN', 'JOBS_LOG_TAIL', 'JOBS_DELETE',
       'UNPROC_PUNCH_REFRESH_ALL', 'UNPROC_PUNCH_REFRESH_HIGH', 'UNPROC_PUNCH_REFRESH_ROW'].includes(k)
   ));
   for (const fnId of monitorReadFns) {
@@ -240,7 +249,31 @@ async function main() {
     });
   }
 
-  // 5. Permissions for Read Only — read everything except ADMIN module, remote log tail, cron delete, punch refresh
+  // 5. Permissions for Advanced Monitor — Monitor + operational writes; no admin/config/users
+  const advancedDenyFns = new Set([
+    'PERMISSIONS_EDIT', 'USER_PROFILE_ASSIGN', 'JOBS_DELETE',
+  ]);
+  const advancedWriteFns = new Set([
+    'ALERTS_NOTIFY', 'JOBS_TRIGGER',
+    'ALERTS_ACK', 'ALERTS_SUPPRESS',
+    'CLIENTS_SYNC', 'CLIENTS_DETECT_TZ',
+    'JOBS_TOGGLE', 'JOBS_EDIT', 'JOBS_LOG_TAIL',
+    'MAINTENANCE_MANAGE', 'PAYROLL_SYNC',
+    'UNPROC_PUNCH_REFRESH_ALL', 'UNPROC_PUNCH_REFRESH_HIGH', 'UNPROC_PUNCH_REFRESH_ROW',
+  ]);
+  for (const fn of Object.values(APP_FUNCTIONS)) {
+    if (advancedDenyFns.has(fn.id)) continue;
+    await prisma.permission.create({
+      data: {
+        profileId: advancedMonitorProfileId,
+        functionId: fn.id,
+        canRead: true,
+        canWrite: advancedWriteFns.has(fn.id),
+      },
+    });
+  }
+
+  // 6. Permissions for Read Only — read everything except ADMIN module, remote log tail, cron delete, punch refresh
   for (const fn of Object.values(APP_FUNCTIONS)) {
     if (fn.module !== 'ADMIN'
       && fn.id !== 'JOBS_LOG_TAIL'
@@ -253,9 +286,9 @@ async function main() {
       });
     }
   }
-  console.log('  Created 3 system profiles with permissions');
+  console.log('  Created 4 system profiles with permissions');
 
-  // 6. Seed bootstrap admin user (credentials from .env, falls back to defaults)
+  // 7. Seed bootstrap admin user (credentials from .env, falls back to defaults)
   const adminUsername = process.env.ADMIN_USERNAME;
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminUsername || !adminPassword) {
@@ -301,7 +334,7 @@ async function main() {
     { key: 'secrets.sshTotpSecret',    value: '',                           category: 'SECRETS', label: 'SSH TOTP Secret',       description: 'TOTP secret for 2FA SSH auth', isSecret: true },
     { key: 'secrets.slackWebhookUrl',  value: '',                        category: 'SECRETS', label: 'Slack Webhook URL',     description: 'Slack incoming webhook URL for notifications', isSecret: true },
     { key: 'secrets.masterUsername',    value: 'WFMADMIN',                   category: 'SECRETS', label: 'Master Username',       description: 'Break-glass admin username', isSecret: false },
-    { key: 'secrets.masterPasswordHash', value: '$2b$10$yPnFQ7.oImZUCmBOLMnRIuW2o5IPI2vxoRFsdomOzvBNNlbAPnQOC', category: 'SECRETS', label: 'Master Password Hash',  description: 'Break-glass admin bcrypt hash (default password: WFMADMIN)', isSecret: true },
+    { key: 'secrets.masterPasswordHash', value: '$2b$10$w03tdD6qfCeFoEQ8LiknSO8zoGgLCB0Deb8U9KIKRy47REJr52FH6', category: 'SECRETS', label: 'Master Password Hash',  description: 'Break-glass admin bcrypt hash (default password: WFMADMIN)', isSecret: true },
     { key: 'secrets.keeperEnabled',    value: 'false',                      category: 'SECRETS', label: 'Keeper Enabled',        description: 'Enable Keeper Secrets Manager integration', isSecret: false },
     { key: 'secrets.db2Username',      value: '',                              category: 'SECRETS', label: 'DB2 Username',          description: 'Fallback DB2 username', isSecret: true },
     { key: 'secrets.db2Password',      value: '',                              category: 'SECRETS', label: 'DB2 Password',          description: 'Fallback DB2 password', isSecret: true },
@@ -368,6 +401,8 @@ async function main() {
     { key: 'polling.cronSyncCooldownHrs',    value: '24',  category: 'POLLING', label: 'Cron Sync Cooldown (hrs)',   description: 'Skip cron sync if done less than X hours ago' },
     { key: 'polling.batchCacheTtlMins',      value: '30',  category: 'POLLING', label: 'Batch Cache TTL (min)',      description: 'Backend batch summary cache TTL in minutes' },
     { key: 'polling.punchCacheTtlMins',      value: '30',  category: 'POLLING', label: 'Punch Cache TTL (min)',      description: 'Unprocessed punch cache TTL in minutes' },
+    { key: 'polling.heatMapRefreshMins',     value: '60',  category: 'POLLING', label: 'Heat Map Refresh (min)',     description: 'Heat Map client scan refresh interval in minutes' },
+    { key: 'polling.heatMapRefreshOffsetMins', value: '15', category: 'POLLING', label: 'Heat Map Refresh Offset (min)', description: 'Phase offset so Heat Map auto-refresh does not align with other DB2 polls (0–59)' },
 
     // ---- THRESHOLDS ----
     { key: 'threshold.stalePendingCritical', value: '10',  category: 'THRESHOLDS', label: 'Critical Threshold',       description: 'stalePendingCount >= X → CRITICAL badge' },
@@ -383,6 +418,7 @@ async function main() {
     { key: 'threshold.defaultSuppressMins',  value: '60',    category: 'THRESHOLDS', label: 'Default Suppress (min)',  description: 'Default suppress duration in modal' },
     { key: 'threshold.stalePendingDbMins',   value: '30',    category: 'THRESHOLDS', label: 'DB Stale Pending (min)',  description: 'DB2 SQL: pending older than X mins = stale' },
     { key: 'threshold.payrollStalledGraceMins', value: '30', category: 'THRESHOLDS', label: 'Payroll Stalled Grace (min)', description: 'After pay release time, flag store group as stalled when generator is idle and units still pending for X mins' },
+    { key: 'threshold.payrollLiveWindowHours', value: '12', category: 'THRESHOLDS', label: 'Payroll Live Window (hours)', description: 'Mark store group Live while now is within ± X hours of the SLA deadline (still pending). Past deadline and outside that window → Late. No deadline → fallback to EXEC_CRON due … due+X hours.' },
 
     // ---- ENGINE ----
     { key: 'engine.pollIntervalMs',       value: '5000',    category: 'ENGINE', label: 'Poll Interval (ms)',       description: 'Pending job check interval' },
@@ -404,10 +440,14 @@ async function main() {
     { key: 'engine.dbJobsSyncEnabled',    value: 'true',    category: 'ENGINE', label: 'DB Jobs Sync Enabled',    description: 'Master switch for DB2 RFX_QUEUE fetches (Fetch All, per-client refresh, background polling). Set false during production incidents.' },
     { key: 'engine.punchSyncEnabled',     value: 'true',    category: 'ENGINE', label: 'Punch Sync Enabled',      description: 'Master switch for unprocessed punch DB2 queries (Refresh, progressive load, background polling). Set false during production incidents.' },
     { key: 'engine.cronSyncSchedule',     value: '0 3 * * *', category: 'ENGINE', label: 'Daily Cron Sync Schedule', description: 'Cron expression for automatic nightly cron discovery from all appservers (server local time). Requires restart to change.' },
-    { key: 'engine.autoEscalationNotifyEnabled', value: 'true', category: 'ENGINE', label: 'Auto Escalation Email', description: 'When true, automatically email notification recipients and system-acknowledge escalated alerts for Default Suppress (min) after they cross the escalation threshold.' },
+    { key: 'engine.wfmVersionSyncSchedule', value: '0 4 * * *', category: 'ENGINE', label: 'Daily WFM Version Sync Schedule', description: 'Cron expression for daily refresh of client WFM app version (RFX_CONFIG APPURL + /reflexisversion.txt). Requires restart to change.' },
+    { key: 'engine.autoEscalationNotifyEnabled', value: 'true', category: 'ENGINE', label: 'Auto Escalation Email', description: 'Master switch for automatic escalation emails. When false, no auto-emails are sent (manual Notify Team still works). Per-type flags below further filter which alert types auto-email.' },
+    { key: 'engine.autoEscalationNotifyQueueEnabled', value: 'true', category: 'ENGINE', label: 'Auto Email: Stuck Jobs', description: 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated stuck-job / queue-buildup alerts.' },
+    { key: 'engine.autoEscalationNotifyPayrollEnabled', value: 'true', category: 'ENGINE', label: 'Auto Email: Payroll Deadline', description: 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated payroll deadline alerts.' },
+    { key: 'engine.autoEscalationNotifyPunchEnabled', value: 'true', category: 'ENGINE', label: 'Auto Email: Unprocessed Punch', description: 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated unprocessed punch alerts.' },
 
     // ---- DISPLAY ----
-    { key: 'display.appName',                value: 'WFM Watch',    category: 'DISPLAY', label: 'Application Name',       description: 'Product name shown in UI, emails, and API health' },
+    { key: 'display.appName',                value: 'Workcloud Pulse', category: 'DISPLAY', label: 'Application Name',       description: 'Product name shown in UI, emails, and API health' },
     { key: 'display.defaultTimezone',        value: 'Asia/Kolkata', category: 'DISPLAY', label: 'Default Timezone',      description: 'Default timezone when user has none set' },
     { key: 'display.panelMinWidth',          value: '160',          category: 'DISPLAY', label: 'Panel Min Width (px)',   description: 'Resizable panel min width in pixels' },
     { key: 'display.panelMaxWidth',          value: '700',          category: 'DISPLAY', label: 'Panel Max Width (px)',   description: 'Resizable panel max width in pixels' },
@@ -416,6 +456,8 @@ async function main() {
     { key: 'display.maintenanceAdHocWindows', value: 'false',        category: 'DISPLAY', label: 'Maintenance Ad-hoc Windows Tab', description: 'Show Ad-hoc Windows tab on Maintenance page (true/false)' },
     { key: 'display.payrollEnabled',          value: 'false',        category: 'DISPLAY', label: 'Payroll Jobs Menu',              description: 'Show Payroll Jobs screen and API (true/false)' },
     { key: 'display.payrollMonitorEnabled',   value: 'false',        category: 'DISPLAY', label: 'Payroll Monitor Menu',           description: 'Show Payroll Monitor screen and API (true/false)' },
+    { key: 'display.heatMapEnabled',          value: 'true',         category: 'DISPLAY', label: 'Heat Map Menu',                  description: 'Show Heat Map screen and API (true/false)' },
+    { key: 'display.externalTools',           value: '[]',           category: 'DISPLAY', label: 'External Tools Menu',            description: 'Managed via Admin → Config → External Tools panel (label, URL, icon). Empty list hides the waffle menu.' },
     { key: 'display.showUnprocPunchTab',      value: 'false',        category: 'DISPLAY', label: 'Unprocessed Punch Alerts Tab',   description: 'Show Unprocessed Punch tab on Alerts page (true/false)' },
   ];
 
@@ -441,7 +483,7 @@ async function main() {
   - Realistic timestamps seeded (lastCronSyncAt, lastCronAttemptAt, payrollSyncedAt)
   - 0 jobs (jobs are discovered via SSH sync)
   - 3 resource pools
-  - 3 system profiles, ${Object.keys(APP_FUNCTIONS).length} functions
+  - 4 system profiles, ${Object.keys(APP_FUNCTIONS).length} functions
   - 1 bootstrap admin user: ${adminUser.username}
   - ${configDefaults.length} AppConfig entries
   `);

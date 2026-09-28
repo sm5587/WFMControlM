@@ -14,7 +14,7 @@ import { useConfig } from '../contexts/ConfigContext';
 import { useBatchLookbackDays } from './useBatchLookbackDays';
 import { waitForAllBatchStatusIdle } from './useAllClientsBatchData';
 
-export type PayrollMonitorPhase = 'live' | 'upcoming' | 'complete' | 'unknown';
+export type PayrollMonitorPhase = 'live' | 'late' | 'upcoming' | 'complete' | 'unknown';
 
 export interface PayMonitorGenerator {
   queueId: string;
@@ -31,6 +31,28 @@ export interface PayMonitorGenerator {
   running: boolean;
 }
 
+export interface PriorWeekGeneratedCompare {
+  weekEndDate: string;
+  total: number;
+  generated: number;
+}
+
+export interface PayrollFileStatusCounts {
+  F: number;
+  D: number;
+  Q: number;
+  blank: number;
+}
+
+export interface PayrollUnitCounts {
+  total: number;
+  generated: number;
+  pending: number;
+  byStatus?: PayrollFileStatusCounts;
+}
+
+const EMPTY_BY_STATUS: PayrollFileStatusCounts = { F: 0, D: 0, Q: 0, blank: 0 };
+
 export interface PayrollMonitorRow {
   rowKey: string;
   clientId: string;
@@ -42,11 +64,14 @@ export interface PayrollMonitorRow {
   distListId: string;
   distListName: string | null;
   generator: PayMonitorGenerator;
-  units: { total: number; generated: number; pending: number };
+  units: PayrollUnitCounts;
+  priorWeek?: PriorWeekGeneratedCompare | null;
   phase: PayrollMonitorPhase;
   stalled: boolean;
   stalledMinutes: number | null;
   deadlineAt: string | null;
+  /** Escalated alert resolved for this pay week — no Late attention. */
+  deadlineResolved?: boolean;
   late: boolean;
   lateMinutes: number | null;
   error?: string;
@@ -60,6 +85,7 @@ export interface PayrollMonitorClient {
   payrollFileGen: string;
   frequencies: string[];
   payrollDeadlineDaysAfterWeekEnd?: number | null;
+  payrollDeadlineDayOfMonth?: number | null;
   payrollDeadlineLocalTime?: string | null;
 }
 
@@ -134,11 +160,13 @@ function skeletonRow(c: PayrollMonitorClient): PayrollMonitorRow {
     distListId: '',
     distListName: null,
     generator: EMPTY_GENERATOR,
-    units: { total: 0, generated: 0, pending: 0 },
+    units: { total: 0, generated: 0, pending: 0, byStatus: { ...EMPTY_BY_STATUS } },
+    priorWeek: null,
     phase: 'unknown',
     stalled: false,
     stalledMinutes: null,
     deadlineAt: null,
+    deadlineResolved: false,
     late: false,
     lateMinutes: null,
     loading: true,

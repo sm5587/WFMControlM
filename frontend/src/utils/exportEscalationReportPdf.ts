@@ -91,6 +91,7 @@ export function exportReportPdf(
 ) {
   const qs = report.queueBuildup?.summary || {};
   const ps = report.punchAlerts?.summary || {};
+  const pds = report.payrollDeadlineAlerts?.summary || {};
   const period = report.period || {};
   const periodLabel = period.label || 'Report';
   const dateRange = period.startDate && period.endDate
@@ -230,6 +231,7 @@ export function exportReportPdf(
     doc.setFontSize(9);
     doc.setTextColor(...MUTED);
     doc.text('No punch alert rows for this period.', 14, y + 4);
+    y += 12;
   } else {
     autoTable(doc, {
       startY: y,
@@ -266,6 +268,86 @@ export function exportReportPdf(
         if (data.section !== 'body') return;
         if (data.column.index === 5 && String(data.cell.raw) === 'OPEN') {
           data.cell.styles.textColor = RED;
+          data.cell.styles.fontStyle = 'bold';
+        }
+      },
+    });
+    y = lastTableY(doc, y) + 10;
+  }
+
+  if (y > pageH - 48) {
+    doc.addPage();
+    y = 16;
+  }
+
+  // ---- Payroll deadline alerts ----
+  const VIOLET: [number, number, number] = [124, 58, 237];
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...SLATE);
+  doc.text('Payroll Deadline Alerts', 14, y);
+  y += 4;
+
+  y = drawKpiRow(doc, y, [
+    { label: 'Total', value: String(pds.total ?? 0) },
+    { label: 'Still Open', value: String(pds.open ?? 0), color: AMBER },
+    { label: 'Clients Affected', value: String(pds.clientsAffected ?? 0) },
+    { label: 'Resolved', value: String(pds.resolved ?? 0), color: GREEN },
+    { label: 'Notified', value: String(pds.notified ?? 0), color: INDIGO },
+    { label: 'Avg Duration', value: formatDurationMins(pds.avgDurationMins) || '-' },
+  ]);
+
+  const payrollRows = (report.payrollDeadlineAlerts?.rows || []) as any[];
+  if (payrollRows.length === 0) {
+    doc.setFontSize(9);
+    doc.setTextColor(...MUTED);
+    doc.text('No payroll deadline alerts in this period.', 14, y + 4);
+  } else {
+    autoTable(doc, {
+      startY: y,
+      head: [['Client', 'Cluster', 'Week End', 'Pending', 'Late', 'Status', 'Activity', 'First Seen', 'Resolved', 'Reason', 'Duration']],
+      body: payrollRows.map(r => [
+        `${r.clientName || '-'}\n${r.clientId || ''}`,
+        dash(r.cluster),
+        dash(r.weekEndDate),
+        r.pendingUnits != null ? `${r.pendingUnits}/${r.totalUnits ?? '?'}` : '-',
+        formatDurationMins(r.lateMinutes) || '-',
+        r.resolvedAt ? 'RESOLVED' : dash(r.status),
+        (r.activities || []).join(', ') || '-',
+        r.firstSeenAt ? fmt(r.firstSeenAt, 'full') : '-',
+        r.resolvedAt
+          ? `${fmt(r.resolvedAt, 'full')}${r.resolvedBy ? `\n${r.resolvedBy}` : ''}`
+          : '-',
+        dash(r.resolveReason),
+        formatDurationMins(r.durationMins) || '-',
+      ]),
+      theme: 'striped',
+      styles: { fontSize: 7, cellPadding: 1.6, valign: 'middle', textColor: SLATE, overflow: 'linebreak' },
+      headStyles: {
+        fillColor: VIOLET,
+        textColor: 255,
+        fontStyle: 'bold',
+        fontSize: 7,
+        cellPadding: 2,
+      },
+      alternateRowStyles: { fillColor: [245, 243, 255] },
+      columnStyles: {
+        0: { cellWidth: 32 },
+        1: { cellWidth: 18 },
+        3: { halign: 'right', cellWidth: 16 },
+        4: { halign: 'right', cellWidth: 16 },
+        9: { cellWidth: 28 },
+        10: { halign: 'right', cellWidth: 16 },
+      },
+      margin: { left: 14, right: 14, top: 14, bottom: 14 },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (data.column.index === 5 && String(data.cell.raw) === 'OPEN') {
+          data.cell.styles.textColor = RED;
+          data.cell.styles.fontStyle = 'bold';
+        }
+        if (data.column.index === 3) {
+          data.cell.styles.textColor = VIOLET;
           data.cell.styles.fontStyle = 'bold';
         }
       },

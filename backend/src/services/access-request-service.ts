@@ -164,7 +164,7 @@ export async function approveAccessRequest(
   requestId: string,
   profileId: string,
   reviewer: string,
-  options?: { displayName?: string; username?: string },
+  options?: { displayName?: string },
 ): Promise<{ userId: string; username: string }> {
   const request = await prisma.accessRequest.findUnique({ where: { id: requestId } });
   if (!request) throw new Error('Access request not found');
@@ -176,9 +176,9 @@ export async function approveAccessRequest(
   const existingUser = await prisma.user.findUnique({ where: { email: request.email } });
   if (existingUser) throw new Error('A user with this email already exists');
 
-  const baseUsername = options?.username?.trim()
-    || request.requestedUsername?.trim()
-    || emailLocalPart(request.email);
+  // Username is identity for LDAP login — never take an admin override.
+  // Prefer LDAP sAMAccountName captured on the request; fall back to email local-part.
+  const baseUsername = request.requestedUsername?.trim() || emailLocalPart(request.email);
   const username = await uniqueUsername(baseUsername);
   const displayName = options?.displayName?.trim() || request.displayName || username;
   const passwordHash = await bcrypt.hash(randomBytes(32).toString('hex'), 10);

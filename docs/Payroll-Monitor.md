@@ -13,7 +13,7 @@ Canonical SQL copies also live in `database/client-db2-queries.sql` (section *pa
 | Concern | Monitor | Payroll Jobs |
 |---|---|---|
 | Question | Is generation live, and how far along? | What is the status of a chosen week / frequency? |
-| Clients | All payroll-enabled, scanned together | One client at a time |
+| Clients | Payroll-enabled with **Monitor** on, scanned together | One client at a time |
 | Week | Always **previous completed WFM week** | User-selected (defaults to previous week) |
 | Frequency / `TA_PAY_FILE_GEN_PROCESS` | Not queried at scan time | Queried and filterable |
 | Adj outstanding (`TA_COST_SEG_DIFF` vs `TA_DIFF_PAY_DETAIL`) | Not used | Used when adj is enabled |
@@ -21,22 +21,31 @@ Canonical SQL copies also live in `database/client-db2-queries.sql` (section *pa
 
 Gating:
 
-- Config key: `display.payrollMonitorEnabled` (default `false`)
-- Permission: `PAYROLL_VIEW`
-- Menu + APIs are hidden/404 until the flag is true
+- Config key: `display.payrollMonitorEnabled` (default `false`) — global feature flag
+- Per-client: `Client.payrollMonitorEnabled` (default `true`) — toggled on **Payroll Jobs** (`PATCH /api/payroll/:clientId/monitor`, requires `PAYROLL_SYNC` write). Disabled clients are omitted from Monitor scans and payroll deadline alerts (open alerts are cleared on disable).
+- Permission: `PAYROLL_MONITOR_VIEW` (Monitor) / `PAYROLL_VIEW` (Jobs) / `PAYROLL_DETAILS_VIEW` (per-unit release status on Jobs)
+- Menu + APIs are hidden/404 until the global flag is true
 
 ### Local SLA deadline (not EXEC_CRON)
 
-Per-client completion SLA is stored in local SQLite on `Client`:
+Per-client completion SLA is stored in local SQLite on `Client`. The **picker shape follows the selected pay frequency** on Payroll Jobs:
 
-- `payrollDeadlineDaysAfterWeekEnd` (0–6, null = unset). Payroll Jobs edits this as **Mon–Sun** for the selected week end (stored as days after that week end).
-- `payrollDeadlineLocalTime` (`HH:mm` in the client timezone)
+| Frequency | Picker | Stored fields |
+|---|---|---|
+| Weekly (`WK`) | Weekday (Mon–Sun) + time | `payrollDeadlineDaysAfterWeekEnd` (0–7) + `payrollDeadlineLocalTime` |
+| Bi-Weekly (`BW`) | Days after period end (0–14) + time | `payrollDeadlineDaysAfterWeekEnd` (0–14) + `payrollDeadlineLocalTime` |
+| Semi-Monthly (`SM`) / Gregorian Month (`GM`) | Day of month (1–28) + time | `payrollDeadlineDayOfMonth` + `payrollDeadlineLocalTime` |
 
-`deadlineAt = weekEndDate (client TZ) + days @ localTime`. A row is **late** when the deadline is set, `now >= deadlineAt`, and mapped units are still pending. This is separate from WFM `EXEC_CRON` release / stalled detection.
+Saving one shape clears the other offset field so only one rule is active. `deadlineAt` is still anchored to the Monitor / status **pay week-end** in the client timezone:
 
-Edit on **Payroll Jobs** (`PATCH /api/payroll/:clientId/deadline`, requires `PAYROLL_SYNC` write). Monitor shows a late banner, row badges, and `deadline` under the release schedule column.
+- WK / BW: `weekEndDate + days @ localTime`
+- SM / GM: first calendar date with that day-of-month **on or after** `weekEndDate`, at `localTime`
 
-When units are still pending after `deadlineAt`, an alert is stored on `PayrollDeadlineAlert` and shown in **Alerts → Escalated** (acknowledge / suppress, same idea as Unproc Punch). **Notify Team** sends one email to the active notification recipients covering open stuck jobs, payroll deadlines, and unprocessed punches (`ALERTS_NOTIFY`), with the same cooldown as other escalated alerts. Opening that tab re-scans clients that have a deadline **after** the all-batch-status fetch is idle (same sequencing as Payroll Monitor auto-refresh). The alert clears when the week is no longer late.
+A row is **late** when the deadline is set, `now >= deadlineAt`, and mapped units are still pending. This is separate from WFM `EXEC_CRON` release / stalled detection.
+
+Edit on **Payroll Jobs** (`PATCH /api/payroll/:clientId/deadline`, requires `PAYROLL_SYNC` write). Body: `{ frequency, localTime, daysAfterWeekEnd? | dayOfMonth?, clear? }`. Monitor shows a late banner, row badges, and `deadline` under the release schedule column.
+
+When units are still pending after `deadlineAt` **and** outside the Live (±) window, an alert is stored on `PayrollDeadlineAlert` and shown in **Alerts → Escalated** (acknowledge / suppress / **resolve with reason**, same idea as Unproc Punch for ack/suppress). Resolve requires a reason (`ALERTS_ACK`); the alert leaves Escalated immediately and stays closed for that pay week even if units are still pending. **Resolve also clears Late attention** on the home Payroll widget and Payroll Monitor for that pay week (phase is no longer Late; a muted **Resolved** badge may still show while units remain pending). Use this when leftover units are intentional (e.g. not releasing that store this week). Those incidents also appear in **Alerts → Reports** (monthly/quarterly escalation report, CSV, and PDF) alongside queue-buildup and punch alerts, including `resolvedBy` / `resolveReason` when manually resolved. **Notify Team** sends one email to the active notification recipients covering open stuck jobs, payroll deadlines, and unprocessed punches (`ALERTS_NOTIFY`), with the same cooldown as other escalated alerts. Opening that tab re-scans clients that have a deadline **after** the all-batch-status fetch is idle (same sequencing as Payroll Monitor auto-refresh). The alert also clears automatically when the week is no longer late.
 
 ---
 
@@ -52,7 +61,7 @@ UI  GET /api/payroll/monitor
               ├─ 2. RWS_CALENDAR (weeks + today)              ─┘
               │         ↓ pick previous week
               └─ 3. TA_UNIT_PAY_STATUS  (unit counts for that week)
-                        ↓ classify phase: live | upcoming | complete | unknown
+                        ↓ classify phase: late | live | upcoming | complete | unknown
 
 UI  GET /api/payroll/monitor/:clientId   (right pane)
         same 1 + 2, then unit+file rows instead of counts
@@ -68,6 +77,7 @@ Local SQLite (not DB2), once per snapshot:
 
 ```text
 clients WHERE payrollEnabled = true
+          AND payrollMonitorEnabled = true
           AND isActive = true
           AND db2Host IS NOT NULL
 ORDER BY clientId
@@ -88,7 +98,9 @@ WHERE FEATURE_ID IN (
 
 `RTA_INTEGRATION = 'Y'` → `payrollEnabled`. Frequencies come from `TA_PAY_FILE_GEN_PROCESS` during that same sync and are stored on the local client row (`payrollCycle`). Monitor **displays** those stored frequencies; it does not re-query them.
 
-A client that just got RTA will not appear on Monitor until Payroll Jobs sync has run.
+`payrollMonitorEnabled` is a **local** flag (not a WFM product feature). Edit it on Payroll Jobs; default is on so existing clients stay on Monitor until explicitly disabled.
+
+A client that just got RTA will not appear on Monitor until Payroll Jobs sync has run. A client with Monitor disabled will not appear even when payroll-enabled.
 
 ---
 
@@ -153,13 +165,19 @@ Weekly, bi-weekly, semi-monthly, and GM clients all use this same calendar week.
 ```sql
 SELECT
   COUNT(*) AS TOTAL_CNT,
-  SUM(CASE WHEN UPPER(FILE_STATUS) = 'F' THEN 1 ELSE 0 END) AS GENERATED_CNT
+  SUM(CASE WHEN UPPER(TRIM(COALESCE(FILE_STATUS, ''))) = 'F' THEN 1 ELSE 0 END) AS F_CNT,
+  SUM(CASE WHEN UPPER(TRIM(COALESCE(FILE_STATUS, ''))) = 'D' THEN 1 ELSE 0 END) AS D_CNT,
+  SUM(CASE WHEN UPPER(TRIM(COALESCE(FILE_STATUS, ''))) = 'Q' THEN 1 ELSE 0 END) AS Q_CNT,
+  SUM(CASE WHEN UPPER(TRIM(COALESCE(FILE_STATUS, ''))) NOT IN ('F', 'D', 'Q') THEN 1 ELSE 0 END) AS BLANK_CNT
 FROM RWSUSER.TA_UNIT_PAY_STATUS
 WHERE INTEGER(WEEK_END_DATE) = {previousWeekEnd}
 ```
 
-- `FILE_STATUS = 'F'` → generated (`PAY_FILE_GENERATED_STATUS`)
-- `pending = total - generated`
+- `FILE_STATUS = 'F'` → generated (`PAY_FILE_GENERATED_STATUS`); `generated` = `F_CNT`
+- **Expected store count (denominator):** prior calendar week's `FILE_STATUS=F` count (same store-group scope). Display is `thisWeekF / priorWeekF` (e.g. DJ `40/53` means 40 generated this week vs 53 that had F last week).
+- `pending = expected - generated` (`max(0, priorWeekF - thisWeekF)`); falls back to current-week row count only when prior-week F is unavailable
+- Responses still include `priorWeek: { weekEndDate, total, generated }` for the baseline week label
+- **Status breakdown (`units.byStatus`):** this-week counts for `F` / `D` / `Q` / `blank` (null, empty, or any other code). Monitor UI shows a stacked color bar (green / orange / yellow / grey) plus a count legend; the detail pane colors each unit's status the same way.
 - No `UNIT_GRP_ID` / store-group filter
 
 ---
@@ -196,29 +214,36 @@ ORDER BY UNIT_ID
 
 ## 5. Phase classification
 
-Computed from the **regular** queue job + unit counts. The adjustment job is fetched but **not** used for phase, list columns, or the detail pane.
+Computed from the **regular** queue job + unit counts + optional SLA deadline. The adjustment job is fetched but **not** used for phase, list columns, or the detail pane.
 
 ```
-if regular.running AND (jobsPending > 0 OR units.pending > 0)  → live
-else if units.total > 0 AND units.pending === 0                → complete
-else if units.pending > 0                                      → upcoming
-else                                                           → unknown
+if units.total > 0 AND units.pending === 0                         → complete
+else if within ± liveWindowHours of deadlineAt AND pending > 0     → live
+         (no deadlineAt → fallback: release due … due+window)
+else if past deadlineAt AND outside Live window AND pending > 0
+         AND deadline alert not resolved for this weekEndDate      → late   (Escalated)
+else if units.pending > 0                                          → upcoming
+else if release due in the future                                  → upcoming
+else                                                               → unknown
 ```
 
 | Phase | Meaning on the board |
 |---|---|
-| **Live** | Regular pay job is running **and** there is still work (`JOBS_PENDING` or pending units) |
-| **Upcoming** | Previous week still has units not `F` (job may or may not be running) |
-| **Complete** | At least one unit row, all `FILE_STATUS = F` |
+| **Late** | Past client SLA deadline **and** outside the Live (±) window, with units still pending — Escalated alert path |
+| **Live** | Now within **± 12 hours** of the SLA `deadlineAt` (configurable `threshold.payrollLiveWindowHours`) with units still pending. Without a deadline, falls back to EXEC_CRON due … due+window |
+| **Upcoming** | Units pending but outside the Live window (e.g. days before SLA) |
+| **Complete** | At least one expected unit, all generated (`pending === 0`) |
 | **Unknown** | No unit rows, scan error, or none of the above |
 
-Sort: Live → Upcoming → Complete → Unknown, then `clientId`.
+Sort: Late → Live → Upcoming → Complete → Unknown, then `clientId`.
 
 Consequences:
 
+- Live is anchored on the **SLA deadline**, not on EXEC_CRON alone. A running generator days before the deadline is **Upcoming**, not Live.
+- Inside ±12h of deadline (including up to 12h after) with pending → **Live**. After that window with pending → **Late** (+ Escalated).
+- If the deadline alert is **resolved** for that `weekEndDate`, Late attention is suppressed (dashboard + Monitor) until the next pay week.
 - Job running, `JOBS_PENDING = 0`, all units already `F` → **Complete**, not Live
-- Units pending, job not running → **Upcoming**, never Live
-- Adj-only run with no regular job → looks idle (phase from units only)
+- Adj-only run with no regular job → looks idle (phase from units / deadline / Live window only)
 
 ---
 
@@ -256,11 +281,11 @@ Change these first if results look wrong.
 
 1. **Only `QUEUE_STATUS = 'R'`.** Idle generators do not contribute `LAST_JOB_TIME` / `JOBS_PENDING`. To show last run when idle, drop the `'R'` filter or query that `JOB_TYPE` without status.
 
-2. **Previous week is calendar-based, not pay-cycle-based.** GM / SM / BW may need a different period than `RWS_CALENDAR` week, or dates from `TA_PAY_FILE_GEN_PROCESS`.
+2. **Previous week is calendar-based, not pay-cycle-based.** Monitor always uses the previous `RWS_CALENDAR` week. Payroll Jobs shapes periods by frequency via `periodsForFrequency` (BW = paired 14-day weeks, SM = 1–15 / 16–EOM, GM = calendar months); SM/GM status queries map period end onto the last RWS week-end on or before that date.
 
 3. **Year boundary.** Calendar SQL is current-year only (`YEAR_NO` / `YEAR(WEEK_END_DATE)`). In early January the true previous week can be last December and get missed.
 
-4. **Live vs Complete vs Upcoming** — see phase table above. “Generator process exists” is not enough for Live.
+4. **Late vs Live vs Upcoming** — Live only while due / due within the last 6h (or generator running). Older Sunday crons with pending units are Upcoming; past SLA is Late.
 
 5. **No store-group filter.** All `TA_UNIT_PAY_STATUS` rows for that week-end are counted. `UNIT_GRP_ID` from `TA_PAY_FILE_GEN_PROCESS` is ignored, so extra units can inflate total/pending.
 
@@ -316,4 +341,4 @@ Typical edits, mapped to the sequence:
 | Wrong unit counts | Query 3 week predicate and/or `FILE_STATUS` / unit-group filter |
 | Wrong client list | SQLite `payrollEnabled` sync, not Monitor SQL |
 | Adj run invisible | Include adjustment in `classifyPhase` and UI |
-| GM/SM period wrong | Do not reuse weekly calendar; read pay-cycle dates |
+| GM/SM period wrong (Jobs) | Jobs uses `periodsForFrequency` (calendar month / half-month); Monitor still weekly |

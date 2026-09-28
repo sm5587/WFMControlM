@@ -5,6 +5,7 @@ export const APP_CONFIG_KEYS = {
   dbJobsSyncEnabled: 'engine.dbJobsSyncEnabled',
   punchSyncEnabled: 'engine.punchSyncEnabled',
   cronSyncSchedule: 'engine.cronSyncSchedule',
+  wfmVersionSyncSchedule: 'engine.wfmVersionSyncSchedule',
 } as const;
 
 /** Keys stored as "true" / "false" in AppConfig (mirrors backend BOOL_CONFIG_KEYS). */
@@ -13,9 +14,14 @@ export const BOOLEAN_APP_CONFIG_KEYS = new Set<string>([
   APP_CONFIG_KEYS.dbJobsSyncEnabled,
   APP_CONFIG_KEYS.punchSyncEnabled,
   'engine.autoEscalationNotifyEnabled',
+  'engine.autoEscalationNotifyQueueEnabled',
+  'engine.autoEscalationNotifyPayrollEnabled',
+  'engine.autoEscalationNotifyPunchEnabled',
   'display.maintenanceAdHocWindows',
   'display.payrollEnabled',
   'display.payrollMonitorEnabled',
+  'display.heatMapEnabled',
+  'display.wipHeatMapEnabled',
   'display.showUnprocPunchTab',
   'infra.trustProxy',
   'infra.requireHttps',

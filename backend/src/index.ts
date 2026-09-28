@@ -16,6 +16,7 @@ import { db2DirectService } from './services/db2-direct-service';
 import { keeperService } from './services/keeper-service';
 import { purgeService } from './services/purge-service';
 import { syncService } from './services/sync-service';
+import { clientWfmVersionService } from './services/client-wfm-version-service';
 import cron from 'node-cron';
 import { initializeWebSocket } from './websocket';
 import { errorHandler, requestLogger, authMiddleware, requireAdmin, csrfMiddleware } from './middleware';
@@ -36,6 +37,7 @@ import alertsRouter from './routes/alerts';
 import clientsRouter from './routes/clients';
 import dbMonitorRouter from './routes/db-monitor';
 import payrollRouter from './routes/payroll';
+import wipRouter from './routes/wip';
 import unprocessedPunchRouter from './routes/unprocessed-punch';
 import escalationsRouter from './routes/escalations';
 import dbJobsRouter from './routes/db-jobs';
@@ -182,6 +184,7 @@ async function bootstrap() {
   apiRouter.use('/clients', clientsRouter);
   apiRouter.use('/db-monitor', dbMonitorRouter);
   apiRouter.use('/payroll', payrollRouter);
+  apiRouter.use('/wip', wipRouter);
   apiRouter.use('/unprocessed-punch', unprocessedPunchRouter);
   apiRouter.use('/escalations', escalationsRouter);
   apiRouter.use('/db-jobs', dbJobsRouter);
@@ -204,7 +207,7 @@ async function bootstrap() {
   for (const fn of Object.values(APP_FUNCTIONS)) {
     await prisma.appFunction.upsert({
       where: { id: fn.id },
-      update: { module: fn.module, name: fn.name, sortOrder: fn.sortOrder },
+      update: { module: fn.module, name: fn.name, description: fn.description ?? null, sortOrder: fn.sortOrder },
       create: { id: fn.id, module: fn.module, name: fn.name, description: fn.description ?? null, sortOrder: fn.sortOrder },
     });
   }
@@ -243,6 +246,10 @@ async function bootstrap() {
   } catch (err: any) {
     logger.warn(`System Admin permission backfill skipped: ${err.message}`);
   }
+
+  // ---- Grant Heat Map read to system (+ Payroll Monitor) profiles if missing ----
+  const { ensureHeatMapPermissions } = await import('./services/rbac-bootstrap');
+  await ensureHeatMapPermissions();
 
   // ---- Initialize Keeper Secrets Manager (non-fatal) ----
   await keeperService.initialize();
@@ -322,6 +329,26 @@ async function bootstrap() {
     logger.info(`Daily cron sync scheduled: ${cronSyncSchedule}`);
   } else {
     logger.warn(`Invalid engine.cronSyncSchedule "${cronSyncSchedule}" — daily cron sync not scheduled`);
+  }
+
+  // ---- Daily WFM app version refresh (RFX_CONFIG APPURL + reflexisversion.txt) ----
+  const wfmVersionSyncSchedule = configService.getString('engine.wfmVersionSyncSchedule', '0 4 * * *');
+  if (cron.validate(wfmVersionSyncSchedule)) {
+    cron.schedule(wfmVersionSyncSchedule, async () => {
+      logger.info('[WfmVersionSync] Starting scheduled daily WFM version sync...');
+      try {
+        const result = await clientWfmVersionService.syncAll({ force: true, refreshAppUrl: false });
+        logger.info(
+          `[WfmVersionSync] Complete: ${result.succeeded} ok, ${result.failed} failed, ` +
+          `${result.skipped} skipped, ${result.appUrlRefreshed} APPURL lookups (${result.total} clients)`,
+        );
+      } catch (err: any) {
+        logger.error(`[WfmVersionSync] Failed: ${err.message}`);
+      }
+    });
+    logger.info(`Daily WFM version sync scheduled: ${wfmVersionSyncSchedule}`);
+  } else {
+    logger.warn(`Invalid engine.wfmVersionSyncSchedule "${wfmVersionSyncSchedule}" — WFM version sync not scheduled`);
   }
 
   // ---- Backend warm sync for DB Monitor batch data ----

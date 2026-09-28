@@ -34,6 +34,39 @@ export const ADJ_PAY_JOB = 'RTAPriorAdjPayGeneratorJob';
 /** TA_UNIT_PAY_STATUS.FILE_STATUS = F means the pay file was generated. */
 export const PAY_FILE_GENERATED_STATUS = 'F';
 
+/** Monitor UI buckets for FILE_STATUS (other/blank → blank/grey). */
+export type PayrollFileStatusBucket = 'F' | 'D' | 'Q' | 'blank';
+
+export interface PayrollFileStatusCounts {
+  F: number;
+  D: number;
+  Q: number;
+  blank: number;
+}
+
+export const EMPTY_FILE_STATUS_COUNTS: PayrollFileStatusCounts = {
+  F: 0,
+  D: 0,
+  Q: 0,
+  blank: 0,
+};
+
+export function fileStatusBucket(raw: string | null | undefined): PayrollFileStatusBucket {
+  const s = (raw || '').trim().toUpperCase();
+  if (s === 'F' || s === 'D' || s === 'Q') return s;
+  return 'blank';
+}
+
+export function countFileStatuses(
+  statuses: Array<string | null | undefined>,
+): PayrollFileStatusCounts {
+  const counts: PayrollFileStatusCounts = { ...EMPTY_FILE_STATUS_COUNTS };
+  for (const raw of statuses) {
+    counts[fileStatusBucket(raw)] += 1;
+  }
+  return counts;
+}
+
 export const PAYROLL_FEATURE_IDS = [
   'RTA_INTEGRATION',
   'PRIOR_PERIOD_EDIT',
@@ -148,6 +181,218 @@ export function defaultPayWeekEnd(
   if (currentIdx > 0) return unique[currentIdx - 1];
   if (unique.length >= 2) return unique[unique.length - 2];
   return unique[unique.length - 1] || '';
+}
+
+/**
+ * Week end immediately before `weekEndDate` in the calendar period list.
+ * Used to compare FILE_STATUS=F store counts vs the week in question.
+ */
+export function priorPayWeekEnd(
+  periods: Array<{ weekEndDate: string }>,
+  weekEndDate: string,
+): string {
+  const target = toYyyymmdd(weekEndDate);
+  if (!/^\d{8}$/.test(target)) return '';
+  const unique = [...new Set(
+    periods.map(p => toYyyymmdd(p.weekEndDate)).filter(d => /^\d{8}$/.test(d)),
+  )].sort();
+  const idx = unique.indexOf(target);
+  if (idx > 0) return unique[idx - 1];
+  return '';
+}
+
+export interface CalendarPeriodLike {
+  weekStartDate: string;
+  weekEndDate: string;
+  weekNo?: string;
+  year?: string;
+  isCurrent?: boolean;
+  isPrevious?: boolean;
+}
+
+function sortedCalendarWeeks<T extends CalendarPeriodLike>(periods: T[]): T[] {
+  return [...periods]
+    .filter(p => /^\d{8}$/.test(toYyyymmdd(p.weekEndDate)))
+    .sort((a, b) => toYyyymmdd(a.weekEndDate).localeCompare(toYyyymmdd(b.weekEndDate)));
+}
+
+function lastDayOfMonthYmd(yearMonth: string): string {
+  if (!/^\d{6}$/.test(yearMonth)) return '';
+  const iso = `${yearMonth.slice(0, 4)}-${yearMonth.slice(4, 6)}-01`;
+  const end = dayjs(iso).endOf('month');
+  return end.isValid() ? end.format('YYYYMMDD') : '';
+}
+
+function periodIsCurrent(
+  start: string,
+  end: string,
+  todayYmd: string,
+  members: Array<{ isCurrent?: boolean }>,
+): boolean {
+  if (todayYmd && start && end) return start <= todayYmd && todayYmd <= end;
+  return members.some(m => !!m.isCurrent);
+}
+
+/** Pair consecutive RWS_CALENDAR weeks into 14-day bi-weekly periods. */
+function periodsForBiWeekly<T extends CalendarPeriodLike>(
+  periods: T[],
+  todayYmd: string,
+): T[] {
+  const sorted = sortedCalendarWeeks(periods);
+  const out: T[] = [];
+  for (let i = 0; i < sorted.length; i += 2) {
+    const first = sorted[i];
+    const second = sorted[i + 1];
+    if (!second) {
+      out.push({ ...first, isPrevious: false });
+      continue;
+    }
+    const weekStartDate = toYyyymmdd(first.weekStartDate);
+    const weekEndDate = toYyyymmdd(second.weekEndDate);
+    out.push({
+      ...second,
+      weekStartDate,
+      weekEndDate,
+      year: weekStartDate.slice(0, 4) || second.year,
+      isCurrent: periodIsCurrent(weekStartDate, weekEndDate, todayYmd, [first, second]),
+      isPrevious: false,
+    });
+  }
+  return out;
+}
+
+/**
+ * Group weeks into Gregorian calendar months.
+ * Display span is the 1st–last day of the month; query via calendarWeekEndOnOrBefore.
+ */
+function periodsForGregorianMonth<T extends CalendarPeriodLike>(
+  periods: T[],
+  todayYmd: string,
+): T[] {
+  const sorted = sortedCalendarWeeks(periods);
+  const byMonth = new Map<string, T[]>();
+  for (const week of sorted) {
+    const end = toYyyymmdd(week.weekEndDate);
+    const ym = end.slice(0, 6);
+    if (!/^\d{6}$/.test(ym)) continue;
+    const list = byMonth.get(ym) || [];
+    list.push(week);
+    byMonth.set(ym, list);
+  }
+  return [...byMonth.keys()].sort().map(ym => {
+    const members = byMonth.get(ym)!;
+    const last = members[members.length - 1];
+    const weekStartDate = `${ym}01`;
+    const weekEndDate = lastDayOfMonthYmd(ym);
+    return {
+      ...last,
+      weekStartDate,
+      weekEndDate,
+      year: ym.slice(0, 4),
+      isCurrent: periodIsCurrent(weekStartDate, weekEndDate, todayYmd, members),
+      isPrevious: false,
+    };
+  });
+}
+
+/**
+ * Group weeks into semi-monthly halves: 1–15 and 16–EOM.
+ * Display span uses calendar half bounds; query via calendarWeekEndOnOrBefore.
+ */
+function periodsForSemiMonthly<T extends CalendarPeriodLike>(
+  periods: T[],
+  todayYmd: string,
+): T[] {
+  const sorted = sortedCalendarWeeks(periods);
+  type HalfKey = string;
+  const byHalf = new Map<HalfKey, T[]>();
+  for (const week of sorted) {
+    const end = toYyyymmdd(week.weekEndDate);
+    const ym = end.slice(0, 6);
+    const day = parseInt(end.slice(6, 8), 10);
+    if (!/^\d{6}$/.test(ym) || !Number.isFinite(day)) continue;
+    const half = day <= 15 ? '1' : '2';
+    const key = `${ym}-${half}`;
+    const list = byHalf.get(key) || [];
+    list.push(week);
+    byHalf.set(key, list);
+  }
+  return [...byHalf.keys()].sort().map(key => {
+    const members = byHalf.get(key)!;
+    const last = members[members.length - 1];
+    const [ym, half] = key.split('-');
+    const weekStartDate = half === '1' ? `${ym}01` : `${ym}16`;
+    const weekEndDate = half === '1' ? `${ym}15` : lastDayOfMonthYmd(ym);
+    return {
+      ...last,
+      weekStartDate,
+      weekEndDate,
+      year: ym.slice(0, 4),
+      isCurrent: periodIsCurrent(weekStartDate, weekEndDate, todayYmd, members),
+      isPrevious: false,
+    };
+  });
+}
+
+/**
+ * Shape pay-period options for the selected frequency (Payroll Jobs).
+ * BW → paired 14-day weeks; SM → 1–15 / 16–EOM; GM → calendar months; WK → passthrough.
+ */
+export function periodsForFrequency<T extends CalendarPeriodLike>(
+  periods: T[],
+  frequency: string | null | undefined,
+  todayYmd?: string,
+): T[] {
+  const code = normalizeFrequency(frequency);
+  const today = todayYmd && /^\d{8}$/.test(todayYmd) ? todayYmd : '';
+  if (code === 'BW') return periodsForBiWeekly(periods, today);
+  if (code === 'GM') return periodsForGregorianMonth(periods, today);
+  if (code === 'SM') return periodsForSemiMonthly(periods, today);
+  return periods;
+}
+
+/** Map a requested week-end into a period list (exact match, or containing range). */
+export function resolveWeekEndInPeriods(
+  periods: Array<{ weekStartDate: string; weekEndDate: string }>,
+  weekEndDate: string | null | undefined,
+): string {
+  const target = toYyyymmdd(weekEndDate || '');
+  if (!/^\d{8}$/.test(target)) return '';
+  if (periods.some(p => toYyyymmdd(p.weekEndDate) === target)) return target;
+  const containing = periods.find(p => {
+    const start = toYyyymmdd(p.weekStartDate);
+    const end = toYyyymmdd(p.weekEndDate);
+    return !!start && !!end && start <= target && target <= end;
+  });
+  return containing ? toYyyymmdd(containing.weekEndDate) : '';
+}
+
+/**
+ * Last RWS_CALENDAR week-end on or before a period end (for SM/GM status queries).
+ * Exact calendar week-ends pass through unchanged.
+ */
+export function calendarWeekEndOnOrBefore(
+  calendarWeeks: Array<{ weekEndDate: string }>,
+  periodEndYmd: string | null | undefined,
+): string {
+  const target = toYyyymmdd(periodEndYmd || '');
+  if (!/^\d{8}$/.test(target)) return '';
+  const ends = [...new Set(
+    calendarWeeks.map(p => toYyyymmdd(p.weekEndDate)).filter(d => /^\d{8}$/.test(d)),
+  )].sort();
+  if (ends.includes(target)) return target;
+  for (let i = ends.length - 1; i >= 0; i--) {
+    if (ends[i] <= target) return ends[i];
+  }
+  return '';
+}
+
+/** Whether status/adj queries should map period ends onto RWS calendar week-ends. */
+export function frequencyUsesCalendarWeekEndQuery(
+  frequency: string | null | undefined,
+): boolean {
+  const code = normalizeFrequency(frequency);
+  return code === 'SM' || code === 'GM';
 }
 
 /**
@@ -288,7 +533,52 @@ export function jobTimeOnOrAfterPayWeekEnd(
   return !!jobYmd && !!weekEnd && jobYmd >= weekEnd;
 }
 
-export type PayrollMonitorPhase = 'live' | 'upcoming' | 'complete' | 'unknown';
+export type PayrollMonitorPhase = 'live' | 'late' | 'upcoming' | 'complete' | 'unknown';
+
+/** Hours before/after SLA deadline that still count as Live (± window). */
+export const DEFAULT_PAYROLL_LIVE_WINDOW_HOURS = 12;
+
+/**
+ * Live window is centered on the client SLA `deadlineAt` (± `liveWindowHours`).
+ * Without a deadline, fall back to EXEC_CRON release due … due+window (or interval last job).
+ */
+export function isWithinPayrollLiveWindow(input: {
+  deadlineAt?: string | null;
+  scheduleKind: PayScheduleKind;
+  releaseDueAt: string | null;
+  lastJobTime: string | null;
+  payWeekEndYmd: string;
+  liveWindowHours?: number;
+  now?: Date;
+}): boolean {
+  const now = (input.now || new Date()).getTime();
+  const hours = input.liveWindowHours ?? DEFAULT_PAYROLL_LIVE_WINDOW_HOURS;
+  const windowMs = Math.max(0, hours) * 3600000;
+
+  const deadline = parseMonitorTimestampMs(input.deadlineAt ?? null);
+  if (deadline != null) {
+    return Math.abs(now - deadline) <= windowMs;
+  }
+
+  // No SLA deadline — keep release-schedule fallback so Monitor still works.
+  const due = parseMonitorTimestampMs(input.releaseDueAt);
+  if (due != null && input.scheduleKind !== 'interval') {
+    const age = now - due;
+    return age >= 0 && age <= windowMs;
+  }
+
+  if (input.scheduleKind === 'interval' || due == null) {
+    if (!jobTimeOnOrAfterPayWeekEnd(input.lastJobTime, input.payWeekEndYmd)) {
+      return false;
+    }
+    const last = parseMonitorTimestampMs(input.lastJobTime);
+    if (last == null) return false;
+    const age = now - last;
+    return age >= 0 && age <= windowMs;
+  }
+
+  return false;
+}
 
 /** Parse monitor timestamps (ISO, DB2, compact) to epoch ms for sorting. */
 export function parseMonitorTimestampMs(raw: string | null | undefined): number | null {
@@ -397,6 +687,15 @@ export function classifyMonitorPhase(input: {
   running: boolean;
   jobsPending: number;
   units: { total: number; generated: number; pending: number };
+  /** Past this SLA with pending units → late (not live); alerts cover that case. */
+  deadlineAt?: string | null;
+  /**
+   * Escalated alert was resolved for this pay week (intentional leftover units, etc.).
+   * Skip Late phase so dashboard / Monitor stop seeking attention.
+   */
+  deadlineResolved?: boolean;
+  /** Hours before/after SLA deadline that still count as Live (default ±12). */
+  liveWindowHours?: number;
   now?: Date;
 }): PayrollMonitorPhase {
   const now = input.now || new Date();
@@ -404,10 +703,29 @@ export function classifyMonitorPhase(input: {
   if (input.units.total > 0 && input.units.pending === 0) return 'complete';
 
   const releaseStarted = isReleaseStarted(input);
+  const inLiveWindow = isWithinPayrollLiveWindow({
+    deadlineAt: input.deadlineAt,
+    scheduleKind: input.scheduleKind,
+    releaseDueAt: input.releaseDueAt,
+    lastJobTime: input.lastJobTime,
+    payWeekEndYmd: input.payWeekEndYmd,
+    liveWindowHours: input.liveWindowHours,
+    now,
+  });
 
-  if (input.running && (input.jobsPending > 0 || input.units.pending > 0)) return 'live';
-  if (releaseStarted && input.units.pending > 0) return 'live';
-  if (input.units.pending > 0 && !releaseStarted) return 'upcoming';
+  // Live = within ± liveWindowHours of SLA deadline (or release fallback) with pending.
+  if (inLiveWindow && input.units.pending > 0) return 'live';
+
+  const { late } = evaluatePayrollDeadlineLate({
+    deadlineAt: input.deadlineAt ?? null,
+    pendingUnits: input.units.pending,
+    now,
+  });
+  // Past SLA and outside the Live window → Late (Escalated), unless resolved for this week.
+  if (late && !input.deadlineResolved) return 'late';
+
+  // Pending but outside Live window (e.g. days before SLA) → Upcoming
+  if (input.units.pending > 0) return 'upcoming';
   if (!releaseStarted && input.releaseDueAt && new Date(input.releaseDueAt) > now) return 'upcoming';
   if (input.units.total === 0 && !releaseStarted && input.releaseDueAt && new Date(input.releaseDueAt) > now) {
     return 'upcoming';
@@ -450,26 +768,60 @@ export function parsePayrollDeadlineLocalTime(raw: string | null | undefined): s
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
 
-/** Accept 0–7 inclusive; otherwise null. */
-export function sanitizePayrollDeadlineDays(raw: unknown): number | null {
+/** Weekly weekday offset: 0–7 inclusive. */
+export const PAYROLL_DEADLINE_DAYS_MAX_WEEKLY = 7;
+/** Bi-weekly days after period end: 0–14 inclusive. */
+export const PAYROLL_DEADLINE_DAYS_MAX_BIWEEKLY = 14;
+/** Semi-monthly / monthly calendar day: 1–28 (safe for all months). */
+export const PAYROLL_DEADLINE_DAY_OF_MONTH_MAX = 28;
+
+/** Accept 0–maxDays inclusive; otherwise null. Default max is weekly (7). */
+export function sanitizePayrollDeadlineDays(
+  raw: unknown,
+  maxDays: number = PAYROLL_DEADLINE_DAYS_MAX_WEEKLY,
+): number | null {
   if (raw === null || raw === undefined || raw === '') return null;
   const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
-  if (!Number.isFinite(n) || n < 0 || n > 7) return null;
+  const max = Number.isFinite(maxDays) && maxDays >= 0 ? Math.floor(maxDays) : PAYROLL_DEADLINE_DAYS_MAX_WEEKLY;
+  if (!Number.isFinite(n) || n < 0 || n > max) return null;
   return Math.floor(n);
+}
+
+/** Accept calendar day 1–28; otherwise null. */
+export function sanitizePayrollDeadlineDayOfMonth(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 1 || n > PAYROLL_DEADLINE_DAY_OF_MONTH_MAX) return null;
+  return Math.floor(n);
+}
+
+/**
+ * Which deadline picker / storage shape to use for a pay frequency.
+ * WK → weekday (stored as days after week end); BW → days after period end; SM/GM → day of month.
+ */
+export function payrollDeadlinePickerKind(
+  frequency: string | null | undefined,
+): 'weekday' | 'daysAfter' | 'dayOfMonth' {
+  const code = normalizeFrequency(frequency);
+  if (code === 'SM' || code === 'GM') return 'dayOfMonth';
+  if (code === 'BW') return 'daysAfter';
+  return 'weekday';
 }
 
 /**
  * SLA deadline: pay week-end calendar day in client TZ, plus daysAfter, at localTime.
  * Returns ISO UTC string, or null when any part is unset/invalid.
+ * `maxDays` defaults to bi-weekly max so stored BW values (8–14) still compute.
  */
 export function computePayrollDeadlineAtIso(
   payWeekEndYmd: string,
   daysAfterWeekEnd: number | null | undefined,
   localTime: string | null | undefined,
   tz: string,
+  maxDays: number = PAYROLL_DEADLINE_DAYS_MAX_BIWEEKLY,
 ): string | null {
   const ymd = sanitizeWeekEnd(payWeekEndYmd);
-  const days = sanitizePayrollDeadlineDays(daysAfterWeekEnd);
+  const days = sanitizePayrollDeadlineDays(daysAfterWeekEnd, maxDays);
   const time = parsePayrollDeadlineLocalTime(localTime);
   if (!ymd || days == null || !time) return null;
   const isoDay = yyyymmddToIso(ymd);
@@ -481,6 +833,83 @@ export function computePayrollDeadlineAtIso(
   } catch {
     return null;
   }
+}
+
+/**
+ * SLA deadline for SM/GM: first calendar date with day-of-month on or after pay week/period end,
+ * at localTime in client TZ.
+ */
+export function computePayrollDeadlineAtIsoFromDayOfMonth(
+  payWeekEndYmd: string,
+  dayOfMonth: number | null | undefined,
+  localTime: string | null | undefined,
+  tz: string,
+): string | null {
+  const ymd = sanitizeWeekEnd(payWeekEndYmd);
+  const dom = sanitizePayrollDeadlineDayOfMonth(dayOfMonth);
+  const time = parsePayrollDeadlineLocalTime(localTime);
+  if (!ymd || dom == null || !time) return null;
+  const isoDay = yyyymmddToIso(ymd);
+  if (!isoDay) return null;
+  const zone = tz || 'America/Chicago';
+  const [hh, mm] = time.split(':').map(p => parseInt(p, 10));
+  try {
+    const start = dayjs.tz(`${isoDay} 12:00:00`, zone);
+    if (!start.isValid()) return null;
+    for (let i = 0; i <= 62; i++) {
+      const d = start.add(i, 'day');
+      if (d.date() === dom) {
+        const due = d.hour(hh).minute(mm).second(0).millisecond(0);
+        if (!due.isValid()) return null;
+        return due.toISOString();
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve deadline ISO from either days-after (WK/BW) or day-of-month (SM/GM).
+ * Day-of-month wins when both are set (should not happen after a clean save).
+ */
+export function resolvePayrollDeadlineAtIso(input: {
+  payWeekEndYmd: string;
+  daysAfterWeekEnd?: number | null;
+  dayOfMonth?: number | null;
+  localTime?: string | null;
+  tz: string;
+}): string | null {
+  if (input.dayOfMonth != null && input.dayOfMonth !== undefined) {
+    const fromDom = computePayrollDeadlineAtIsoFromDayOfMonth(
+      input.payWeekEndYmd,
+      input.dayOfMonth,
+      input.localTime,
+      input.tz,
+    );
+    if (fromDom) return fromDom;
+  }
+  return computePayrollDeadlineAtIso(
+    input.payWeekEndYmd,
+    input.daysAfterWeekEnd,
+    input.localTime,
+    input.tz,
+  );
+}
+
+/** True when the client has a usable local SLA deadline configured. */
+export function hasPayrollDeadlineConfigured(input: {
+  daysAfterWeekEnd?: number | null;
+  dayOfMonth?: number | null;
+  localTime?: string | null;
+}): boolean {
+  const time = parsePayrollDeadlineLocalTime(input.localTime);
+  if (!time) return false;
+  return (
+    sanitizePayrollDeadlineDays(input.daysAfterWeekEnd, PAYROLL_DEADLINE_DAYS_MAX_BIWEEKLY) != null
+    || sanitizePayrollDeadlineDayOfMonth(input.dayOfMonth) != null
+  );
 }
 
 export function evaluatePayrollDeadlineLate(input: {
@@ -500,4 +929,16 @@ export function evaluatePayrollDeadlineLate(input: {
     late: true,
     lateMinutes: Math.floor((now.getTime() - due) / 60000),
   };
+}
+
+/**
+ * Attention Late: past SLA with pending, outside the Live (±) window,
+ * and not resolved/accepted for this pay week.
+ */
+export function isPayrollDeadlineAttentionLate(
+  late: boolean,
+  deadlineResolved?: boolean,
+  inLiveWindow?: boolean,
+): boolean {
+  return !!late && !deadlineResolved && !inLiveWindow;
 }

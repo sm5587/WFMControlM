@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bell, Database, Clock, AlertTriangle, CheckCircle, BellOff,
-  Send, UserPlus, Trash2, X, Mail, Timer, BarChart3, ChevronDown, ChevronRight,
+  Send, UserPlus, Trash2, X, Mail, Timer, BarChart3, ChevronDown, ChevronRight, BadgeCheck,
 } from 'lucide-react';
 import { useAllClientsBatchData, waitForAllBatchStatusIdle } from '../../hooks/useAllClientsBatchData';
 import { useBatchLookbackDays } from '../../hooks/useBatchLookbackDays';
@@ -151,6 +151,9 @@ export default function AlertCenter() {
   const [payrollSuppressTarget, setPayrollSuppressTarget] = useState<{ clientId: string; name: string } | null>(null);
   const [payrollSuppressMinutes, setPayrollSuppressMinutes] = useState(getInt('threshold.defaultSuppressMins', 60));
   const [payrollSuppressReason, setPayrollSuppressReason] = useState('');
+  const [payrollResolveTarget, setPayrollResolveTarget] = useState<{ clientId: string; name: string } | null>(null);
+  const [payrollResolveReason, setPayrollResolveReason] = useState('');
+  const [payrollResolveError, setPayrollResolveError] = useState('');
 
   // ---- Recipients modal ----
   const [showRecipients, setShowRecipients] = useState(false);
@@ -317,6 +320,21 @@ export default function AlertCenter() {
       setPayrollSuppressTarget(null);
       setPayrollSuppressMinutes(60);
       setPayrollSuppressReason('');
+    },
+  });
+
+  const payrollResolveMut = useMutation({
+    mutationFn: ({ clientId, reason }: { clientId: string; reason: string }) =>
+      escalationsApi.resolvePayrollDeadline(clientId, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payroll-deadline-alerts'] });
+      queryClient.invalidateQueries({ queryKey: ['escalation-report'] });
+      setPayrollResolveTarget(null);
+      setPayrollResolveReason('');
+      setPayrollResolveError('');
+    },
+    onError: (err: any) => {
+      setPayrollResolveError(err?.response?.data?.error ?? err.message ?? 'Failed to resolve alert');
     },
   });
 
@@ -714,7 +732,7 @@ export default function AlertCenter() {
                 <p className="text-sm font-medium text-gray-700">Critical stuck jobs pending for more than {getInt('threshold.escalationMins', 60)} minutes — requires attention</p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   Acknowledge or suppress while jobs stay stuck.
-                  Escalated alerts are emailed automatically and system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
+                  Auto-email is controlled in Admin → Config (master + per-type flags for stuck jobs, payroll deadline, unprocessed punch). Notified alerts are system-acknowledged for {getInt('threshold.defaultSuppressMins', 60)} minutes.
                 </p>
               </div>
             </div>
@@ -895,7 +913,7 @@ export default function AlertCenter() {
                 </h3>
                 <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
                   <p className="text-sm font-medium text-amber-800">Pay files still pending after the client SLA deadline</p>
-                  <p className="text-xs text-amber-600 mt-0.5">Included in the one Notify Team email. Acknowledge or suppress while units remain unreleased.</p>
+                  <p className="text-xs text-amber-600 mt-0.5">Included in the one Notify Team email. Acknowledge, suppress, or resolve with a reason while units remain unreleased. Resolved alerts leave this list but stay in Reports, and stop Late attention on the dashboard / Payroll Monitor for that pay week.</p>
                 </div>
                   <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
                     <table className="w-full text-sm">
@@ -950,6 +968,19 @@ export default function AlertCenter() {
                                     {canAck && a.status === 'OPEN' && (
                                       <button onClick={() => payrollAckMut.mutate(a.clientId)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="Acknowledge">
                                         <CheckCircle className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    {canAck && (
+                                      <button
+                                        onClick={() => {
+                                          setPayrollResolveError('');
+                                          setPayrollResolveReason('');
+                                          setPayrollResolveTarget({ clientId: a.clientId, name: a.clientName || a.clientId });
+                                        }}
+                                        className="p-1.5 text-green-700 hover:bg-green-50 rounded-lg"
+                                        title="Resolve with reason"
+                                      >
+                                        <BadgeCheck className="w-4 h-4" />
                                       </button>
                                     )}
                                     {canSuppress && (
@@ -1433,6 +1464,65 @@ export default function AlertCenter() {
                 className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
               >
                 {payrollSuppressMut.isPending ? 'Suppressing...' : 'Suppress'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payrollResolveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">Resolve payroll deadline alert</h3>
+              <button
+                onClick={() => { setPayrollResolveTarget(null); setPayrollResolveError(''); setPayrollResolveReason(''); }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600">
+              Resolve the payroll deadline alert for <strong>{payrollResolveTarget.name}</strong> ({payrollResolveTarget.clientId}).
+              It will leave Escalated and remain available in Reports with your reason.
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+              <textarea
+                value={payrollResolveReason}
+                onChange={e => {
+                  setPayrollResolveReason(e.target.value);
+                  if (payrollResolveError) setPayrollResolveError('');
+                }}
+                rows={3}
+                maxLength={500}
+                placeholder="Why is this alert being closed?"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              />
+            </div>
+            {payrollResolveError && (
+              <p className="text-sm text-red-600">{payrollResolveError}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setPayrollResolveTarget(null); setPayrollResolveError(''); setPayrollResolveReason(''); }}
+                className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const reason = payrollResolveReason.trim();
+                  if (!reason) {
+                    setPayrollResolveError('Reason is required');
+                    return;
+                  }
+                  payrollResolveMut.mutate({ clientId: payrollResolveTarget.clientId, reason });
+                }}
+                disabled={payrollResolveMut.isPending}
+                className="px-4 py-2 text-sm text-white bg-green-700 rounded-lg hover:bg-green-800 disabled:opacity-50"
+              >
+                {payrollResolveMut.isPending ? 'Resolving...' : 'Resolve'}
               </button>
             </div>
           </div>

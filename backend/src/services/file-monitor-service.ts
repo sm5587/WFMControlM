@@ -36,6 +36,8 @@ export interface ClientFileMonitorResult {
   rejectedCount: number;
   pendingFiles: FileMonitorFile[];
   rejectedFolders: FileMonitorRejectedFolder[];
+  /** Remote folder roots actually checked for this client (for UI confidence). */
+  scannedFolders: string[];
   error?: string;
   status: 'CLEAN' | 'ALERT' | 'ERROR' | 'SKIPPED';
 }
@@ -363,6 +365,12 @@ export async function fetchUploadFileMonitor(
 
     logger.info(`File monitor: scanning ${clients.length} clients (pending=${checkPending}, rejected=${checkRejected})`);
 
+    const scannedFoldersForScan = checkPending
+      ? [pendingPath]
+      : checkRejected
+        ? [rejectedRoot]
+        : [];
+
     const emitProgress = (row: ClientFileMonitorResult) => {
       onProgress?.({
         type: 'progress',
@@ -394,6 +402,7 @@ export async function fetchUploadFileMonitor(
           rejectedCount: 0,
           pendingFiles: [],
           rejectedFolders: [],
+          scannedFolders: [],
           error: 'No active Prod app server',
           status: 'SKIPPED',
         };
@@ -439,6 +448,7 @@ export async function fetchUploadFileMonitor(
           rejectedCount,
           pendingFiles,
           rejectedFolders,
+          scannedFolders: scannedFoldersForScan,
           status: hasAlert ? 'ALERT' : 'CLEAN',
         };
         rows.push(row);
@@ -459,6 +469,7 @@ export async function fetchUploadFileMonitor(
           rejectedCount: 0,
           pendingFiles: [],
           rejectedFolders: [],
+          scannedFolders: scannedFoldersForScan,
           error: err.message,
           status: 'ERROR',
         };

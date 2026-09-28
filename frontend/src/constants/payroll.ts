@@ -40,6 +40,59 @@ export const PAY_DEADLINE_WEEKDAYS: Array<{ dow: number; label: string }> = [
   { dow: 0, label: 'Sun' },
 ];
 
+/** Bi-weekly: days after period (week) end. */
+export const PAY_DEADLINE_DAYS_AFTER_OPTIONS = Array.from({ length: 15 }, (_, i) => i);
+
+/** Semi-monthly / monthly: calendar day of month (1–28). */
+export const PAY_DEADLINE_DAY_OF_MONTH_OPTIONS = Array.from({ length: 28 }, (_, i) => i + 1);
+
+export function payrollDeadlinePickerKind(
+  frequency: string | null | undefined,
+): 'weekday' | 'daysAfter' | 'dayOfMonth' {
+  const code = normalizeFrequency(frequency);
+  if (code === 'SM' || code === 'GM') return 'dayOfMonth';
+  if (code === 'BW') return 'daysAfter';
+  return 'weekday';
+}
+
+export function ordinalDay(n: number): string {
+  const v = Math.floor(n);
+  const mod100 = v % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${v}th`;
+  switch (v % 10) {
+    case 1: return `${v}st`;
+    case 2: return `${v}nd`;
+    case 3: return `${v}rd`;
+    default: return `${v}th`;
+  }
+}
+
+/** Short badge / summary label for a stored SLA deadline. */
+export function formatDeadlineBadge(input: {
+  frequency?: string | null;
+  daysAfterWeekEnd?: number | null;
+  dayOfMonth?: number | null;
+  localTime?: string | null;
+  weekEndYmd?: string;
+}): string {
+  const time = (input.localTime || '').trim();
+  if (!time) return '';
+  if (input.dayOfMonth != null) {
+    return `${ordinalDay(input.dayOfMonth)} @ ${time}`;
+  }
+  if (input.daysAfterWeekEnd == null) return time;
+  const kind = payrollDeadlinePickerKind(input.frequency);
+  if (kind === 'daysAfter') {
+    const d = input.daysAfterWeekEnd;
+    return d === 0 ? `Period end @ ${time}` : `+${d}d @ ${time}`;
+  }
+  const dow = input.weekEndYmd
+    ? weekdayFromDaysAfter(input.weekEndYmd, input.daysAfterWeekEnd)
+    : null;
+  const label = weekdayShortLabel(dow);
+  return label ? `${label} ${time}` : time;
+}
+
 export function ymdWeekday(ymd: string): number | null {
   const s = toYyyymmdd(ymd);
   if (!/^\d{8}$/.test(s)) return null;
@@ -89,7 +142,12 @@ function toYyyymmdd(raw: string | null | undefined): string {
 
 export function fileGenLabel(value: string | null | undefined): string {
   const u = (value || '').trim().toUpperCase();
-  if (u === 'SINGLE_STORE') return 'Single store';
-  if (u === 'ALL_STORE') return 'All stores';
+  if (u === 'SINGLE_STORE' || u === 'SINGLE' || u === 'S') return 'Single store';
+  if (u === 'ALL_STORE' || u === 'ALL' || u === 'A') return 'All stores';
   return u || '—';
+}
+
+export function isAllStoreFileGen(value: string | null | undefined): boolean {
+  const u = (value || '').trim().toUpperCase();
+  return u === 'ALL_STORE' || u === 'ALL' || u === 'A';
 }

@@ -15,6 +15,8 @@ import ClientsList from './components/Clients/ClientsList';
 import DBMonitor from './components/DBMonitor/DBMonitor';
 import PayrollJobs from './components/Payroll/PayrollJobs';
 import PayrollMonitor from './components/Payroll/PayrollMonitor';
+import WipHeatMap from './components/Wip/WipHeatMap';
+import HeatMapDemo from './components/Wip/HeatMapDemo';
 import DBJobs from './components/DBJobs/DBJobs';
 import AdminUsers from './components/Admin/AdminUsers';
 import AdminProfiles from './components/Admin/AdminProfiles';
@@ -45,7 +47,7 @@ class RouteErrorBoundary extends React.Component<
 }
 import UnprocessedPunch from './components/UnprocessedPunch/UnprocessedPunch';
 import { ConfigProvider, useConfig } from './contexts/ConfigContext';
-import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from './constants/app-display';
+import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY, HEATMAP_ENABLED_KEY } from './constants/app-display';
 
 /** Allowed routes (must be accessed through menu only) */
 const ALLOWED_ROUTES = [
@@ -58,6 +60,9 @@ const ALLOWED_ROUTES = [
   '/file-monitor',
   '/payroll',
   '/payroll-monitor',
+  '/heatmap',
+  '/wip-heatmap',
+  '/demo',
   '/unprocessed-punch',
   '/alerts',
   '/custom-alerts',
@@ -225,6 +230,9 @@ function AppRoutes() {
           } />
           <Route path="payroll" element={<PayrollGate configKey={PAYROLL_ENABLED_KEY} permission="PAYROLL_VIEW"><PayrollJobs /></PayrollGate>} />
           <Route path="payroll-monitor" element={<PayrollGate configKey={PAYROLL_MONITOR_ENABLED_KEY} permission="PAYROLL_MONITOR_VIEW"><PayrollMonitor /></PayrollGate>} />
+          <Route path="heatmap" element={<PayrollGate configKey={HEATMAP_ENABLED_KEY} permission="HEATMAP_VIEW"><WipHeatMap /></PayrollGate>} />
+          <Route path="wip-heatmap" element={<Navigate to="/heatmap" replace />} />
+          <Route path="demo" element={<HeatMapDemo />} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />
           <Route path="alerts" element={<PermissionRoute permission="ALERTS_VIEW"><AlertCenter /></PermissionRoute>} />
           <Route path="custom-alerts" element={<PermissionRoute permission="CUSTOM_ALERTS_VIEW"><CustomAlerts /></PermissionRoute>} />

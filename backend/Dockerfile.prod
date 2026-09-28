@@ -44,6 +44,8 @@ EXPOSE 4005
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1
 
-# Keep migration-on-start behavior (can be disabled per env)
+# Do not auto-run prisma migrate deploy on start (table-rebuild migrations can
+# wipe columns added by parallel work). Opt in only with RUN_MIGRATIONS=true.
+# Prefer database/upgrades/*.sql via apply-sql.js for intentional schema updates.
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS:-true}\" = \"true\" ]; then npx prisma migrate deploy; fi && node dist/index.js"]
+CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS:-false}\" = \"true\" ]; then npx prisma migrate deploy; fi && node dist/index.js"]

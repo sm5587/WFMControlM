@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Search, Server, Database, RefreshCw, ChevronDown, ChevronRight,
+  Server, Database, RefreshCw, ChevronDown, ChevronRight,
   Globe, Activity, Clock, Building2, Layers, Pencil, Check, X, AlertTriangle, Crown, Plus, KeyRound
 } from 'lucide-react';
 import { clientsApi } from '../../services/api';
@@ -10,6 +10,7 @@ import NewClientDialog from './NewClientDialog';
 import EditClientDialog from './EditClientDialog';
 import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
+import { ClearableFilterSelect, ClearableSearchInput } from '../ui/ClearableFilter';
 
 const ENV_COLORS: Record<string, string> = {
   Prod: 'bg-green-100 text-green-700',
@@ -34,10 +35,31 @@ function isSyncDue(dateStr: string | null | undefined): boolean {
   return Date.now() - new Date(dateStr).getTime() > 24 * 60 * 60 * 1000;
 }
 
+/**
+ * Short WFM version for list/widget — keep one extra segment past the core
+ * so near builds stay distinguishable; full string remains on hover.
+ * e.g. WFM.45.1.21.2.1.20260812.U085647 → WFM.45.1.21.2.1
+ */
+function truncateVersion(version: string): string {
+  const trimmed = version.trim();
+  if (!trimmed) return trimmed;
+  // Drop trailing build label (.U085647); keep date / next segment for uniqueness
+  const withoutBuildId = trimmed.replace(/\.U\d+$/i, '');
+  const parts = withoutBuildId.split('.').filter(Boolean);
+  // WFM + 5 following parts (e.g. 45.1.21.2.1 or 45.1.22.2.20260812)
+  if (parts.length > 6) {
+    return parts.slice(0, 6).join('.');
+  }
+  return parts.join('.');
+}
+
+const VERSION_NONE = '__none__';
+
 export default function ClientsList() {
   const [search, setSearch] = useState('');
-  const { fmt } = useTimezone();
   const [clusterFilter, setClusterFilter] = useState('');
+  const [versionFilter, setVersionFilter] = useState('');
+  const [selectedVersions, setSelectedVersions] = useState<string[]>([]);
   const [showInactive, setShowInactive] = useState(false);
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
@@ -61,6 +83,16 @@ export default function ClientsList() {
     onSuccess: () => {
       refetch();
       queryClient.invalidateQueries({ queryKey: ['jobs-all'] });
+    },
+  });
+
+  const syncWfmVersionsMutation = useMutation({
+    mutationFn: (refreshAppUrl: boolean) =>
+      clientsApi.syncWfmVersions({ force: true, refreshAppUrl }),
+    onSuccess: () => {
+      // Background job — poll list shortly so versions appear as they land
+      setTimeout(() => refetch(), 3000);
+      setTimeout(() => refetch(), 15000);
     },
   });
 
@@ -92,11 +124,53 @@ export default function ClientsList() {
 
   const inactiveCount = useMemo(() => clients.filter(c => !c.isActive).length, [clients]);
 
+  /** All versions ranked by client count (widget shows top 5 collapsed, all when expanded) */
+  const topVersions = useMemo(() => {
+    const counts = new Map<string, number>();
+    let unknown = 0;
+    for (const c of visibleClients) {
+      const v = c.wfmAppVersion?.trim();
+      if (!v) {
+        unknown++;
+        continue;
+      }
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const byCount = [...counts.entries()]
+      .map(([version, count]) => ({ version, count, unknown: false as boolean }))
+      .concat(unknown > 0 ? [{ version: VERSION_NONE, count: unknown, unknown: true }] : [])
+      .sort((a, b) => b.count - a.count || a.version.localeCompare(b.version));
+
+    return { byCount, unknown };
+  }, [visibleClients]);
+
   // Build cluster groups
   const { clusterGroups, clusterList } = useMemo(() => {
-    const filtered = clusterFilter
+    let filtered = clusterFilter
       ? visibleClients.filter(c => c.cluster === clusterFilter)
       : visibleClients;
+
+    const q = versionFilter.trim().toLowerCase();
+    const hasVersionSelection = selectedVersions.length > 0;
+
+    if (hasVersionSelection || q) {
+      filtered = filtered.filter(c => {
+        const v = c.wfmAppVersion?.trim() || '';
+        const matchesSelection = !hasVersionSelection || selectedVersions.some(sel => {
+          if (sel === VERSION_NONE || sel.toLowerCase() === 'unknown') return !v;
+          if (!v) return false;
+          return v === sel
+            || truncateVersion(v) === sel
+            || v.toLowerCase().includes(sel.toLowerCase())
+            || truncateVersion(v).toLowerCase().includes(sel.toLowerCase());
+        });
+        if (!matchesSelection) return false;
+        if (!q) return true;
+        if (q === 'unknown') return !v;
+        if (!v) return false;
+        return v.toLowerCase().includes(q) || truncateVersion(v).toLowerCase().includes(q);
+      });
+    }
 
     const groups: Record<string, Client[]> = {};
     for (const c of filtered) {
@@ -115,7 +189,7 @@ export default function ClientsList() {
     });
 
     return { clusterGroups: groups, clusterList: sortedKeys };
-  }, [visibleClients, clusterFilter]);
+  }, [visibleClients, clusterFilter, versionFilter, selectedVersions]);
 
   // All unique clusters for filter dropdown
   const allClusters = useMemo(() => {
@@ -138,6 +212,17 @@ export default function ClientsList() {
   };
 
   const totalFiltered = clusterList.reduce((sum, cl) => sum + clusterGroups[cl].length, 0);
+
+  const selectVersion = (version: string) => {
+    setSelectedVersions(prev =>
+      prev.includes(version) ? prev.filter(v => v !== version) : [...prev, version],
+    );
+  };
+
+  const clearVersionFilters = () => {
+    setSelectedVersions([]);
+    setVersionFilter('');
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -181,6 +266,27 @@ export default function ClientsList() {
           {canDetectTz && detectTzMutation.isError && (
             <span className="text-xs text-red-600">Detection failed</span>
           )}
+          {canSyncClients && (
+            <button
+              onClick={(e) => syncWfmVersionsMutation.mutate(e.shiftKey)}
+              disabled={syncWfmVersionsMutation.isPending}
+              title="Refresh versions using stored APPURL. Shift+click to also re-fetch APPURL from DB2."
+              className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 text-sm"
+            >
+              <Activity className={`w-4 h-4 ${syncWfmVersionsMutation.isPending ? 'animate-pulse' : ''}`} />
+              {syncWfmVersionsMutation.isPending ? 'Refreshing versions...' : 'Refresh WFM Versions'}
+            </button>
+          )}
+          {canSyncClients && syncWfmVersionsMutation.isSuccess && (
+            <span className="text-xs text-green-600">
+              {syncWfmVersionsMutation.variables
+                ? 'WFM version + APPURL sync started'
+                : 'WFM version sync started'}
+            </span>
+          )}
+          {canSyncClients && syncWfmVersionsMutation.isError && (
+            <span className="text-xs text-red-600">Version sync failed</span>
+          )}
           {canEditClients && (
             <button
               onClick={() => setShowPwdModal(true)}
@@ -205,26 +311,46 @@ export default function ClientsList() {
 
       {/* Search & Cluster Filter */}
       <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search clients by ID or name..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
-          />
-        </div>
-        <select
+        <ClearableSearchInput
+          className="flex-1 max-w-md"
+          value={search}
+          onChange={setSearch}
+          placeholder="Search clients by ID or name..."
+        />
+        <ClearableFilterSelect
           value={clusterFilter}
-          onChange={(e) => setClusterFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+          onChange={setClusterFilter}
+          title="Filter by cluster"
         >
           <option value="">All Clusters</option>
           {allClusters.map(cl => (
             <option key={cl} value={cl}>{cl} ({visibleClients.filter(c => (c.cluster || 'Unassigned') === cl).length})</option>
           ))}
-        </select>
+        </ClearableFilterSelect>
+        <div className="relative">
+          <input
+            type="text"
+            value={versionFilter}
+            onChange={(e) => setVersionFilter(e.target.value)}
+            placeholder={
+              selectedVersions.length
+                ? `${selectedVersions.length} version${selectedVersions.length !== 1 ? 's' : ''} selected…`
+                : 'Filter by version...'
+            }
+            title="Type to narrow further, or multi-select from the WFM Versions widget"
+            className="px-3 py-2 pr-8 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300 w-52 font-mono"
+          />
+          {(versionFilter.trim() !== '' || selectedVersions.length > 0) && (
+            <button
+              type="button"
+              onClick={clearVersionFilters}
+              title="Clear version filter"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
         <label className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 cursor-pointer hover:bg-gray-50 select-none">
           <input
             type="checkbox"
@@ -240,8 +366,8 @@ export default function ClientsList() {
       </div>
 
       {/* Stats Summary */}
-      <div className="grid grid-cols-6 gap-4">
-        <StatCard icon={Building2} label="Shown" value={visibleClients.length} color="blue" />
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
+        <StatCard icon={Building2} label="Shown" value={totalFiltered} color="blue" />
         <StatCard icon={Layers} label="Clusters" value={allClusters.length} color="indigo" />
         <StatCard
           icon={Activity}
@@ -262,6 +388,13 @@ export default function ClientsList() {
           color="purple"
         />
       </div>
+
+      <VersionSummaryWidget
+        versions={topVersions.byCount}
+        selected={selectedVersions}
+        onSelect={selectVersion}
+        onClear={clearVersionFilters}
+      />
 
       {/* Cluster-grouped Client Tables */}
       {isLoading ? (
@@ -306,7 +439,7 @@ export default function ClientsList() {
                         <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Client ID</th>
                         <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Name</th>
                         <th className="px-5 py-2 text-center text-xs font-semibold text-gray-500 uppercase">Prod Server</th>
-                        <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">DB2</th>
+                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap" title="WFM Version">Ver</th>
                         <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Timezone</th>
                         <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Last Synced</th>
                         <th className="px-5 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Status</th>
@@ -488,25 +621,16 @@ function ClientRow({
             {client.serverCounts?.Prod || 0}
           </span>
         </td>
-        <td className="px-5 py-3">
-          {client.db2Connection?.host ? (
-            <div title={`${client.db2Connection.host}:${client.db2Connection.port}/${client.db2Connection.database}`}>
-              <span className="text-xs font-medium text-gray-700">
-                {client.db2Connection.database}
-                {client.db2SslEnabled && (
-                  <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700">
-                    TLS
-                  </span>
-                )}
-              </span>
-              <span className="text-xs text-gray-400 block truncate max-w-[180px]">{client.db2Connection.host}:{client.db2Connection.port}</span>
-              {(!client.db2Username || !client.db2PasswordSet) && (
-                <span className="inline-flex items-center gap-1 text-xs text-amber-600 mt-0.5">
-                  <AlertTriangle className="w-3 h-3" />
-                  {!client.db2Username && !client.db2PasswordSet ? 'No credentials' : !client.db2Username ? 'No username' : 'No password'}
-                </span>
-              )}
-            </div>
+        <td className="px-2 py-3 whitespace-nowrap">
+          {client.wfmAppVersion ? (
+            <span
+              className={`text-xs font-mono font-medium cursor-default ${
+                isSyncDue(client.wfmAppVersionSyncedAt) ? 'text-amber-700' : 'text-gray-800'
+              }`}
+              title={client.wfmAppVersion}
+            >
+              {truncateVersion(client.wfmAppVersion)}
+            </span>
           ) : (
             <span className="text-xs text-gray-300">—</span>
           )}
@@ -746,6 +870,119 @@ function StatCard({ icon: Icon, label, value, color }: { icon: any; label: strin
         <p className="text-2xl font-bold text-gray-900">{value}</p>
         <p className="text-xs text-gray-500">{label}</p>
       </div>
+    </div>
+  );
+}
+
+/** WFM version breakdown by count — collapsed top 5; expand to show all. Multi-select filters. */
+function VersionSummaryWidget({
+  versions,
+  selected,
+  onSelect,
+  onClear,
+}: {
+  versions: Array<{ version: string; count: number; unknown: boolean }>;
+  selected: string[];
+  onSelect: (version: string) => void;
+  onClear: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const canExpand = versions.length > 5;
+  const rows = expanded || !canExpand ? versions : versions.slice(0, 5);
+  const maxCount = Math.max(...versions.map(r => r.count), 1);
+  const hasSelection = selected.length > 0;
+
+  return (
+    <div className="rounded-xl border border-gray-100 bg-white px-4 py-3">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="min-w-0 flex items-center gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-gray-800">WFM Versions</p>
+            <p className="text-[10px] text-gray-500">
+              {expanded || !canExpand
+                ? `${versions.length} version${versions.length !== 1 ? 's' : ''}`
+                : `Top 5 of ${versions.length}`}
+              {' · '}click to multi-select
+              {hasSelection ? ` · ${selected.length} selected` : ''}
+            </p>
+          </div>
+          {hasSelection && (
+            <button
+              type="button"
+              onClick={onClear}
+              title="Clear version filter"
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-gray-500 bg-white border border-gray-200 hover:text-red-600 hover:border-red-200 shrink-0"
+            >
+              <X className="w-3 h-3" />
+              Clear
+            </button>
+          )}
+        </div>
+        {canExpand && (
+          <button
+            type="button"
+            onClick={() => setExpanded(e => !e)}
+            className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-gray-50 shrink-0"
+            title={expanded ? 'Show top 5 only' : 'Show all versions'}
+          >
+            {expanded ? (
+              <>
+                <ChevronDown className="w-3 h-3 rotate-180" />
+                Collapse
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-3 h-3" />
+                Show all ({versions.length})
+              </>
+            )}
+          </button>
+        )}
+      </div>
+
+      {versions.length === 0 ? (
+        <p className="text-xs text-gray-400 py-2">No versions yet — refresh WFM versions to populate</p>
+      ) : (
+        <div className={expanded ? 'max-h-48 overflow-y-auto pr-1' : undefined}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-x-4 gap-y-1.5">
+            {rows.map(({ version, count, unknown }) => {
+              const filterKey = unknown ? VERSION_NONE : version;
+              const display = unknown ? 'Unknown' : truncateVersion(version);
+              const active = selected.includes(filterKey);
+              return (
+                <button
+                  key={filterKey}
+                  type="button"
+                  onClick={() => onSelect(filterKey)}
+                  title={unknown ? 'Clients with no WFM version' : version}
+                  className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                    active
+                      ? 'bg-indigo-100 ring-1 ring-indigo-300'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <span className={`text-xs font-mono font-medium whitespace-nowrap shrink-0 ${
+                    unknown ? 'text-gray-400' : 'text-gray-800'
+                  }`}>
+                    {display}
+                  </span>
+                  <span className="flex-1 min-w-[32px] max-w-[72px] h-1.5 rounded-full bg-gray-200/80 overflow-hidden">
+                    <span
+                      className={`block h-full rounded-full ${
+                        active ? 'bg-indigo-500' : unknown ? 'bg-gray-300' : 'bg-slate-400'
+                      }`}
+                      style={{ width: `${Math.max(10, (count / maxCount) * 100)}%` }}
+                    />
+                  </span>
+                  <span className="text-[11px] tabular-nums font-medium text-gray-600 w-5 text-right shrink-0">
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

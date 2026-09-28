@@ -145,6 +145,8 @@ export interface ClientFileMonitorResult {
   rejectedCount: number;
   pendingFiles: FileMonitorFile[];
   rejectedFolders: FileMonitorRejectedFolder[];
+  /** Remote folder roots checked for this client (empty if skipped before scan). */
+  scannedFolders?: string[];
   error?: string;
   status: 'CLEAN' | 'ALERT' | 'ERROR' | 'SKIPPED';
 }
@@ -218,6 +220,9 @@ export interface Client {
   lastCronSyncAt?: string | null;
   lastCronAttemptAt?: string | null;
   lastTzAttemptAt?: string | null;
+  wfmAppUrl?: string | null;
+  wfmAppVersion?: string | null;
+  wfmAppVersionSyncedAt?: string | null;
   _count?: { appServers: number; jobs: number; syncHistory: number };
   serverCounts?: { PP: number; Prod: number; total: number };
 }

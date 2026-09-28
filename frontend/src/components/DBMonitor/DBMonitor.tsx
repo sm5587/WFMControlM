@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Database, Server, RefreshCw, Search, CheckCircle, XCircle,
+  Database, Server, RefreshCw, CheckCircle, XCircle,
   AlertTriangle, ChevronDown, ChevronRight, Loader2, Clock, BarChart3,
   Activity, WifiOff, Layers
 } from 'lucide-react';
@@ -14,6 +14,7 @@ import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useConfig } from '../../contexts/ConfigContext';
 import { useResizablePanel } from '../../hooks/useResizablePanel';
 import { SortableHeader, useSortState } from '../ui/SortableHeader';
+import { ClearableFilterSelect, ClearableSearchInput } from '../ui/ClearableFilter';
 
 // ============================================================
 // DB Monitor Page — Batch Status from DB2
@@ -228,6 +229,7 @@ export default function DBMonitor() {
   const totalCompleted = jobGroups.reduce((s: number, g: any) => s + g.completed, 0);
   const totalFailed = jobGroups.reduce((s: number, g: any) => s + g.failed, 0);
   const totalActive = jobGroups.reduce((s: number, g: any) => s + g.active + g.pending, 0);
+  const totalStale = jobGroups.reduce((s: number, g: any) => s + (g.stalePending || 0), 0);
 
   const groupKey = (g: any) => `${g.jobType}|${g.planType}`;
   const isExpanded = (g: any) => expandedJob?.jobType === g.jobType && expandedJob?.planType === g.planType;
@@ -359,26 +361,23 @@ export default function DBMonitor() {
         {/* Left: Client List */}
         <div style={{ width: leftWidth, minWidth: 180, maxWidth: 480, flexShrink: 0 }} className="bg-white rounded-xl border overflow-hidden">
           <div className="p-3 border-b">
-            <div className="relative">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search clients..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-            </div>
-            <select
+            <ClearableSearchInput
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search clients..."
+              inputClassName="w-full py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+            <ClearableFilterSelect
               value={clusterFilter}
-              onChange={e => setClusterFilter(e.target.value)}
-              className="w-full mt-2 px-2 py-1.5 text-xs border rounded-lg focus:ring-2 focus:ring-indigo-300"
+              onChange={setClusterFilter}
+              className="w-full mt-2"
+              selectClassName="w-full px-2 py-1.5 text-xs border rounded-lg focus:ring-2 focus:ring-indigo-300"
             >
               <option value="">All Clusters</option>
               {clusterList.map(cl => (
                 <option key={cl} value={cl}>{cl}</option>
               ))}
-            </select>
+            </ClearableFilterSelect>
             <p className="text-xs text-gray-400 mt-2">
               {clients.length} clients
               {Object.keys(connStatus).length > 0 && (() => {
@@ -503,7 +502,7 @@ export default function DBMonitor() {
 
               {/* Summary Cards */}
               {jobGroups.length > 0 && (
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-5 gap-4">
                   <div className="bg-white rounded-xl border p-4">
                     <div className="flex items-center gap-2 text-sm text-gray-500 mb-1">
                       <BarChart3 className="w-4 h-4" /> Total Runs
@@ -528,6 +527,14 @@ export default function DBMonitor() {
                     </div>
                     <p className="text-2xl font-bold text-blue-600">{totalActive.toLocaleString()}</p>
                   </div>
+                  <div className="bg-white rounded-xl border p-4">
+                    <div className="flex items-center gap-2 text-sm text-gray-500 mb-1">
+                      <Clock className="w-4 h-4 text-amber-500" /> Stale &gt; {staleMins}min
+                    </div>
+                    <p className={`text-2xl font-bold ${totalStale > 0 ? 'text-amber-600' : 'text-gray-900'}`}>
+                      {totalStale.toLocaleString()}
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -546,16 +553,14 @@ export default function DBMonitor() {
                   </div>
                   {jobGroups.length > 0 && (
                     <div className="flex items-center gap-2 flex-wrap">
-                      <div className="relative flex-1 min-w-[180px]">
-                        <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          value={jobFilter}
-                          onChange={e => setJobFilter(e.target.value)}
-                          placeholder="Filter by job type, plan, or description…"
-                          className="w-full pl-7 pr-3 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                        />
-                      </div>
+                      <ClearableSearchInput
+                        className="flex-1 min-w-[180px]"
+                        value={jobFilter}
+                        onChange={setJobFilter}
+                        placeholder="Filter by job type, plan, or description…"
+                        iconSize={14}
+                        inputClassName="w-full py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                      />
                       <div className="flex items-center gap-1 text-[10px] text-gray-400">
                       Sort:
                       {(['jobType','totalRuns','completed','failed','active','stalePending'] as const).map(col => (

@@ -12,10 +12,15 @@
 --   20260921120000_add_payroll_deadline
 --   20260921140000_add_payroll_deadline_alert
 --   20260921160000_add_payroll_deadline_email_sent
+--   20260924120000_add_payroll_deadline_resolve_reason
+--   20260924163000_add_payroll_deadline_day_of_month
+--   20260925120000_add_client_wfm_app_version
 -- ============================================================
 
--- Per-client payroll SLA deadline (days after week end + local HH:mm)
+-- Per-client payroll SLA deadline (days after week/period end + local HH:mm;
+-- SM/GM use day-of-month instead of days-after)
 ALTER TABLE "Client" ADD COLUMN "payrollDeadlineDaysAfterWeekEnd" INTEGER;
+ALTER TABLE "Client" ADD COLUMN "payrollDeadlineDayOfMonth" INTEGER;
 ALTER TABLE "Client" ADD COLUMN "payrollDeadlineLocalTime" TEXT;
 
 -- Payroll deadline missed alerts (Escalated tab + Notify Team)
@@ -47,6 +52,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS "PayrollDeadlineAlert_clientId_key" ON "Payrol
 CREATE INDEX IF NOT EXISTS "PayrollDeadlineAlert_status_idx" ON "PayrollDeadlineAlert"("status");
 CREATE INDEX IF NOT EXISTS "PayrollDeadlineAlert_suppressUntil_idx" ON "PayrollDeadlineAlert"("suppressUntil");
 
+-- Manual resolve-with-reason (Prisma 20260924120000)
+ALTER TABLE "PayrollDeadlineAlert" ADD COLUMN "resolvedBy" TEXT;
+ALTER TABLE "PayrollDeadlineAlert" ADD COLUMN "resolveReason" TEXT;
+
+-- Client WFM app version (Prisma 20260925120000) — APPURL from DB2 RFX_CONFIG + reflexisversion.txt
+ALTER TABLE "Client" ADD COLUMN "wfmAppUrl" TEXT;
+ALTER TABLE "Client" ADD COLUMN "wfmAppVersion" TEXT;
+ALTER TABLE "Client" ADD COLUMN "wfmAppVersionSyncedAt" DATETIME;
+
 -- ============================================================
 -- Custom Alerts (user-defined SQL threshold watchers)
 -- Mirrors Prisma migrations:
@@ -56,7 +70,7 @@ CREATE INDEX IF NOT EXISTS "PayrollDeadlineAlert_suppressUntil_idx" ON "PayrollD
 --   20260923195313_custom_alerts_schedule
 --   20260925083703_custom_alerts_cron_schedule
 --   20260928130000_custom_alerts_remove_column
---   20260928140000_add_custom_alerts_permissions
+--   (permissions → 1.1.0-dml.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS "CustomAlert" (
@@ -90,28 +104,3 @@ CREATE TABLE IF NOT EXISTS "CustomAlert" (
 CREATE INDEX IF NOT EXISTS "CustomAlert_isActive_idx" ON "CustomAlert"("isActive");
 CREATE INDEX IF NOT EXISTS "CustomAlert_clientId_idx" ON "CustomAlert"("clientId");
 CREATE INDEX IF NOT EXISTS "CustomAlert_lastStatus_idx" ON "CustomAlert"("lastStatus");
-
--- Custom Alerts permissions (AppFunction catalog + profile grants)
-INSERT OR IGNORE INTO "AppFunction" ("id", "module", "name", "description", "sortOrder") VALUES
-  ('CUSTOM_ALERTS_VIEW', 'Custom Alerts', 'Custom Alerts', NULL, 73),
-  ('CUSTOM_ALERTS_MANAGE', 'Custom Alerts', 'Custom Alerts — Create / Edit / Delete', 'Create, edit, delete and run custom SQL threshold alerts', 74);
-
--- Grant to System Admin (read + write)
-INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWrite")
-SELECT p.id, fn.id, 1, 1
-FROM "Profile" p
-CROSS JOIN (
-  SELECT 'CUSTOM_ALERTS_VIEW' AS id UNION ALL
-  SELECT 'CUSTOM_ALERTS_MANAGE'
-) fn
-WHERE p."isSystem" = 1 AND p.name = 'System Admin';
-
--- Grant read to Monitor + Read Only profiles
-INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWrite")
-SELECT p.id, fn.id, 1, 0
-FROM "Profile" p
-CROSS JOIN (
-  SELECT 'CUSTOM_ALERTS_VIEW' AS id UNION ALL
-  SELECT 'CUSTOM_ALERTS_MANAGE'
-) fn
-WHERE p."isSystem" = 1 AND p.name IN ('Monitor', 'Read Only');

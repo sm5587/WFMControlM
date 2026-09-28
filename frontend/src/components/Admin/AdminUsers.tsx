@@ -2,10 +2,11 @@ import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   UserPlus, Shield, UserX, UserCheck, X, Pencil, Clock, CheckCircle, XCircle,
-  Search, LayoutList, Layers,
+  LayoutList, Layers,
 } from 'lucide-react';
 import { adminApi, authApi, AdminUser, AccessRequest, AdminProfile } from '../../services/api';
 import { usePermission } from '../../context/AuthContext';
+import { ClearableFilterSelect, ClearableSearchInput } from '../ui/ClearableFilter';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
 type ViewMode = 'list' | 'grouped';
@@ -69,7 +70,7 @@ function groupUsersByProfile(users: AdminUser[], profiles: AdminProfile[]): User
 }
 
 export default function AdminUsers() {
-  const canManage = usePermission('USERS_MANAGE', 'write');
+  const canManage = usePermission('USERS_VIEW', 'write');
   const canAssign = usePermission('USER_PROFILE_ASSIGN', 'write');
   const qc = useQueryClient();
 
@@ -191,16 +192,18 @@ export default function AdminUsers() {
   const [approveTarget, setApproveTarget] = useState<AccessRequest | null>(null);
   const [approveProfileId, setApproveProfileId] = useState('');
   const [approveDisplayName, setApproveDisplayName] = useState('');
-  const [approveUsername, setApproveUsername] = useState('');
   const [rejectTarget, setRejectTarget] = useState<AccessRequest | null>(null);
   const [rejectNote, setRejectNote] = useState('');
+
+  const approveUsernamePreview = approveTarget
+    ? (approveTarget.requestedUsername || approveTarget.email.split('@')[0] || '')
+    : '';
 
   const approveMut = useMutation({
     mutationFn: () =>
       adminApi.approveAccessRequest(approveTarget!.id, {
         profileId: approveProfileId,
         displayName: approveDisplayName || undefined,
-        username: approveUsername || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-access-requests'] });
@@ -208,7 +211,6 @@ export default function AdminUsers() {
       setApproveTarget(null);
       setApproveProfileId('');
       setApproveDisplayName('');
-      setApproveUsername('');
     },
   });
 
@@ -225,7 +227,6 @@ export default function AdminUsers() {
     setApproveTarget(req);
     setApproveProfileId('');
     setApproveDisplayName(req.displayName || req.email.split('@')[0]);
-    setApproveUsername(req.requestedUsername || req.email.split('@')[0]);
   };
 
   const formatDate = (iso: string) =>
@@ -410,21 +411,18 @@ export default function AdminUsers() {
       {!isLoading && users.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search by username, email, display name, or profile…"
-                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
-              />
-            </div>
+            <ClearableSearchInput
+              className="flex-1 min-w-0"
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Search by username, email, display name, or profile…"
+              inputClassName="w-full py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+            />
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <ClearableFilterSelect
                 value={profileFilter}
-                onChange={e => setProfileFilter(e.target.value)}
-                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white min-w-[160px]"
+                onChange={setProfileFilter}
+                selectClassName="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white min-w-[160px]"
                 aria-label="Filter by profile"
               >
                 <option value="">All profiles</option>
@@ -432,17 +430,18 @@ export default function AdminUsers() {
                 {profiles.map(p => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
-              </select>
-              <select
+              </ClearableFilterSelect>
+              <ClearableFilterSelect
                 value={statusFilter}
-                onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                onChange={v => setStatusFilter(v as StatusFilter)}
+                emptyValue="all"
+                selectClassName="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
                 aria-label="Filter by status"
               >
                 <option value="all">All statuses</option>
                 <option value="active">Active only</option>
                 <option value="inactive">Inactive only</option>
-              </select>
+              </ClearableFilterSelect>
               <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
                 <button
                   type="button"
@@ -645,11 +644,13 @@ export default function AdminUsers() {
               <label className="block text-xs font-medium text-gray-700 mb-1">Username</label>
               <input
                 type="text"
-                value={approveUsername}
-                onChange={e => setApproveUsername(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono"
-                placeholder="Must match LDAP sAMAccountName"
+                value={approveUsernamePreview}
+                readOnly
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono bg-gray-50 text-gray-600 cursor-not-allowed"
               />
+              <p className="mt-1 text-xs text-gray-400">
+                Set from LDAP / email identity and cannot be changed (required for login).
+              </p>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">Display Name</label>

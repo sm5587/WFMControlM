@@ -66,15 +66,9 @@ function Initialize-Environment {
             }
         }
 
-        Invoke-Step "Applying Prisma migrations (deploy)" {
-            Push-Location $Backend
-            try {
-                node node_modules\prisma\build\index.js migrate deploy
-            }
-            finally {
-                Pop-Location
-            }
-        }
+        # Skip prisma migrate deploy on start — parallel-branch table rebuilds can
+        # drop columns. Use database/upgrades/*.sql (apply-sql.js) instead.
+        Write-Host "Skipping Prisma migrate deploy (use database/upgrades/*.sql for schema changes)"
 
         Invoke-Step "Applying database DDL bootstrap" {
             Push-Location $Backend

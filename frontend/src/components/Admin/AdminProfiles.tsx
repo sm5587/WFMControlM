@@ -19,7 +19,7 @@ function groupByModule(fns: AdminAppFunction[]): Record<string, AdminAppFunction
 }
 
 export default function AdminProfiles() {
-  const canManage = usePermission('PROFILES_MANAGE', 'write');
+  const canManage = usePermission('PROFILES_VIEW', 'write');
   const canEditPerms = usePermission('PERMISSIONS_EDIT', 'write');
   const qc = useQueryClient();
 

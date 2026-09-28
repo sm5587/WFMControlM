@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import {
-  Search, Trash2, RefreshCw,
+  Trash2, RefreshCw,
   Filter, ChevronRight, ChevronUp, ChevronDown, CheckCircle, XCircle, AlertTriangle, Clock, Loader, FileText, X,
   Building2, Layers, CalendarDays, Activity, Briefcase
 } from 'lucide-react';
@@ -13,6 +13,7 @@ import { usePermission } from '../../context/AuthContext';
 import { useTimezone } from '../../hooks/useTimezone';
 import { useGlobalFilter } from '../../context/GlobalFilterContext';
 import { useConfig } from '../../contexts/ConfigContext';
+import { ClearableFilterSelect, ClearableSearchInput } from '../ui/ClearableFilter';
 import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
 import SyncDisabledBanner from '../common/SyncDisabledBanner';
 
@@ -395,25 +396,24 @@ export default function JobsList() {
         <div className="col-span-2 bg-white rounded-xl border overflow-hidden">
           <div className="p-3 border-b">
             <div className="relative">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search clients..."
+              <ClearableSearchInput
                 value={clientSearch}
-                onChange={e => setClientSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-zebra-300 focus:border-zebra-300"
+                onChange={setClientSearch}
+                placeholder="Search clients..."
+                inputClassName="w-full py-2 text-sm border rounded-lg focus:ring-2 focus:ring-zebra-300 focus:border-zebra-300"
               />
             </div>
-            <select
+            <ClearableFilterSelect
               value={clusterFilter}
-              onChange={e => setClusterFilter(e.target.value)}
-              className="w-full mt-2 px-2 py-1.5 text-xs border rounded-lg focus:ring-2 focus:ring-zebra-300"
+              onChange={setClusterFilter}
+              className="w-full mt-2"
+              selectClassName="w-full px-2 py-1.5 text-xs border rounded-lg focus:ring-2 focus:ring-zebra-300"
             >
               <option value="">All Clusters</option>
               {clusterList.map(cl => (
                 <option key={cl} value={cl}>{cl}</option>
               ))}
-            </select>
+            </ClearableFilterSelect>
           </div>
           <div className="overflow-auto max-h-[calc(100vh-340px)]">
             {/* All Clients option */}
@@ -497,16 +497,12 @@ export default function JobsList() {
 
       {/* Search & Filters */}
       <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search jobs..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
-          />
-        </div>
+        <ClearableSearchInput
+          className="flex-1 max-w-md"
+          value={search}
+          onChange={setSearch}
+          placeholder="Search jobs..."
+        />
         {canSyncCrons && (
         <button
           onClick={async () => {

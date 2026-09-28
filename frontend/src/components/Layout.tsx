@@ -3,17 +3,21 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Briefcase,
   Bell, BellRing, ChevronLeft, ChevronRight, Activity, Building2, Database, DollarSign, Play, Radio,
-  Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch,
+  Users, Settings, CalendarClock, Layers, Filter, X, Trash2, Timer, Wrench, FolderSearch, Grid3X3,
+  FlaskConical,
 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useBackgroundPolling } from '../hooks/useBackgroundPolling';
 import { useAlertsMenuBadge } from '../hooks/useAlertsMenuBadge';
+import { useUsersMenuBadge } from '../hooks/useUsersMenuBadge';
 import { useAuth } from '../context/AuthContext';
 import { useGlobalFilter } from '../context/GlobalFilterContext';
+import { ClearableFilterSelect } from './ui/ClearableFilter';
 import { useAppName, useAppVersion, useDeploymentLabel, useConfig } from '../contexts/ConfigContext';
 import { appSubtitle } from './DeploymentBadge';
 import UserProfileMenu from './UserProfileMenu';
-import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY } from '../constants/app-display';
+import ExternalToolsMenu from './ExternalToolsMenu';
+import { PAYROLL_ENABLED_KEY, PAYROLL_MONITOR_ENABLED_KEY, HEATMAP_ENABLED_KEY } from '../constants/app-display';
 
 const navItems = [
   { path: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, permission: null },
@@ -25,6 +29,8 @@ const navItems = [
   { path: '/db-monitor',  label: 'DB Jobs Monitor', icon: Database,      permission: 'DBMONITOR_VIEW' },
   { path: '/payroll',     label: 'Payroll Jobs',       icon: DollarSign,      permission: 'PAYROLL_VIEW' },
   { path: '/payroll-monitor', label: 'Payroll Monitor', icon: Radio,           permission: 'PAYROLL_MONITOR_VIEW' },
+  { path: '/heatmap', label: 'Heat Map', icon: Grid3X3,         permission: 'HEATMAP_VIEW' },
+  { path: '/demo', label: 'Demo', icon: FlaskConical, permission: null },
   { path: '/unprocessed-punch', label: 'Unprocessed Punch', icon: Timer,        permission: 'UNPROC_PUNCH_VIEW' },
   { path: '/alerts',      label: 'Alerts',             icon: Bell,            permission: 'ALERTS_VIEW' },
   { path: '/custom-alerts', label: 'Custom Alerts',    icon: BellRing,        permission: 'CUSTOM_ALERTS_VIEW' },
@@ -44,11 +50,13 @@ export default function Layout() {
   const { getBool } = useConfig();
   const payrollEnabled = getBool(PAYROLL_ENABLED_KEY, false);
   const payrollMonitorEnabled = getBool(PAYROLL_MONITOR_ENABLED_KEY, false);
+  const heatMapEnabled = getBool(HEATMAP_ENABLED_KEY, false);
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const { isConnected } = useWebSocket();
   useBackgroundPolling();
   const { showBadge: showAlertsBadge } = useAlertsMenuBadge();
+  const { showBadge: showUsersBadge } = useUsersMenuBadge();
   const { canRead } = useAuth();
   const showAdminSection = adminNavItems.some(item => canRead(item.permission));
   const {
@@ -85,6 +93,7 @@ export default function Layout() {
               if (permission && !canRead(permission)) return null;
               if (path === '/payroll' && !payrollEnabled) return null;
               if (path === '/payroll-monitor' && !payrollMonitorEnabled) return null;
+              if (path === '/heatmap' && !heatMapEnabled) return null;
               const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
               const showRedBadge = path === '/alerts' && showAlertsBadge;
               return (
@@ -118,6 +127,7 @@ export default function Layout() {
               {adminNavItems.map(({ path, label, icon: Icon, permission }) => {
                 if (!canRead(permission)) return null;
                 const isActive = location.pathname.startsWith(path);
+                const showUsersAttention = path === '/admin/users' && showUsersBadge;
                 return (
                   <Link
                     key={path}
@@ -128,7 +138,12 @@ export default function Layout() {
                         : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
-                    <Icon className="w-5 h-5 flex-shrink-0" />
+                    <div className="relative flex-shrink-0">
+                      <Icon className="w-5 h-5" />
+                      {showUsersAttention && (
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900" />
+                      )}
+                    </div>
                     {!collapsed && <span className="text-sm font-medium">{label}</span>}
                   </Link>
                 );
@@ -167,29 +182,29 @@ export default function Layout() {
           {/* Cluster */}
           <div className="flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-gray-400" />
-            <select
+            <ClearableFilterSelect
               value={selectedCluster}
-              onChange={e => setSelectedCluster(e.target.value)}
-              className="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500 min-w-[130px]"
+              onChange={setSelectedCluster}
+              selectClassName="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500 min-w-[130px]"
             >
               <option value="">All Clusters</option>
               {clusters.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
+            </ClearableFilterSelect>
           </div>
 
           {/* Client */}
           <div className="flex items-center gap-1.5">
             <Building2 className="w-3.5 h-3.5 text-gray-400" />
-            <select
+            <ClearableFilterSelect
               value={selectedClientId}
-              onChange={e => setSelectedClientId(e.target.value)}
-              className="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500 min-w-[170px]"
+              onChange={setSelectedClientId}
+              selectClassName="text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-zebra-500 min-w-[170px]"
             >
               <option value="">All Clients</option>
               {filteredClients.map(c => (
                 <option key={c.id} value={c.id}>{c.clientId} — {c.name}</option>
               ))}
-            </select>
+            </ClearableFilterSelect>
           </div>
 
           {/* Clear */}
@@ -203,7 +218,10 @@ export default function Layout() {
             </button>
           )}
 
-          <UserProfileMenu />
+          <div className="ml-auto flex items-center gap-2">
+            <ExternalToolsMenu />
+            <UserProfileMenu />
+          </div>
         </div>
 
         <main className="flex-1 overflow-auto flex flex-col min-h-0 [scrollbar-gutter:stable]">

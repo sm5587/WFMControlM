@@ -10,6 +10,10 @@ export interface AuthUser {
   timezone: string;
   /** Assigned profile names (from /me) */
   profileNames?: string[];
+  /** Assigned profile IDs (from /me) — used for external tool scoping */
+  profileIds?: string[];
+  /** Master bootstrap account — sees all profile-scoped tools */
+  isMaster?: boolean;
   /** functionId → { r: read, w: write } */
   permissions: Record<string, { r: boolean; w: boolean }>;
 }
@@ -37,6 +41,8 @@ function mapMeToAuthUser(data: {
   email?: string;
   timezone?: string;
   profileNames?: string[];
+  profileIds?: string[];
+  isMaster?: boolean;
   permissions?: Record<string, { r: boolean; w: boolean }>;
 }): AuthUser {
   return {
@@ -46,6 +52,8 @@ function mapMeToAuthUser(data: {
     email: data.email,
     timezone: data.timezone || 'Asia/Kolkata',
     profileNames: data.profileNames,
+    profileIds: data.profileIds,
+    isMaster: data.isMaster === true || data.id === 'master',
     permissions: data.permissions ?? {},
   };
 }

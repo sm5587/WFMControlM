@@ -11,28 +11,41 @@ import { prisma } from '../database/prisma';
 import { configService } from './config-service';
 import { db2DirectService } from './db2-direct-service';
 import { payrollDeadlineAlertService } from './payroll-deadline-alert-service';
+import { escalationService } from './escalation-service';
+import { logger } from '../utils/logger';
 import {
   CLIENT_WIDE_DIST_LIST_ID,
+  EMPTY_FILE_STATUS_COUNTS,
   PAY_FILE_GENERATED_STATUS,
   PAYROLL_FEATURE_IDS,
   PayScheduleKind,
+  PayrollFileStatusCounts,
   PayrollMonitorPhase,
   calendarPeriodsSql,
+  DEFAULT_PAYROLL_LIVE_WINDOW_HOURS,
   classifyMonitorPhase,
   compareMonitorReleaseOrder,
   computeNextCronRunIso,
-  computePayrollDeadlineAtIso,
   computeReleaseDueAtIso,
+  countFileStatuses,
   defaultPayWeekEnd,
   evaluatePayrollDeadlineLate,
   evaluateStalledGeneration,
   isClientWideDistList,
+  isPayrollDeadlineAttentionLate,
+  isWithinPayrollLiveWindow,
   monitorRowKey,
+  calendarWeekEndOnOrBefore,
+  frequencyUsesCalendarWeekEndQuery,
+  periodsForFrequency,
+  priorPayWeekEnd,
   normalizeFrequency,
   parseFrequencies,
   payJobKind,
   regularPayJobRank,
+  resolvePayrollDeadlineAtIso,
   resolveQueueSchedule,
+  resolveWeekEndInPeriods,
   rfxCompactDateTime,
   sanitizeDistListId,
   sanitizeFrequency,
@@ -76,6 +89,28 @@ export interface AdjOutstanding {
   error?: string;
 }
 
+export interface PayrollUnitCounts {
+  total: number;
+  generated: number;
+  pending: number;
+  /** This-week FILE_STATUS buckets (F/D/Q/blank); blank includes null and any other code. */
+  byStatus: PayrollFileStatusCounts;
+}
+
+const EMPTY_UNITS: PayrollUnitCounts = {
+  total: 0,
+  generated: 0,
+  pending: 0,
+  byStatus: { ...EMPTY_FILE_STATUS_COUNTS },
+};
+
+/** Prior-week FILE_STATUS=F baseline; `generated` is the expected store count for the week in question. */
+export interface PriorWeekGeneratedCompare {
+  weekEndDate: string;
+  total: number;
+  generated: number;
+}
+
 export interface PayrollSummary {
   totalStores: number;
   generatedCount: number;
@@ -83,6 +118,8 @@ export interface PayrollSummary {
   distinctFileIds: number;
   fileIds: string[];
   generatedAt: string | null;
+  /** Stores with FILE_STATUS=F on the prior calendar week (same scope). */
+  priorWeek: PriorWeekGeneratedCompare | null;
 }
 
 export interface PayFileProcess {
@@ -108,8 +145,13 @@ export interface PayrollResult {
   adj: AdjOutstanding | null;
   timezone: string;
   payrollDeadlineDaysAfterWeekEnd: number | null;
+  payrollDeadlineDayOfMonth: number | null;
   payrollDeadlineLocalTime: string | null;
+  payrollMonitorEnabled: boolean;
   deadlineAt: string | null;
+  /** True when Escalated deadline alert was resolved for this pay week. */
+  deadlineResolved: boolean;
+  /** Attention Late (false when deadlineResolved for this week). */
   late: boolean;
   lateMinutes: number | null;
   executionTimeMs: number;
@@ -158,11 +200,15 @@ export interface PayrollMonitorRow {
   distListId: string;
   distListName: string | null;
   generator: PayMonitorGenerator;
-  units: { total: number; generated: number; pending: number };
+  units: PayrollUnitCounts;
+  priorWeek: PriorWeekGeneratedCompare | null;
   phase: PayrollMonitorPhase;
   stalled: boolean;
   stalledMinutes: number | null;
   deadlineAt: string | null;
+  /** Escalated alert resolved for this pay week — no Late attention. */
+  deadlineResolved: boolean;
+  /** Attention Late (suppressed when deadlineResolved). */
   late: boolean;
   lateMinutes: number | null;
   error?: string;
@@ -189,11 +235,13 @@ export interface PayrollMonitorDetail {
   distListId: string;
   distListName: string | null;
   generator: PayMonitorGenerator;
-  units: { total: number; generated: number; pending: number };
+  units: PayrollUnitCounts;
+  priorWeek: PriorWeekGeneratedCompare | null;
   phase: PayrollMonitorPhase;
   stalled: boolean;
   stalledMinutes: number | null;
   deadlineAt: string | null;
+  deadlineResolved: boolean;
   late: boolean;
   lateMinutes: number | null;
   records: PayrollRecord[];
@@ -207,7 +255,11 @@ const UNIT_STATUS_COLUMNS =
 function cell(row: Record<string, string | null> | undefined, key: string): string {
   if (!row) return '';
   const direct = row[key] ?? row[key.toLowerCase()] ?? row[key.toUpperCase()];
-  return (direct || '').trim();
+  if (direct == null) return '';
+  const s = String(direct).trim();
+  // DB2/JDBC occasionally stringifies SQL NULL as the literal "null"
+  if (!s || /^null$/i.test(s) || /^undefined$/i.test(s)) return '';
+  return s;
 }
 
 function parseCount(row: Record<string, string | null> | undefined, key: string): number {
@@ -234,10 +286,11 @@ function emptyQueueJob(): PayQueueJobState {
 }
 
 function phaseRank(phase: PayrollMonitorPhase): number {
-  if (phase === 'live') return 0;
-  if (phase === 'upcoming') return 1;
-  if (phase === 'complete') return 2;
-  return 3;
+  if (phase === 'late') return 0;
+  if (phase === 'live') return 1;
+  if (phase === 'upcoming') return 2;
+  if (phase === 'complete') return 3;
+  return 4;
 }
 
 function stalledRank(stalled: boolean): number {
@@ -269,15 +322,42 @@ function evaluateRowDeadline(
   weekEndDate: string,
   timezone: string,
   daysAfter: number | null | undefined,
+  dayOfMonth: number | null | undefined,
   localTime: string | null | undefined,
   pendingUnits: number,
 ): { deadlineAt: string | null; late: boolean; lateMinutes: number | null } {
-  const deadlineAt = computePayrollDeadlineAtIso(weekEndDate, daysAfter, localTime, timezone);
+  const deadlineAt = resolvePayrollDeadlineAtIso({
+    payWeekEndYmd: weekEndDate,
+    daysAfterWeekEnd: daysAfter,
+    dayOfMonth,
+    localTime,
+    tz: timezone,
+  });
   const { late, lateMinutes } = evaluatePayrollDeadlineLate({
     deadlineAt,
     pendingUnits,
   });
   return { deadlineAt, late, lateMinutes };
+}
+
+/**
+ * Expected store count = prior week's FILE_STATUS=F count when available.
+ * e.g. 40 generated this week / 53 that had F last week → pending 13.
+ * `byStatus` is always this week's FILE_STATUS breakdown (unchanged by baseline).
+ */
+function unitsAgainstPriorBaseline(
+  currentGenerated: number,
+  currentTotal: number,
+  priorWeek: PriorWeekGeneratedCompare | null,
+  byStatus: PayrollFileStatusCounts = EMPTY_FILE_STATUS_COUNTS,
+): PayrollUnitCounts {
+  const total = priorWeek && priorWeek.generated > 0 ? priorWeek.generated : currentTotal;
+  return {
+    total,
+    generated: currentGenerated,
+    pending: Math.max(0, total - currentGenerated),
+    byStatus: { ...byStatus },
+  };
 }
 
 class PayrollService {
@@ -315,15 +395,32 @@ class PayrollService {
     };
   }
 
-  async getPayrollStatus(clientId: string, weekEndParam?: string, frequencyParam?: string): Promise<PayrollResult> {
+  async getPayrollStatus(
+    clientId: string,
+    weekEndParam?: string,
+    frequencyParam?: string,
+    includeRecords = false,
+  ): Promise<PayrollResult> {
     const startMs = Date.now();
-    const periodsRaw = await this.fetchPeriods(clientId);
-    const previousWeek = defaultPayWeekEnd(periodsRaw);
-    const periods = periodsRaw.map(p => ({
+    const [periodsRaw, allProcesses] = await Promise.all([
+      this.fetchPeriods(clientId),
+      this.fetchPayProcesses(clientId),
+    ]);
+    const frequencies = allProcesses.length
+      ? parseFrequencies(allProcesses.map(p => p.frequency).join(','))
+      : ['WK'];
+    const frequency = sanitizeFrequency(frequencyParam) || frequencies[0] || null;
+    const processes = frequency
+      ? allProcesses.filter(p => p.frequency === frequency)
+      : allProcesses;
+
+    const periodsForFreq = periodsForFrequency(periodsRaw, frequency);
+    const previousWeek = defaultPayWeekEnd(periodsForFreq);
+    const periods = periodsForFreq.map(p => ({
       ...p,
       isPrevious: !!previousWeek && p.weekEndDate === previousWeek && !p.isCurrent,
     }));
-    const requested = sanitizeWeekEnd(weekEndParam);
+    const requested = resolveWeekEndInPeriods(periods, sanitizeWeekEnd(weekEndParam));
     const current = periods.find(p => p.isCurrent);
     const weekEndDate = requested
       || previousWeek
@@ -335,14 +432,12 @@ class PayrollService {
       throw new Error(`No pay periods found in RWS_CALENDAR for ${clientId}`);
     }
 
-    const allProcesses = await this.fetchPayProcesses(clientId);
-    const frequencies = allProcesses.length
-      ? parseFrequencies(allProcesses.map(p => p.frequency).join(','))
-      : ['WK'];
-    const frequency = sanitizeFrequency(frequencyParam) || frequencies[0] || null;
-    const processes = frequency
-      ? allProcesses.filter(p => p.frequency === frequency)
-      : allProcesses;
+    // SM/GM period ends are calendar bounds; TA_* tables still key by RWS week-end.
+    const mapQueryWeekEnd = (periodEnd: string) => {
+      if (!frequencyUsesCalendarWeekEndQuery(frequency)) return periodEnd;
+      return calendarWeekEndOnOrBefore(periodsRaw, periodEnd) || periodEnd;
+    };
+    const queryWeekEnd = mapQueryWeekEnd(weekEndDate);
 
     const local = await prisma.client.findUnique({
       where: { clientId },
@@ -352,7 +447,10 @@ class PayrollService {
         payrollCycle: true,
         timezone: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
+        payrollMonitorEnabled: true,
+        name: true,
       },
     });
     const adjEligible = !!(local?.priorPeriodEdit && (local.priorPeriodEditLimit || 0) > 0);
@@ -367,37 +465,72 @@ class PayrollService {
       }
     }
 
-    const [generators, records, adj] = await Promise.all([
+    const [generators, records, adj, priorWeek] = await Promise.all([
       this.fetchGenerators(clientId),
-      this.fetchUnitPayStatus(clientId, weekEndDate),
-      adjEligible ? this.fetchAdjOutstanding(clientId, weekEndDate) : Promise.resolve(null),
+      this.fetchUnitPayStatus(clientId, queryWeekEnd),
+      adjEligible ? this.fetchAdjOutstanding(clientId, queryWeekEnd) : Promise.resolve(null),
+      this.fetchPriorWeekCompare(
+        clientId,
+        periods,
+        weekEndDate,
+        CLIENT_WIDE_DIST_LIST_ID,
+        mapQueryWeekEnd,
+      ),
     ]);
 
     const fileIds = [...new Set(records.filter(r => r.generated && r.fileId).map(r => r.fileId))];
     const generatedCount = records.filter(r => r.generated).length;
-    const pendingCount = records.length - generatedCount;
+    // Denominator = prior week FILE_STATUS=F count (expected stores), not this week's row count.
+    const { total: totalStores, pending: pendingCount } = unitsAgainstPriorBaseline(
+      generatedCount,
+      records.length,
+      priorWeek,
+    );
     const generatedTimes = records.map(r => r.generatedAt).filter(Boolean).sort();
     const generatedAt = generatedTimes[generatedTimes.length - 1] || null;
     const timezone = local?.timezone || 'America/Chicago';
     const payrollDeadlineDaysAfterWeekEnd = local?.payrollDeadlineDaysAfterWeekEnd ?? null;
+    const payrollDeadlineDayOfMonth = local?.payrollDeadlineDayOfMonth ?? null;
     const payrollDeadlineLocalTime = local?.payrollDeadlineLocalTime ?? null;
-    const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
+    const { deadlineAt, late: factuallyLate, lateMinutes: factualLateMinutes } = evaluateRowDeadline(
       weekEndDate,
       timezone,
       payrollDeadlineDaysAfterWeekEnd,
+      payrollDeadlineDayOfMonth,
       payrollDeadlineLocalTime,
       pendingCount,
     );
+    const monitorOn = !!local?.payrollMonitorEnabled;
+    const deadlineResolved = monitorOn
+      && await payrollDeadlineAlertService.isResolvedForWeek(clientId, weekEndDate);
+    const liveWindowHours = configService.getInt(
+      'threshold.payrollLiveWindowHours',
+      DEFAULT_PAYROLL_LIVE_WINDOW_HOURS,
+    );
+    const inLiveWindow = isWithinPayrollLiveWindow({
+      deadlineAt,
+      scheduleKind: 'unknown',
+      releaseDueAt: null,
+      lastJobTime: null,
+      payWeekEndYmd: weekEndDate,
+      liveWindowHours,
+    });
+    const late = isPayrollDeadlineAttentionLate(factuallyLate, deadlineResolved, inLiveWindow);
+    const lateMinutes = late ? factualLateMinutes : null;
 
     payrollDeadlineAlertService.sync({
       clientId,
+      clientName: local?.name,
       weekEndDate,
       deadlineAt,
       pendingUnits: pendingCount,
-      totalUnits: records.length,
-      lateMinutes,
-      late,
-    }).catch(() => { /* alert persistence must not fail the status response */ });
+      totalUnits: totalStores,
+      lateMinutes: late ? factualLateMinutes : null,
+      // Escalate only after the Live (±) window ends — same as Monitor Late.
+      late: monitorOn && factuallyLate && !inLiveWindow,
+    })
+      .then(() => escalationService.scheduleAutoEscalationNotify())
+      .catch(() => { /* alert persistence must not fail the status response */ });
 
     return {
       clientId,
@@ -407,22 +540,27 @@ class PayrollService {
       processes,
       periods,
       generators,
-      records,
+      // Stats always computed from unit rows; omit the payload until the UI asks for details.
+      records: includeRecords ? records : [],
       summary: {
-        totalStores: records.length,
+        totalStores,
         generatedCount,
         pendingCount,
         distinctFileIds: fileIds.length,
         fileIds,
         generatedAt,
+        priorWeek,
       },
       adj,
       timezone,
       payrollDeadlineDaysAfterWeekEnd,
+      payrollDeadlineDayOfMonth,
       payrollDeadlineLocalTime,
+      payrollMonitorEnabled: local?.payrollMonitorEnabled ?? true,
       deadlineAt,
-      late,
-      lateMinutes,
+      deadlineResolved,
+      late: monitorOn && late,
+      lateMinutes: monitorOn ? lateMinutes : null,
       executionTimeMs: Date.now() - startMs,
     };
   }
@@ -587,7 +725,12 @@ class PayrollService {
   async getMonitorSnapshot(): Promise<PayrollMonitorSnapshot> {
     const startMs = Date.now();
     const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    const liveWindowHours = configService.getInt(
+      'threshold.payrollLiveWindowHours',
+      DEFAULT_PAYROLL_LIVE_WINDOW_HOURS,
+    );
     const clients = await this.listMonitorClients();
+    logger.info(`Payroll monitor: snapshot start (${clients.length} client(s))`);
 
     const CONCURRENCY = 5;
     const rows: PayrollMonitorRow[] = [];
@@ -596,7 +739,7 @@ class PayrollService {
     const worker = async () => {
       while (idx < clients.length) {
         const c = clients[idx++];
-        rows.push(...await this.scanMonitorClient(c, stalledGraceMins));
+        rows.push(...await this.scanMonitorClient(c, stalledGraceMins, liveWindowHours));
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, clients.length || 1) }, () => worker()));
@@ -609,16 +752,28 @@ class PayrollService {
       || a.distListId.localeCompare(b.distListId),
     );
 
+    const executionTimeMs = Date.now() - startMs;
+    const liveCount = rows.filter(r => r.phase === 'live').length;
+    const upcomingCount = rows.filter(r => r.phase === 'upcoming').length;
+    const completeCount = rows.filter(r => r.phase === 'complete').length;
+    const stalledCount = rows.filter(r => r.stalled).length;
+    const lateCount = rows.filter(r => r.late).length;
+    logger.info(
+      `Payroll monitor: snapshot done → ${rows.length} row(s) `
+      + `live=${liveCount} upcoming=${upcomingCount} complete=${completeCount} `
+      + `stalled=${stalledCount} late=${lateCount} in ${executionTimeMs}ms`,
+    );
+
     return {
       fetchedAt: new Date().toISOString(),
-      liveCount: rows.filter(r => r.phase === 'live').length,
-      upcomingCount: rows.filter(r => r.phase === 'upcoming').length,
-      completeCount: rows.filter(r => r.phase === 'complete').length,
-      stalledCount: rows.filter(r => r.stalled).length,
-      lateCount: rows.filter(r => r.late).length,
+      liveCount,
+      upcomingCount,
+      completeCount,
+      stalledCount,
+      lateCount,
       stalledGraceMins,
       rows,
-      executionTimeMs: Date.now() - startMs,
+      executionTimeMs,
     };
   }
 
@@ -630,10 +785,16 @@ class PayrollService {
     payrollCycle: string;
     payrollFileGen: string;
     payrollDeadlineDaysAfterWeekEnd: number | null;
+    payrollDeadlineDayOfMonth: number | null;
     payrollDeadlineLocalTime: string | null;
   }>> {
     return prisma.client.findMany({
-      where: { payrollEnabled: true, isActive: true, db2Host: { not: null } },
+      where: {
+        payrollEnabled: true,
+        payrollMonitorEnabled: true,
+        isActive: true,
+        db2Host: { not: null },
+      },
       select: {
         clientId: true,
         name: true,
@@ -641,6 +802,7 @@ class PayrollService {
         payrollCycle: true,
         payrollFileGen: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
       },
       orderBy: { clientId: 'asc' },
@@ -656,9 +818,20 @@ class PayrollService {
     executionTimeMs: number;
   }> {
     const startMs = Date.now();
+    logger.info(`Payroll monitor: scan start ${clientId}`);
     const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    const liveWindowHours = configService.getInt(
+      'threshold.payrollLiveWindowHours',
+      DEFAULT_PAYROLL_LIVE_WINDOW_HOURS,
+    );
     const local = await prisma.client.findFirst({
-      where: { clientId, payrollEnabled: true, isActive: true, db2Host: { not: null } },
+      where: {
+        clientId,
+        payrollEnabled: true,
+        payrollMonitorEnabled: true,
+        isActive: true,
+        db2Host: { not: null },
+      },
       select: {
         clientId: true,
         name: true,
@@ -666,20 +839,26 @@ class PayrollService {
         payrollCycle: true,
         payrollFileGen: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
       },
     });
     if (!local) {
       throw new Error(`Payroll monitor client not found: ${clientId}`);
     }
-    const rows = await this.scanMonitorClient(local, stalledGraceMins);
+    const rows = await this.scanMonitorClient(local, stalledGraceMins, liveWindowHours);
     this.publishDeadlineAlert(local.clientId, local.name, rows);
+    const lateCount = rows.filter(r => r.late).length;
+    const executionTimeMs = Date.now() - startMs;
+    logger.info(
+      `Payroll monitor: scan ${local.clientId} → ${rows.length} row(s) late=${lateCount} in ${executionTimeMs}ms`,
+    );
     return {
       clientId: local.clientId,
       rows,
       stalledGraceMins,
-      lateCount: rows.filter(r => r.late).length,
-      executionTimeMs: Date.now() - startMs,
+      lateCount,
+      executionTimeMs,
     };
   }
 
@@ -688,14 +867,19 @@ class PayrollService {
     const clients = await prisma.client.findMany({
       where: {
         payrollEnabled: true,
+        payrollMonitorEnabled: true,
         isActive: true,
         db2Host: { not: null },
-        payrollDeadlineDaysAfterWeekEnd: { not: null },
         payrollDeadlineLocalTime: { not: null },
+        OR: [
+          { payrollDeadlineDaysAfterWeekEnd: { not: null } },
+          { payrollDeadlineDayOfMonth: { not: null } },
+        ],
       },
       select: { clientId: true },
       orderBy: { clientId: 'asc' },
     });
+    logger.info(`Payroll monitor: deadline refresh start (${clients.length} client(s))`);
     const errors: string[] = [];
     const CONCURRENCY = 3;
     let idx = 0;
@@ -710,17 +894,37 @@ class PayrollService {
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, clients.length || 1) }, () => worker()));
+    escalationService.scheduleAutoEscalationNotify(2000);
+    logger.info(
+      `Payroll monitor: deadline refresh done → checked=${clients.length} errors=${errors.length}`,
+    );
     return { checked: clients.length, errors };
   }
 
   private publishDeadlineAlert(clientId: string, clientName: string, rows: PayrollMonitorRow[]): void {
-    const lateRows = rows.filter(r => r.late);
-    const pendingUnits = lateRows.reduce((n, r) => n + (r.units?.pending || 0), 0);
+    // Escalate when past SLA and outside the Live (±) window (ignore deadlineResolved here;
+    // sync keeps a manual resolve closed for the week).
+    const factual = rows.map(r => {
+      const { late, lateMinutes } = evaluatePayrollDeadlineLate({
+        deadlineAt: r.deadlineAt,
+        pendingUnits: r.units?.pending || 0,
+      });
+      const inLiveWindow = isWithinPayrollLiveWindow({
+        deadlineAt: r.deadlineAt,
+        scheduleKind: r.generator.scheduleKind,
+        releaseDueAt: r.generator.releaseDueAt,
+        lastJobTime: r.generator.lastJobTime,
+        payWeekEndYmd: r.weekEndDate,
+      });
+      return { row: r, late: late && !inLiveWindow, lateMinutes: late && !inLiveWindow ? lateMinutes : null };
+    });
+    const lateRows = factual.filter(f => f.late);
+    const pendingUnits = lateRows.reduce((n, f) => n + (f.row.units?.pending || 0), 0);
     const totalUnits = rows.reduce((n, r) => n + (r.units?.total || 0), 0);
-    const sample = lateRows[0] || rows.find(r => r.deadlineAt) || rows[0];
-    const lateMinutes = lateRows.reduce<number | null>((max, r) => {
-      if (r.lateMinutes == null) return max;
-      return max == null ? r.lateMinutes : Math.max(max, r.lateMinutes);
+    const sample = lateRows[0]?.row || rows.find(r => r.deadlineAt) || rows[0];
+    const lateMinutes = lateRows.reduce<number | null>((max, f) => {
+      if (f.lateMinutes == null) return max;
+      return max == null ? f.lateMinutes : Math.max(max, f.lateMinutes);
     }, null);
     payrollDeadlineAlertService.sync({
       clientId,
@@ -731,7 +935,9 @@ class PayrollService {
       totalUnits,
       lateMinutes,
       late: lateRows.length > 0 && pendingUnits > 0,
-    }).catch(() => { /* ignore */ });
+    })
+      .then(() => escalationService.scheduleAutoEscalationNotify())
+      .catch(() => { /* ignore */ });
   }
 
   async getMonitorDetail(clientId: string, distListId: string): Promise<PayrollMonitorDetail> {
@@ -740,15 +946,21 @@ class PayrollService {
     if (!safeDistListId) {
       throw new Error(`Invalid store group DIST_LIST_ID: ${distListId}`);
     }
+    logger.info(`Payroll monitor: detail start ${clientId} distListId=${safeDistListId}`);
 
     const local = await prisma.client.findUnique({
       where: { clientId },
       select: {
         timezone: true,
+        payrollMonitorEnabled: true,
         payrollDeadlineDaysAfterWeekEnd: true,
+        payrollDeadlineDayOfMonth: true,
         payrollDeadlineLocalTime: true,
       },
     });
+    if (local && local.payrollMonitorEnabled === false) {
+      throw new Error(`Payroll monitor is disabled for ${clientId}`);
+    }
     const timezone = local?.timezone || 'America/Chicago';
     const periods = await this.fetchPeriods(clientId);
     const weekEndDate = defaultPayWeekEnd(periods) || periods.find(p => p.isCurrent)?.weekEndDate || '';
@@ -763,8 +975,34 @@ class PayrollService {
       ? await this.fetchScopedUnitPayStatus(clientId, weekEndDate, safeDistListId)
       : [];
     const generated = records.filter(r => r.generated).length;
-    const units = { total: records.length, generated, pending: records.length - generated };
+    const byStatus = countFileStatuses(records.map(r => r.fileStatus));
+    const priorWeek = await this.fetchPriorWeekCompare(clientId, periods, weekEndDate, safeDistListId);
+    const units = unitsAgainstPriorBaseline(generated, records.length, priorWeek, byStatus);
     const stalledGraceMins = configService.getInt('threshold.payrollStalledGraceMins', 30);
+    const liveWindowHours = configService.getInt(
+      'threshold.payrollLiveWindowHours',
+      DEFAULT_PAYROLL_LIVE_WINDOW_HOURS,
+    );
+    const { stalled, stalledMinutes } = evaluateRowStalled(generator, weekEndDate, units, stalledGraceMins);
+    const { deadlineAt, late: factuallyLate, lateMinutes: factualLateMinutes } = evaluateRowDeadline(
+      weekEndDate,
+      timezone,
+      local?.payrollDeadlineDaysAfterWeekEnd,
+      local?.payrollDeadlineDayOfMonth,
+      local?.payrollDeadlineLocalTime,
+      units.pending,
+    );
+    const deadlineResolved = await payrollDeadlineAlertService.isResolvedForWeek(clientId, weekEndDate);
+    const inLiveWindow = isWithinPayrollLiveWindow({
+      deadlineAt,
+      scheduleKind: generator.scheduleKind,
+      releaseDueAt: generator.releaseDueAt,
+      lastJobTime: generator.lastJobTime,
+      payWeekEndYmd: weekEndDate,
+      liveWindowHours,
+    });
+    const late = isPayrollDeadlineAttentionLate(factuallyLate, deadlineResolved, inLiveWindow);
+    const lateMinutes = late ? factualLateMinutes : null;
     const phase = classifyMonitorPhase({
       scheduleKind: generator.scheduleKind,
       releaseDueAt: generator.releaseDueAt,
@@ -773,14 +1011,15 @@ class PayrollService {
       running: generator.running,
       jobsPending: generator.jobsPending,
       units,
+      deadlineAt,
+      deadlineResolved,
+      liveWindowHours,
     });
-    const { stalled, stalledMinutes } = evaluateRowStalled(generator, weekEndDate, units, stalledGraceMins);
-    const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
-      weekEndDate,
-      timezone,
-      local?.payrollDeadlineDaysAfterWeekEnd,
-      local?.payrollDeadlineLocalTime,
-      units.pending,
+
+    const executionTimeMs = Date.now() - startMs;
+    logger.info(
+      `Payroll monitor: detail ${clientId}/${safeDistListId} → phase=${phase} `
+      + `units=${units.generated}/${units.total} late=${late} in ${executionTimeMs}ms`,
     );
 
     return {
@@ -793,14 +1032,16 @@ class PayrollService {
       distListName: generator.distListName,
       generator,
       units,
+      priorWeek,
       phase,
       stalled,
       stalledMinutes,
       deadlineAt,
+      deadlineResolved,
       late,
       lateMinutes,
       records,
-      executionTimeMs: Date.now() - startMs,
+      executionTimeMs,
     };
   }
 
@@ -811,8 +1052,9 @@ class PayrollService {
     payrollCycle: string;
     payrollFileGen: string;
     payrollDeadlineDaysAfterWeekEnd?: number | null;
+    payrollDeadlineDayOfMonth?: number | null;
     payrollDeadlineLocalTime?: string | null;
-  }, stalledGraceMins: number): Promise<PayrollMonitorRow[]> {
+  }, stalledGraceMins: number, liveWindowHours: number): Promise<PayrollMonitorRow[]> {
     const baseRow = {
       clientId: c.clientId,
       name: c.name,
@@ -828,6 +1070,7 @@ class PayrollService {
       const weekEndDate = defaultPayWeekEnd(periods) || periods.find(p => p.isCurrent)?.weekEndDate || '';
       const generators = await this.fetchPayGenerators(c.clientId, c.timezone, weekEndDate);
       const weekStartDate = periods.find(p => p.weekEndDate === weekEndDate)?.weekStartDate || '';
+      const deadlineResolved = await payrollDeadlineAlertService.isResolvedForWeek(c.clientId, weekEndDate);
 
       if (!generators.length) {
         return [{
@@ -836,16 +1079,19 @@ class PayrollService {
           distListId: '',
           distListName: null,
           generator: this.emptyMonitorGenerator('', c.timezone, weekEndDate),
-          units: { total: 0, generated: 0, pending: 0 },
+          units: EMPTY_UNITS,
+          priorWeek: null,
           phase: 'unknown',
           stalled: false,
           stalledMinutes: null,
-          deadlineAt: computePayrollDeadlineAtIso(
-            weekEndDate,
-            c.payrollDeadlineDaysAfterWeekEnd,
-            c.payrollDeadlineLocalTime,
-            c.timezone,
-          ),
+          deadlineAt: resolvePayrollDeadlineAtIso({
+            payWeekEndYmd: weekEndDate,
+            daysAfterWeekEnd: c.payrollDeadlineDaysAfterWeekEnd,
+            dayOfMonth: c.payrollDeadlineDayOfMonth,
+            localTime: c.payrollDeadlineLocalTime,
+            tz: c.timezone,
+          }),
+          deadlineResolved,
           late: false,
           lateMinutes: null,
           error: 'No running regular pay generator in RFX_QUEUE (RTAPayrollFeedGeneratorJob / RTANewPayFileGeneratorJob / RTA_PAYROLL_FILE_GEN)',
@@ -855,19 +1101,39 @@ class PayrollService {
       const rows: PayrollMonitorRow[] = [];
       for (const generator of generators) {
         try {
-          const units = weekEndDate
-            ? await this.fetchScopedUnitCounts(c.clientId, weekEndDate, generator.distListId)
-            : { total: 0, generated: 0, pending: 0 };
+          const [currentUnits, priorWeek] = weekEndDate
+            ? await Promise.all([
+              this.fetchScopedUnitCounts(c.clientId, weekEndDate, generator.distListId),
+              this.fetchPriorWeekCompare(c.clientId, periods, weekEndDate, generator.distListId),
+            ])
+            : [EMPTY_UNITS, null];
+          const units = unitsAgainstPriorBaseline(
+            currentUnits.generated,
+            currentUnits.total,
+            priorWeek,
+            currentUnits.byStatus,
+          );
           const { stalled, stalledMinutes } = evaluateRowStalled(
             generator, weekEndDate, units, stalledGraceMins,
           );
-          const { deadlineAt, late, lateMinutes } = evaluateRowDeadline(
+          const { deadlineAt, late: factuallyLate, lateMinutes: factualLateMinutes } = evaluateRowDeadline(
             weekEndDate,
             c.timezone,
             c.payrollDeadlineDaysAfterWeekEnd,
+            c.payrollDeadlineDayOfMonth,
             c.payrollDeadlineLocalTime,
             units.pending,
           );
+          const inLiveWindow = isWithinPayrollLiveWindow({
+            deadlineAt,
+            scheduleKind: generator.scheduleKind,
+            releaseDueAt: generator.releaseDueAt,
+            lastJobTime: generator.lastJobTime,
+            payWeekEndYmd: weekEndDate,
+            liveWindowHours,
+          });
+          const late = isPayrollDeadlineAttentionLate(factuallyLate, deadlineResolved, inLiveWindow);
+          const lateMinutes = late ? factualLateMinutes : null;
           rows.push({
             ...baseRow,
             rowKey: monitorRowKey(c.clientId, generator.distListId),
@@ -877,6 +1143,7 @@ class PayrollService {
             distListName: generator.distListName,
             generator,
             units,
+            priorWeek,
             phase: classifyMonitorPhase({
               scheduleKind: generator.scheduleKind,
               releaseDueAt: generator.releaseDueAt,
@@ -885,10 +1152,14 @@ class PayrollService {
               running: generator.running,
               jobsPending: generator.jobsPending,
               units,
+              deadlineAt,
+              deadlineResolved,
+              liveWindowHours,
             }),
             stalled,
             stalledMinutes,
             deadlineAt,
+            deadlineResolved,
             late,
             lateMinutes,
           });
@@ -901,11 +1172,13 @@ class PayrollService {
             distListId: generator.distListId,
             distListName: generator.distListName,
             generator,
-            units: { total: 0, generated: 0, pending: 0 },
+            units: EMPTY_UNITS,
+            priorWeek: null,
             phase: 'unknown',
             stalled: false,
             stalledMinutes: null,
             deadlineAt: null,
+            deadlineResolved,
             late: false,
             lateMinutes: null,
             error: err.message || 'Monitor scan failed',
@@ -920,11 +1193,13 @@ class PayrollService {
         distListId: '',
         distListName: null,
         generator: this.emptyMonitorGenerator('', c.timezone, ''),
-        units: { total: 0, generated: 0, pending: 0 },
+        units: EMPTY_UNITS,
+        priorWeek: null,
         phase: 'unknown',
         stalled: false,
         stalledMinutes: null,
         deadlineAt: null,
+        deadlineResolved: false,
         late: false,
         lateMinutes: null,
         error: err.message || 'Monitor scan failed',
@@ -1042,26 +1317,68 @@ class PayrollService {
     return candidate.jobsPending > existing.jobsPending;
   }
 
+  private async fetchPriorWeekCompare(
+    clientId: string,
+    periods: Array<{ weekEndDate: string }>,
+    weekEndDate: string,
+    distListId: string,
+    mapQueryWeekEnd?: (periodEnd: string) => string,
+  ): Promise<PriorWeekGeneratedCompare | null> {
+    const priorWeekEnd = priorPayWeekEnd(periods, weekEndDate);
+    if (!priorWeekEnd) return null;
+    const queryPriorWeekEnd = mapQueryWeekEnd
+      ? mapQueryWeekEnd(priorWeekEnd)
+      : priorWeekEnd;
+    if (!queryPriorWeekEnd) return null;
+    try {
+      const counts = await this.fetchScopedUnitCounts(clientId, queryPriorWeekEnd, distListId);
+      return {
+        weekEndDate: priorWeekEnd,
+        total: counts.total,
+        generated: counts.generated,
+      };
+    } catch {
+      // Prior-week baseline is informational; do not fail the primary week response.
+      return null;
+    }
+  }
+
   private async fetchScopedUnitCounts(
     clientId: string,
     weekEndDate: string,
     distListId: string,
-  ): Promise<{ total: number; generated: number; pending: number }> {
+  ): Promise<PayrollUnitCounts> {
     const scope = isClientWideDistList(distListId)
       ? ''
       : ` AND ${storeMapUnitScopeSql(distListId, weekEndDate, 'u.UNIT_ID')}`;
+    const statusExpr = `UPPER(TRIM(COALESCE(u.FILE_STATUS, '')))`;
     const sql =
       `SELECT COUNT(*) AS TOTAL_CNT, ` +
-      `SUM(CASE WHEN UPPER(FILE_STATUS) = '${PAY_FILE_GENERATED_STATUS}' THEN 1 ELSE 0 END) AS GENERATED_CNT ` +
+      `SUM(CASE WHEN ${statusExpr} = 'F' THEN 1 ELSE 0 END) AS F_CNT, ` +
+      `SUM(CASE WHEN ${statusExpr} = 'D' THEN 1 ELSE 0 END) AS D_CNT, ` +
+      `SUM(CASE WHEN ${statusExpr} = 'Q' THEN 1 ELSE 0 END) AS Q_CNT, ` +
+      `SUM(CASE WHEN ${statusExpr} NOT IN ('F', 'D', 'Q') THEN 1 ELSE 0 END) AS BLANK_CNT ` +
       `FROM RWSUSER.TA_UNIT_PAY_STATUS u ` +
       `WHERE ${weekEndEqualsSql('u.WEEK_END_DATE', weekEndDate)}${scope}`;
     const result = await db2DirectService.queryClient(clientId, sql, 'Payroll/MonitorCounts');
     if (!result.success || !result.rows || !result.rows[0]) {
       throw new Error(result.error || `Failed to query scoped unit counts for ${clientId}`);
     }
-    const total = parseCount(result.rows[0], 'TOTAL_CNT');
-    const generated = parseCount(result.rows[0], 'GENERATED_CNT');
-    return { total, generated, pending: Math.max(0, total - generated) };
+    const row = result.rows[0];
+    const total = parseCount(row, 'TOTAL_CNT');
+    const byStatus: PayrollFileStatusCounts = {
+      F: parseCount(row, 'F_CNT'),
+      D: parseCount(row, 'D_CNT'),
+      Q: parseCount(row, 'Q_CNT'),
+      blank: parseCount(row, 'BLANK_CNT'),
+    };
+    const generated = byStatus.F;
+    return {
+      total,
+      generated,
+      pending: Math.max(0, total - generated),
+      byStatus,
+    };
   }
 
   private async fetchScopedUnitPayStatus(

@@ -5,7 +5,15 @@
 // ============================================================
 
 import { prisma } from '../database/prisma';
-import { APP_NAME_CONFIG_KEY, DEFAULT_APP_NAME, DISPLAY_MENU_FLAG_KEYS } from '../constants/app-display';
+import {
+  APP_NAME_CONFIG_KEY,
+  DEFAULT_APP_NAME,
+  DEFAULT_EXTERNAL_TOOLS_JSON,
+  DISPLAY_MENU_FLAG_KEYS,
+  EXTERNAL_TOOLS_KEY,
+  HEATMAP_ENABLED_KEY,
+  LEGACY_WIP_HEATMAP_ENABLED_KEY,
+} from '../constants/app-display';
 import { encryptSecret, decryptSecret, isEncryptionConfigured } from '../utils/crypto';
 import { createServiceLogger } from '../utils/logger';
 import {
@@ -69,7 +77,11 @@ class ConfigService {
     await this.ensureMaintenanceAdHocWindowsConfig();
     await this.ensurePayrollEnabledConfig();
     await this.ensurePayrollMonitorEnabledConfig();
+    await this.ensureHeatMapEnabledConfig();
+    await this.ensureHeatMapPollingConfig();
     await this.ensurePayrollStalledGraceConfig();
+    await this.ensurePayrollLiveWindowConfig();
+    await this.ensureExternalToolsConfig();
     await this.ensureShowUnprocPunchTabConfig();
     await this.ensureMasterAccountConfig();
     await this.ensureFileMonitorConfig();
@@ -225,6 +237,120 @@ class ConfigService {
     logger.info(`Added missing config key "${key}"`);
   }
 
+  /** Insert display.heatMapEnabled; migrate legacy display.wipHeatMapEnabled if present. */
+  private async ensureHeatMapEnabledConfig(): Promise<void> {
+    const key = HEATMAP_ENABLED_KEY;
+    const label = 'Heat Map Menu';
+    const description = 'Show Heat Map screen and API (true/false)';
+
+    if (!this.cache.has(key) && this.cache.has(LEGACY_WIP_HEATMAP_ENABLED_KEY)) {
+      const legacy = this.cache.get(LEGACY_WIP_HEATMAP_ENABLED_KEY)!;
+      await prisma.appConfig.create({
+        data: {
+          key,
+          value: legacy.value,
+          category: 'DISPLAY',
+          label,
+          description,
+          isSecret: false,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(key, {
+        key,
+        value: legacy.value,
+        category: 'DISPLAY',
+        label,
+        description,
+        isSecret: false,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+      await prisma.appConfig.delete({ where: { key: LEGACY_WIP_HEATMAP_ENABLED_KEY } }).catch(() => undefined);
+      this.cache.delete(LEGACY_WIP_HEATMAP_ENABLED_KEY);
+      logger.info(`Migrated config ${LEGACY_WIP_HEATMAP_ENABLED_KEY} → ${key}`);
+      return;
+    }
+
+    if (this.cache.has(key)) {
+      const existing = this.cache.get(key)!;
+      if (existing.label !== label || existing.description !== description) {
+        await prisma.appConfig.update({
+          where: { key },
+          data: { label, description },
+        });
+        this.cache.set(key, { ...existing, label, description });
+      }
+      return;
+    }
+
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: 'true',
+        category: 'DISPLAY',
+        label,
+        description,
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: 'true',
+      category: 'DISPLAY',
+      label,
+      description,
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert Heat Map refresh interval / stagger offset when upgrading an older database. */
+  private async ensureHeatMapPollingConfig(): Promise<void> {
+    const keys: Array<{ key: string; value: string; label: string; description: string }> = [
+      {
+        key: 'polling.heatMapRefreshMins',
+        value: '60',
+        label: 'Heat Map Refresh (min)',
+        description: 'Heat Map client scan refresh interval in minutes',
+      },
+      {
+        key: 'polling.heatMapRefreshOffsetMins',
+        value: '15',
+        label: 'Heat Map Refresh Offset (min)',
+        description: 'Phase offset so Heat Map auto-refresh does not align with other DB2 polls (0–59)',
+      },
+    ];
+    for (const row of keys) {
+      if (this.cache.has(row.key)) continue;
+      await prisma.appConfig.create({
+        data: {
+          key: row.key,
+          value: row.value,
+          category: 'POLLING',
+          label: row.label,
+          description: row.description,
+          isSecret: false,
+          updatedBy: 'system',
+        },
+      });
+      this.cache.set(row.key, {
+        key: row.key,
+        value: row.value,
+        category: 'POLLING',
+        label: row.label,
+        description: row.description,
+        isSecret: false,
+        updatedBy: 'system',
+        updatedAt: new Date(),
+      });
+      logger.info(`Added missing config key "${row.key}"`);
+    }
+  }
+
   /** Insert threshold.payrollStalledGraceMins when upgrading an older database. */
   private async ensurePayrollStalledGraceConfig(): Promise<void> {
     const key = 'threshold.payrollStalledGraceMins';
@@ -246,6 +372,65 @@ class ConfigService {
       category: 'THRESHOLDS',
       label: 'Payroll Stalled Grace (min)',
       description: 'After pay release time, flag store group as stalled when generator is idle and units still pending for X mins',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert threshold.payrollLiveWindowHours when upgrading an older database. */
+  private async ensurePayrollLiveWindowConfig(): Promise<void> {
+    const key = 'threshold.payrollLiveWindowHours';
+    if (this.cache.has(key)) return;
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: '12',
+        category: 'THRESHOLDS',
+        label: 'Payroll Live Window (hours)',
+        description: 'Mark store group Live while now is within ± X hours of the SLA deadline (still pending). Past deadline and outside that window → Late. No deadline → fallback to EXEC_CRON due … due+X hours.',
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: '12',
+      category: 'THRESHOLDS',
+      label: 'Payroll Live Window (hours)',
+      description: 'Mark store group Live while now is within ± X hours of the SLA deadline (still pending). Past deadline and outside that window → Late. No deadline → fallback to EXEC_CRON due … due+X hours.',
+      isSecret: false,
+      updatedBy: 'system',
+      updatedAt: new Date(),
+    });
+    logger.info(`Added missing config key "${key}"`);
+  }
+
+  /** Insert display.externalTools when upgrading an older database. */
+  private async ensureExternalToolsConfig(): Promise<void> {
+    const key = EXTERNAL_TOOLS_KEY;
+    if (this.cache.has(key)) return;
+    const label = 'External Tools Menu';
+    const description =
+      'Managed via Admin → Config → External Tools panel (label, URL, icon). Empty list hides the waffle menu.';
+    await prisma.appConfig.create({
+      data: {
+        key,
+        value: DEFAULT_EXTERNAL_TOOLS_JSON,
+        category: 'DISPLAY',
+        label,
+        description,
+        isSecret: false,
+        updatedBy: 'system',
+      },
+    });
+    this.cache.set(key, {
+      key,
+      value: DEFAULT_EXTERNAL_TOOLS_JSON,
+      category: 'DISPLAY',
+      label,
+      description,
       isSecret: false,
       updatedBy: 'system',
       updatedAt: new Date(),
@@ -281,20 +466,36 @@ class ConfigService {
     logger.info(`Added missing config key "${key}"`);
   }
 
-  /** Bootstrap break-glass master when upgrading a DB with empty master username. */
+  /**
+   * Bootstrap break-glass master when username and/or password hash are missing.
+   * first-time-deployment-dml.sql used to seed username=WFMADMIN with an empty hash;
+   * an older seed also shipped a bcrypt that did not match password WFMADMIN.
+   */
   private async ensureMasterAccountConfig(): Promise<void> {
     const usernameKey = 'secrets.masterUsername';
     const hashKey = 'secrets.masterPasswordHash';
-    const current = this.cache.get(usernameKey)?.value?.trim();
-    if (current) return;
-
     const username = 'WFMADMIN';
-    const passwordHash = '$2b$10$yPnFQ7.oImZUCmBOLMnRIuW2o5IPI2vxoRFsdomOzvBNNlbAPnQOC';
+    // bcrypt of plaintext "WFMADMIN" (cost 10)
+    const passwordHash = '$2b$10$w03tdD6qfCeFoEQ8LiknSO8zoGgLCB0Deb8U9KIKRy47REJr52FH6';
+    // Legacy seed value that claimed default password WFMADMIN but did not verify
+    const invalidLegacyHash = '$2b$10$yPnFQ7.oImZUCmBOLMnRIuW2o5IPI2vxoRFsdomOzvBNNlbAPnQOC';
 
-    for (const [key, value, isSecret, label, description] of [
-      [usernameKey, username, false, 'Master Username', 'Break-glass admin username'] as const,
-      [hashKey, passwordHash, true, 'Master Password Hash', 'Break-glass admin bcrypt hash (default password: WFMADMIN)'] as const,
-    ]) {
+    const currentUser = this.cache.get(usernameKey)?.value?.trim() ?? '';
+    const currentHash = this.cache.get(hashKey)?.value?.trim() ?? '';
+    const needUsername = !currentUser;
+    const needHash = !currentHash || currentHash === invalidLegacyHash;
+    if (!needUsername && !needHash) return;
+
+    const rows = [
+      ...(needUsername
+        ? [[usernameKey, username, false, 'Master Username', 'Break-glass admin username'] as const]
+        : []),
+      ...(needHash
+        ? [[hashKey, passwordHash, true, 'Master Password Hash', 'Break-glass admin bcrypt hash (default password: WFMADMIN)'] as const]
+        : []),
+    ];
+
+    for (const [key, value, isSecret, label, description] of rows) {
       await prisma.appConfig.upsert({
         where: { key },
         create: {
@@ -319,7 +520,10 @@ class ConfigService {
         updatedAt: new Date(),
       });
     }
-    logger.info(`Configured default master account "${username}" (change password in Admin → Config before production)`);
+    logger.info(
+      `Configured default master account "${currentUser || username}" ` +
+        '(change password in Admin → Config before production)',
+    );
   }
 
   /** Upload File Monitor paths/timeouts — added when upgrading older databases. */
@@ -562,7 +766,11 @@ class ConfigService {
       ['engine.dbJobsSyncEnabled', 'true', 'ENGINE', 'DB Jobs Sync Enabled', 'Master switch for DB2 RFX_QUEUE fetches (Fetch All, per-client refresh, background polling). Set false during production incidents.', false] as const,
       ['engine.punchSyncEnabled', 'true', 'ENGINE', 'Punch Sync Enabled', 'Master switch for unprocessed punch DB2 queries (Refresh, progressive load, background polling). Set false during production incidents.', false] as const,
       ['engine.cronSyncSchedule', '0 3 * * *', 'ENGINE', 'Daily Cron Sync Schedule', 'Cron expression for automatic nightly cron discovery from all appservers (server local time). Requires restart to change.', false] as const,
-      ['engine.autoEscalationNotifyEnabled', 'true', 'ENGINE', 'Auto Escalation Email', 'When true, automatically email notification recipients and system-acknowledge escalated alerts for Default Suppress (min) after they cross the escalation threshold.', false] as const,
+      ['engine.wfmVersionSyncSchedule', '0 4 * * *', 'ENGINE', 'Daily WFM Version Sync Schedule', 'Cron expression for daily refresh of client WFM app version (RFX_CONFIG APPURL + /reflexisversion.txt). Requires restart to change.', false] as const,
+      ['engine.autoEscalationNotifyEnabled', 'true', 'ENGINE', 'Auto Escalation Email', 'Master switch for automatic escalation emails. When false, no auto-emails are sent (manual Notify Team still works). Per-type flags further filter which alert types auto-email.', false] as const,
+      ['engine.autoEscalationNotifyQueueEnabled', 'true', 'ENGINE', 'Auto Email: Stuck Jobs', 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated stuck-job / queue-buildup alerts.', false] as const,
+      ['engine.autoEscalationNotifyPayrollEnabled', 'true', 'ENGINE', 'Auto Email: Payroll Deadline', 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated payroll deadline alerts.', false] as const,
+      ['engine.autoEscalationNotifyPunchEnabled', 'true', 'ENGINE', 'Auto Email: Unprocessed Punch', 'When true (and Auto Escalation Email is on), automatically email + system-ack escalated unprocessed punch alerts.', false] as const,
       ['engine.customAlertQueryTimeoutSec', '30', 'ENGINE', 'Custom Alert Query Timeout (sec)', 'Maximum seconds a Custom Alert SQL query may take during Validate / save. Queries slower than this for any selected client are rejected and not saved.', false] as const,
     ];
 

@@ -436,6 +436,8 @@ router.get('/me', authMiddleware, async (req: Request, res: Response) => {
         timezone: u.timezone || 'Asia/Kolkata',
         permissions: u.permissions,
         profileNames: ['Master Admin'],
+        profileIds: [],
+        isMaster: true,
         csrfToken: sessionToken ? csrfForSession(sessionToken) : undefined,
       },
     });
@@ -445,13 +447,16 @@ router.get('/me', authMiddleware, async (req: Request, res: Response) => {
     where: { id: u.userId },
     select: {
       email: true,
-      profiles: { select: { profile: { select: { name: true } } } },
+      profiles: { select: { profile: { select: { id: true, name: true } } } },
     },
   });
 
-  const profileNames = (dbUser?.profiles ?? [])
-    .map((up) => up.profile.name)
-    .sort((a, b) => a.localeCompare(b));
+  const profileEntries = (dbUser?.profiles ?? [])
+    .map((up) => ({ id: up.profile.id, name: up.profile.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const profileNames = profileEntries.map((p) => p.name);
+  const profileIds = profileEntries.map((p) => p.id);
 
   res.json({
     success: true,
@@ -463,6 +468,8 @@ router.get('/me', authMiddleware, async (req: Request, res: Response) => {
       timezone: u.timezone || 'Asia/Kolkata',
       permissions: u.permissions,
       profileNames,
+      profileIds,
+      isMaster: false,
       csrfToken: sessionToken ? csrfForSession(sessionToken) : undefined,
     },
   });

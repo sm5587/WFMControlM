@@ -14,7 +14,7 @@ import { prisma } from '../database/prisma';
 import { createServiceLogger } from '../utils/logger';
 import { requirePermission } from '../middleware';
 import { z } from 'zod';
-import { buildPunchNotifyEmail, buildPayrollDeadlineNotifyEmail, buildAllAlertsNotifyEmail, escHtml } from '../email/notify-email-templates';
+import { buildPunchNotifyEmail, buildPayrollDeadlineNotifyEmail, escHtml } from '../email/notify-email-templates';
 
 const router = Router();
 const logger = createServiceLogger('EscalationsAPI');
@@ -47,7 +47,7 @@ const reportQuerySchema = z.object({
   { message: 'Provide either month or quarter' }
 );
 
-// GET /api/escalations/report - Escalation report (queue buildup + punch alerts) for a month or quarter
+// GET /api/escalations/report - Escalation report (queue buildup + punch + payroll deadline) for a month or quarter
 router.get('/report', async (req: Request, res: Response) => {
   try {
     const { year, month, quarter, cluster, clientId } = reportQuerySchema.parse(req.query);
@@ -135,106 +135,31 @@ const combinedPunchRowSchema = z.object({
   lastUpdateTime: z.string().nullable().optional(),
 });
 
-function notifySection(title: string, headers: string[], rowsHtml: string): string {
-  const head = headers.map(h => `<th style="padding:8px 12px;text-align:left;">${escHtml(h)}</th>`).join('');
-  return `
-    <h3 style="margin:20px 0 8px;font-size:14px;color:#333;">${escHtml(title)}</h3>
-    <table style="width:100%;border-collapse:collapse;margin:0 0 8px;font-size:13px;">
-      <thead><tr style="background:#f5f5f5;border-bottom:2px solid #ddd;">${head}</tr></thead>
-      <tbody>${rowsHtml}</tbody>
-    </table>`;
-}
-
 // POST /api/escalations/notify-all — one email covering stuck jobs, payroll deadlines, and punches
 router.post('/notify-all', requirePermission('ALERTS_NOTIFY', 'write'), async (req: Request, res: Response) => {
   try {
-    if (!alertService.isEmailConfigured()) {
-      return res.status(500).json({ success: false, error: 'SMTP not configured' });
-    }
-    const allRecipients = await prisma.notificationRecipient.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
-    if (!allRecipients.length) {
-      return res.json({ success: true, data: { sent: 0, skipped: 1, details: ['No active notification recipients configured'] } });
-    }
-
-    const queue = await escalationService.collectEligibleQueueNotify();
-    const payroll = await payrollDeadlineAlertService.listOpenForNotify();
     const punchBody = z.array(combinedPunchRowSchema).parse(req.body?.punchRows ?? []);
-    const punchStatuses = await unprocPunchAlertService.getAlertStatuses();
-    const punchRows = unprocPunchAlertService.filterNotifyEligible(punchBody, punchStatuses);
-
-    const sections: string[] = [];
-    const parts: string[] = [];
-    if (queue.ids.length) {
-      parts.push(`${queue.ids.length} stuck job client(s)`);
-      sections.push(notifySection(
-        'Stuck jobs',
-        ['Client', 'Server', 'Job type', 'Plan', 'Stale', 'Pending', 'Since'],
-        queue.linesHtml,
-      ));
-    }
-    if (payroll.length) {
-      parts.push(`${payroll.length} payroll deadline client(s)`);
-      sections.push(notifySection(
-        'Payroll deadline',
-        ['Client', 'Code', 'Week end', 'Deadline', 'Pending', 'Late'],
-        payroll.map(a => `<tr>
-          <td style="padding:6px 12px;font-weight:bold;">${escHtml(a.clientName && a.clientName !== a.clientId ? a.clientName : a.clientId)}</td>
-          <td style="padding:6px 12px;font-family:monospace;">${escHtml(a.clientId)}</td>
-          <td style="padding:6px 12px;font-family:monospace;">${escHtml(a.weekEndDate || '—')}</td>
-          <td style="padding:6px 12px;">${escHtml(a.deadlineAt || '—')}</td>
-          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${a.pendingUnits} / ${a.totalUnits}</td>
-          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${a.lateMinutes != null ? `${a.lateMinutes}m` : '—'}</td>
-        </tr>`).join(''),
-      ));
-    }
-    if (punchRows.length) {
-      parts.push(`${punchRows.length} unprocessed punch client(s)`);
-      sections.push(notifySection(
-        'Unprocessed punches',
-        ['Client', 'Code', 'Cluster', 'Pending punches', 'Last update'],
-        [...punchRows].sort((a, b) => b.punchCount - a.punchCount).map(r => `<tr>
-          <td style="padding:6px 12px;font-weight:bold;">${escHtml(r.name && r.name !== r.clientId ? r.name : r.clientId)}</td>
-          <td style="padding:6px 12px;font-family:monospace;">${escHtml(r.clientId)}</td>
-          <td style="padding:6px 12px;">${escHtml(r.cluster || '—')}</td>
-          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${r.punchCount.toLocaleString()}</td>
-          <td style="padding:6px 12px;font-family:monospace;font-size:12px;color:#666;">${escHtml(r.lastUpdateTime ?? '—')}</td>
-        </tr>`).join(''),
-      ));
-    }
-
-    if (!sections.length) {
-      const cooldownMins = configService.getNotifyCooldownMins();
-      return res.json({
-        success: true,
-        data: {
-          sent: 0,
-          skipped: 1,
-          details: [`No open alerts to notify (or all were emailed within the last ${cooldownMins} minutes)`],
-        },
-      });
-    }
-
-    const emails = allRecipients.map(r => r.email);
-    const summary = parts.join(', ');
-    const { subject, html } = buildAllAlertsNotifyEmail({
-      appName: configService.getAppName(),
-      sectionsHtml: sections.join(''),
-      summary,
-      recipients: emails,
-      sentAt: new Date(),
+    const result = await escalationService.sendAllEligibleEscalationEmails({
+      punchRows: punchBody.length ? punchBody : undefined,
     });
-    const result = await alertService.sendDirectEmail(emails, subject, html);
-    if (queue.ids.length) await escalationService.markQueueNotifySent(queue.ids, result.accepted);
-    if (payroll.length) await payrollDeadlineAlertService.recordEmailSent(payroll.map(a => a.clientId));
-    if (punchRows.length) await unprocPunchAlertService.recordEmailSent(punchRows.map(r => r.clientId));
 
-    logger.info(`notify-all: ${summary} sent to ${result.accepted.join(', ')}`);
+    if (result.error && result.sent <= 0) {
+      const status = result.error.includes('SMTP') ? 500 : 200;
+      if (status === 500) {
+        return res.status(500).json({ success: false, error: result.error });
+      }
+    }
+
+    logger.info(
+      `notify-all: sent=${result.sent} queue=${result.queueIds.length} payroll=${result.payrollClientIds.length} punch=${result.punchClientIds.length}`,
+    );
     res.json({
       success: true,
       data: {
-        sent: queue.ids.length + payroll.length + punchRows.length,
-        recipients: result.accepted,
-        details: [`One email sent to ${result.accepted.join(', ')}: ${summary}`],
+        sent: result.sent,
+        skipped: result.skipped,
+        recipients: result.recipients,
+        details: result.details,
       },
     });
   } catch (error: any) {
@@ -517,6 +442,24 @@ router.post('/payroll-deadlines/:clientId/suppress', requirePermission('ALERTS_S
     const { userId, durationMinutes, reason } = punchSuppressSchema.parse(req.body);
     await payrollDeadlineAlertService.suppress(req.params.clientId, userId, durationMinutes, reason);
     res.json({ success: true, message: `Payroll deadline alert suppressed for ${durationMinutes} minutes` });
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({ success: false, error: 'Validation error', details: error.errors });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const payrollResolveSchema = z.object({
+  userId: z.string().default('system'),
+  reason: z.string().trim().min(1).max(500),
+});
+
+router.post('/payroll-deadlines/:clientId/resolve', requirePermission('ALERTS_ACK', 'write'), async (req: Request, res: Response) => {
+  try {
+    const { userId, reason } = payrollResolveSchema.parse(req.body);
+    await payrollDeadlineAlertService.resolve(req.params.clientId, userId, reason);
+    res.json({ success: true, message: 'Payroll deadline alert resolved' });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: 'Validation error', details: error.errors });

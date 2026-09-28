@@ -12,6 +12,13 @@ describe('config-limits', () => {
     it('rejects DB polling intervals below 5 minutes', () => {
       expect(() => validateConfigValue('polling.batchRefreshMins', '1')).toThrow(ConfigValidationError);
       expect(() => validateConfigValue('polling.batchRefreshMins', '5')).not.toThrow();
+      expect(() => validateConfigValue('polling.heatMapRefreshMins', '60')).not.toThrow();
+    });
+
+    it('rejects Heat Map refresh offset outside 0–59', () => {
+      expect(() => validateConfigValue('polling.heatMapRefreshOffsetMins', '-1')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('polling.heatMapRefreshOffsetMins', '60')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('polling.heatMapRefreshOffsetMins', '15')).not.toThrow();
     });
 
     it('rejects db2QueryConcurrency outside 1–10', () => {
@@ -46,10 +53,52 @@ describe('config-limits', () => {
       expect(() => validateConfigValue('engine.cronSyncSchedule', '0 3 * * *')).not.toThrow();
     });
 
+    it('rejects invalid WFM version sync schedule', () => {
+      expect(() => validateConfigValue('engine.wfmVersionSyncSchedule', 'not-a-cron')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('engine.wfmVersionSyncSchedule', '0 4 * * *')).not.toThrow();
+    });
+
     it('rejects non-boolean infra.db2SslEnabled values', () => {
       expect(() => validateConfigValue('infra.db2SslEnabled', 'yes')).toThrow(ConfigValidationError);
       expect(() => validateConfigValue('infra.db2SslEnabled', 'true')).not.toThrow();
       expect(() => validateConfigValue('infra.db2SslEnabled', 'false')).not.toThrow();
+    });
+
+    it('validates display.externalTools JSON array', () => {
+      expect(() => validateConfigValue('display.externalTools', '[]')).not.toThrow();
+      expect(() =>
+        validateConfigValue(
+          'display.externalTools',
+          JSON.stringify([{ label: 'JIRA', url: 'https://jira.example.com', icon: 'ticket' }]),
+        ),
+      ).not.toThrow();
+      expect(() => validateConfigValue('display.externalTools', '{')).toThrow(ConfigValidationError);
+      expect(() => validateConfigValue('display.externalTools', '{}')).toThrow(ConfigValidationError);
+      expect(() =>
+        validateConfigValue('display.externalTools', JSON.stringify([{ label: 'JIRA' }])),
+      ).toThrow(ConfigValidationError);
+      expect(() =>
+        validateConfigValue(
+          'display.externalTools',
+          JSON.stringify([{ label: 'JIRA', url: 'jira.example.com' }]),
+        ),
+      ).toThrow(ConfigValidationError);
+      expect(() =>
+        validateConfigValue(
+          'display.externalTools',
+          JSON.stringify([{ label: 'JIRA', url: 'https://jira.example.com', profileIds: 'admin' }]),
+        ),
+      ).toThrow(ConfigValidationError);
+      expect(() =>
+        validateConfigValue(
+          'display.externalTools',
+          JSON.stringify([{
+            label: 'JIRA',
+            url: 'https://jira.example.com',
+            profileIds: ['profile-uuid-1'],
+          }]),
+        ),
+      ).not.toThrow();
     });
   });
 

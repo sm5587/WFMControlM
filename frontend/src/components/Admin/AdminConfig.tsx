@@ -6,9 +6,12 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi } from '../../services/api';
 import { useConfig } from '../../contexts/ConfigContext';
-import { Save, Eye, EyeOff, Search, RotateCcw, AlertTriangle, CheckCircle2, Lock, KeyRound, X, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Save, Eye, EyeOff, RotateCcw, AlertTriangle, CheckCircle2, Lock, KeyRound, X, ToggleLeft, ToggleRight } from 'lucide-react';
 import type { ReencryptPreflight, ReencryptResult } from '../../services/api';
 import { isBooleanAppConfigKey } from '../../constants/app-config-keys';
+import { EXTERNAL_TOOLS_KEY } from '../../constants/app-display';
+import AdminExternalTools from './AdminExternalTools';
+import { ClearableSearchInput } from '../ui/ClearableFilter';
 
 type ConfigRow = {
   key: string;
@@ -152,7 +155,7 @@ export default function AdminConfig() {
   const [activeTab, setActiveTab] = useState<'all' | 'hidden'>('all');
 
   const visibleRows = useMemo(() => {
-    let result = rows.filter(r => !hiddenKeys[r.key]);
+    let result = rows.filter(r => !hiddenKeys[r.key] && r.key !== EXTERNAL_TOOLS_KEY);
     if (activeCategory) result = result.filter(r => r.category === activeCategory);
     if (search) {
       const q = search.toLowerCase();
@@ -166,7 +169,7 @@ export default function AdminConfig() {
   }, [rows, activeCategory, search, hiddenKeys]);
 
   const hiddenRows = useMemo(() => {
-    let result = rows.filter(r => hiddenKeys[r.key]);
+    let result = rows.filter(r => hiddenKeys[r.key] && r.key !== EXTERNAL_TOOLS_KEY);
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(r =>
@@ -276,6 +279,8 @@ export default function AdminConfig() {
         </div>
       )}
 
+      <AdminExternalTools />
+
       {preflight?.rotationInProgress && (
         <div className="flex items-start gap-2 px-4 py-3 rounded text-sm border bg-amber-50 text-amber-800 border-amber-200">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" />
@@ -372,16 +377,14 @@ export default function AdminConfig() {
             onClick={() => setActiveTab('hidden')}
           >Hidden</button>
         </div>
-        <div className="relative flex-1 max-w-xs">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search config..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 bg-white border border-gray-200 rounded text-sm text-gray-800 placeholder:text-gray-400 focus:ring-1 focus:ring-zebra-400 outline-none"
-          />
-        </div>
+        <ClearableSearchInput
+          className="flex-1 max-w-xs"
+          value={search}
+          onChange={setSearch}
+          placeholder="Search config..."
+          iconSize={14}
+          inputClassName="w-full py-1.5 bg-white border border-gray-200 rounded text-sm text-gray-800 placeholder:text-gray-400 focus:ring-1 focus:ring-zebra-400 outline-none"
+        />
         <div className="flex gap-1 flex-wrap">
           <button onClick={() => setActiveCategory(null)}
             className={`px-2.5 py-1 rounded text-xs font-medium border ${!activeCategory ? 'bg-zebra-50 text-zebra-700 border-zebra-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>

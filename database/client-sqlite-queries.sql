@@ -54,6 +54,8 @@ SELECT clientId, name, cluster FROM Client;
 
 -- ---------- Clients (/clients) ----------
 
+-- list (enriched in API with serverCounts + db2Connection)
+-- includes wfmAppUrl / wfmAppVersion / wfmAppVersionSyncedAt (daily sync from DB2 APPURL + reflexisversion.txt)
 SELECT c.*,
   (SELECT COUNT(*) FROM AppServer WHERE clientId = c.id) AS appServers,
   (SELECT COUNT(*) FROM Job WHERE clientId = c.id) AS jobs,
@@ -76,6 +78,12 @@ SELECT * FROM AppServer WHERE clientId = {id};
 INSERT INTO AppServer (...) VALUES (...);
 UPDATE AppServer SET ... WHERE id = {serverId};
 DELETE FROM AppServer WHERE id = {serverId};
+
+-- sync-wfm-versions background
+--   Normal / daily: reuse Client.wfmAppUrl → HTTP GET {url}/reflexisversion.txt
+--   refreshAppUrl: also SELECT APPURL from client DB2 RFX_CONFIG, then store on Client
+UPDATE Client SET wfmAppUrl = {url}, wfmAppVersion = {ver}, wfmAppVersionSyncedAt = {now}
+WHERE clientId = {id};
 
 -- Sync actions (writes SyncHistory, Job, AppServer, Client, CachedCronJob — large sync path)
 INSERT INTO SyncHistory (...) VALUES (...);
@@ -161,13 +169,14 @@ SELECT clientId, jobName FROM CriticalDbJob;
 -- ---------- Payroll Jobs (/payroll) ----------
 
 SELECT clientId, name, payrollCycle, payrollFileGen, priorPeriodEdit, priorPeriodEditLimit,
-       payrollDeadlineDaysAfterWeekEnd, payrollDeadlineLocalTime, payrollSyncedAt
+       payrollDeadlineDaysAfterWeekEnd, payrollDeadlineDayOfMonth, payrollDeadlineLocalTime, payrollSyncedAt
 FROM Client
 WHERE payrollEnabled = 1
 ORDER BY clientId ASC;
 
--- local SLA deadline (days after week end + HH:mm in client TZ; NULL clears)
-UPDATE Client SET payrollDeadlineDaysAfterWeekEnd = {0-7 or NULL},
+-- local SLA deadline (WK/BW: days after week end; SM/GM: day of month; HH:mm in client TZ; NULL clears)
+UPDATE Client SET payrollDeadlineDaysAfterWeekEnd = {0-14 or NULL},
+  payrollDeadlineDayOfMonth = {1-28 or NULL},
   payrollDeadlineLocalTime = '{HH:mm}' OR NULL
 WHERE clientId = {id};
 

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import {
   Timer, Loader2, RefreshCw, AlertTriangle, CheckCircle,
-  Search, ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { unprocessedPunchApi } from '../../services/api';
@@ -10,6 +10,7 @@ import { useConfig } from '../../contexts/ConfigContext';
 import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
 import SyncDisabledBanner from '../common/SyncDisabledBanner';
 import { usePermission } from '../../context/AuthContext';
+import { ClearableSearchInput } from '../ui/ClearableFilter';
 
 // ============================================================
 // Unprocessed Punch Page
@@ -291,16 +292,14 @@ export default function UnprocessedPunch() {
       {/* â”€â”€ Search â”€â”€ */}
       {rows.length > 0 && (
         <div className="px-6 pb-3">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search client or cluster..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zebra-400"
-            />
-          </div>
+          <ClearableSearchInput
+            className="max-w-sm"
+            value={search}
+            onChange={setSearch}
+            placeholder="Search client or cluster..."
+            iconSize={14}
+            inputClassName="w-full py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zebra-400"
+          />
         </div>
       )}
 

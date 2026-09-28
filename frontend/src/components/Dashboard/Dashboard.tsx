@@ -708,7 +708,7 @@ function PayrollDashboardWidget() {
           </div>
           <div className={`rounded-lg p-3 text-center ${liveCount > 0 ? 'bg-indigo-50' : 'bg-gray-50'}`}>
             <div className={`text-2xl font-bold ${liveCount > 0 ? 'text-indigo-700' : 'text-gray-400'}`}>{liveCount}</div>
-            <div className="text-[10px] text-gray-400 mt-0.5">Releasing now</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">Near deadline</div>
           </div>
           <div className="bg-gray-50 rounded-lg p-3 text-center">
             <div className="text-2xl font-bold text-gray-600">{completeCount}</div>

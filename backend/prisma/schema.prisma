@@ -32,14 +32,22 @@ model Client {
 
   // Payroll
   payrollEnabled       Boolean       @default(false)    // true when RTA_INTEGRATION feature = Y
+  payrollMonitorEnabled Boolean      @default(true)     // local: include on Payroll Monitor + deadline alerts
   payrollCycle         String        @default("WK")     // TA_PAY_FILE_GEN_PROCESS.FREQUENCY: WK | BW | SM | GM
   payrollFileGen       String        @default("")       // PAYROLL_FILE_GEN PF: SINGLE_STORE | ALL_STORE
   priorPeriodEdit      Boolean       @default(false)    // PRIOR_PERIOD_EDIT PF = Y
   priorPeriodEditLimit Int           @default(0)        // PRIOR_PERIOD_EDIT_LIMIT PF (prior weeks eligible for adj)
   payrollSyncedAt      DateTime?                        // Last time payroll PFs were checked per client DB2
-  // Local SLA (not WFM EXEC_CRON): completion deadline = weekEnd + days @ localTime in client TZ
-  payrollDeadlineDaysAfterWeekEnd Int?                  // null = unset; 0–7 days after pay week end
+  // Local SLA (not WFM EXEC_CRON): completion deadline in client TZ
+  // WK/BW: weekEnd + daysAfter @ localTime; SM/GM: next dayOfMonth on/after weekEnd @ localTime
+  payrollDeadlineDaysAfterWeekEnd Int?                  // null = unset; WK 0–7, BW 0–14 days after pay week/period end
+  payrollDeadlineDayOfMonth       Int?                  // null = unset; SM/GM calendar day 1–28
   payrollDeadlineLocalTime        String?               // "HH:mm" in client timezone
+
+  // WFM app version (from RFX_CONFIG.APPURL + /reflexisversion.txt; refreshed daily)
+  wfmAppUrl              String?
+  wfmAppVersion          String?
+  wfmAppVersionSyncedAt  DateTime?
 
   // Sync tracking
   lastCronSyncAt    DateTime?                      // Last successful cron sync (24h cooldown)
@@ -396,7 +404,7 @@ model PayrollDeadlineAlert {
   totalUnits      Int       @default(0)
   lateMinutes     Int?
 
-  status          String    @default("OPEN") // OPEN, ACKNOWLEDGED, SUPPRESSED
+  status          String    @default("OPEN") // OPEN, ACKNOWLEDGED, SUPPRESSED, RESOLVED
   acknowledgedBy  String?
   acknowledgedAt  DateTime?
   suppressedBy    String?
@@ -408,6 +416,8 @@ model PayrollDeadlineAlert {
   firstSeenAt     DateTime  @default(now())
   lastSeenAt      DateTime  @default(now())
   resolvedAt      DateTime?
+  resolvedBy      String?
+  resolveReason   String?
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

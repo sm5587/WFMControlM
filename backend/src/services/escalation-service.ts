@@ -9,7 +9,11 @@ import { alertService } from './alert-service';
 import { configService } from './config-service';
 import { db2DirectService, BatchJobGroup } from './db2-direct-service';
 import { createServiceLogger } from '../utils/logger';
-import { buildQueueBuildupNotifyEmail, escHtml } from '../email/notify-email-templates';
+import {
+  buildAllAlertsNotifyEmail,
+  buildQueueBuildupNotifyEmail,
+  escHtml,
+} from '../email/notify-email-templates';
 import {
   computeDurationMins,
   deriveQueueSeverity,
@@ -19,7 +23,30 @@ import {
   periodContainsNow,
   type MonthPeriod,
 } from '../utils/escalation-report';
+import { SYSTEM_ESCALATION_ACTOR } from '../constants/escalation';
 import { unprocPunchAlertService } from './unproc-punch-alert-service';
+import { payrollDeadlineAlertService } from './payroll-deadline-alert-service';
+
+export { SYSTEM_ESCALATION_ACTOR };
+
+export type PunchNotifyRow = {
+  clientId: string;
+  name?: string;
+  cluster?: string;
+  punchCount: number;
+  lastUpdateTime?: string | null;
+};
+
+export type NotifyAllResult = {
+  sent: number;
+  skipped: number;
+  recipients: string[];
+  details: string[];
+  error?: string;
+  queueIds: string[];
+  payrollClientIds: string[];
+  punchClientIds: string[];
+};
 
 function getEscalationThresholdDate(): Date {
   const mins = configService.getInt('threshold.escalationMins');
@@ -32,9 +59,6 @@ function getNotifyCooldownDate(): Date {
 }
 
 const logger = createServiceLogger('EscalationService');
-
-/** User id recorded when the backend auto-acknowledges after sending escalation email. */
-export const SYSTEM_ESCALATION_ACTOR = 'system';
 
 function getAutoAckDurationMins(): number {
   const mins = configService.getInt('threshold.defaultSuppressMins', 60);
@@ -94,7 +118,7 @@ export interface EscalationMonthlyReport {
     };
     rows: EscalatedAlertHistoryRow[];
   };
-    punchAlerts: {
+  punchAlerts: {
     summary: {
       total: number;
       activeStale: number;
@@ -104,6 +128,20 @@ export interface EscalationMonthlyReport {
     };
     rows: Awaited<ReturnType<typeof unprocPunchAlertService.getPunchAlertHistory>>['rows'];
     liveDataAvailable: boolean;
+  };
+  payrollDeadlineAlerts: {
+    summary: {
+      total: number;
+      open: number;
+      acknowledged: number;
+      suppressed: number;
+      resolved: number;
+      notified: number;
+      clientsAffected: number;
+      avgDurationMins: number;
+      byCluster: Record<string, number>;
+    };
+    rows: Awaited<ReturnType<typeof payrollDeadlineAlertService.getPayrollDeadlineAlertHistory>>['rows'];
   };
 }
 
@@ -264,34 +302,63 @@ class EscalationService {
   }
 
   /**
-   * When an escalated alert crosses the threshold, email recipients and auto-ack for 1 hour (default).
+   * When escalated alerts are eligible, email recipients (all types) and system-ack for Default Suppress (min).
    */
   private async processAutoEscalationNotifyAndAck(): Promise<void> {
-    if (!configService.getBool('engine.autoEscalationNotifyEnabled', true)) {
+    await this.runAutoEscalationNotifyAndAck();
+  }
+
+  private autoNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoNotifyInFlight: Promise<void> | null = null;
+
+  /**
+   * Debounced auto-notify — use after per-client payroll/punch updates so one email covers a batch.
+   */
+  scheduleAutoEscalationNotify(delayMs = 5000): void {
+    if (!this.isAutoEscalationNotifyMasterEnabled()) {
       return;
     }
+    if (this.autoNotifyTimer) clearTimeout(this.autoNotifyTimer);
+    this.autoNotifyTimer = setTimeout(() => {
+      this.autoNotifyTimer = null;
+      this.runAutoEscalationNotifyAndAck().catch(err => {
+        logger.warn(`[AutoEscalation] Scheduled notify failed: ${err?.message || err}`);
+      });
+    }, delayMs);
+  }
 
-    const threshold = getEscalationThresholdDate();
-    const notifyCooldownSince = getNotifyCooldownDate();
+  private isAutoEscalationNotifyMasterEnabled(): boolean {
+    return configService.getBool('engine.autoEscalationNotifyEnabled', true);
+  }
 
-    const eligible = await prisma.escalatedAlert.findMany({
-      where: {
-        resolvedAt: null,
-        status: 'OPEN',
-        firstSeenAt: { lte: threshold },
-        OR: [
-          { emailSentAt: null },
-          { emailSentAt: { lt: notifyCooldownSince } },
-        ],
-      },
-      orderBy: { stalePendingCount: 'desc' },
+  /** Per-type auto-email flags (Admin Config). Manual Notify Team ignores these. */
+  private getAutoNotifyTypeFlags(): { queue: boolean; payroll: boolean; punch: boolean } {
+    return {
+      queue: configService.getBool('engine.autoEscalationNotifyQueueEnabled', true),
+      payroll: configService.getBool('engine.autoEscalationNotifyPayrollEnabled', true),
+      punch: configService.getBool('engine.autoEscalationNotifyPunchEnabled', true),
+    };
+  }
+
+  /**
+   * Auto-email eligible escalated alert types (per-type flags) and system-ack.
+   * Guarded by engine.autoEscalationNotifyEnabled plus per-type flags.
+   */
+  async runAutoEscalationNotifyAndAck(): Promise<void> {
+    if (!this.isAutoEscalationNotifyMasterEnabled()) {
+      return;
+    }
+    if (this.autoNotifyInFlight) {
+      return this.autoNotifyInFlight;
+    }
+    this.autoNotifyInFlight = this.doAutoEscalationNotifyAndAck().finally(() => {
+      this.autoNotifyInFlight = null;
     });
+    return this.autoNotifyInFlight;
+  }
 
-    if (eligible.length === 0) return;
-
-    logger.info(`[AutoEscalation] ${eligible.length} alert(s) eligible for auto-notify + ack`);
-
-    const result = await this.sendEscalationEmails(eligible.map(a => a.id));
+  private async doAutoEscalationNotifyAndAck(): Promise<void> {
+    const result = await this.sendAllEligibleEscalationEmails({ respectTypeFlags: true });
     if (result.sent <= 0) {
       if (result.error) {
         logger.warn(`[AutoEscalation] Email not sent: ${result.error}`);
@@ -299,12 +366,29 @@ class EscalationService {
       return;
     }
 
+    logger.info(
+      `[AutoEscalation] Notified queue=${result.queueIds.length} payroll=${result.payrollClientIds.length} punch=${result.punchClientIds.length}`,
+    );
+
     const ackMins = getAutoAckDurationMins();
-    for (const alert of eligible) {
-      await this.autoAcknowledgeEscalation(alert.id);
-      logger.info(
-        `[AutoEscalation] Auto-ack ${alert.clientId} for ${ackMins} min after email notify`,
-      );
+    for (const id of result.queueIds) {
+      await this.autoAcknowledgeEscalation(id);
+    }
+    for (const clientId of result.payrollClientIds) {
+      try {
+        await payrollDeadlineAlertService.acknowledge(clientId, SYSTEM_ESCALATION_ACTOR);
+        logger.info(`[AutoEscalation] Auto-ack payroll ${clientId} for ${ackMins} min`);
+      } catch (err: any) {
+        logger.warn(`[AutoEscalation] Payroll auto-ack ${clientId}: ${err?.message || err}`);
+      }
+    }
+    for (const clientId of result.punchClientIds) {
+      try {
+        await unprocPunchAlertService.acknowledge(clientId, SYSTEM_ESCALATION_ACTOR);
+        logger.info(`[AutoEscalation] Auto-ack punch ${clientId} for ${ackMins} min`);
+      } catch (err: any) {
+        logger.warn(`[AutoEscalation] Punch auto-ack ${clientId}: ${err?.message || err}`);
+      }
     }
   }
 
@@ -318,6 +402,165 @@ class EscalationService {
         acknowledgedAt: new Date(),
       },
     });
+  }
+
+  private notifySectionHtml(title: string, headers: string[], rowsHtml: string): string {
+    const head = headers.map(h => `<th style="padding:8px 12px;text-align:left;">${escHtml(h)}</th>`).join('');
+    return `
+    <h3 style="margin:20px 0 8px;font-size:14px;color:#333;">${escHtml(title)}</h3>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 8px;font-size:13px;">
+      <thead><tr style="background:#f5f5f5;border-bottom:2px solid #ddd;">${head}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+  }
+
+  /**
+   * One email covering stuck jobs, payroll deadlines, and unprocessed punches (Notify Team / auto).
+   * When punchRows is omitted, uses server punch cache + stale thresholds (OPEN only).
+   * When respectTypeFlags is true (auto path), per-type Admin Config flags gate each section.
+   */
+  async sendAllEligibleEscalationEmails(options?: {
+    punchRows?: PunchNotifyRow[];
+    respectTypeFlags?: boolean;
+  }): Promise<NotifyAllResult> {
+    const empty: NotifyAllResult = {
+      sent: 0,
+      skipped: 1,
+      recipients: [],
+      details: [],
+      queueIds: [],
+      payrollClientIds: [],
+      punchClientIds: [],
+    };
+
+    if (!alertService.isEmailConfigured()) {
+      const err =
+        'SMTP not configured — set secrets.smtpHost in Admin > Config and restart the backend';
+      return { ...empty, skipped: 0, error: err, details: [err] };
+    }
+
+    const allRecipients = await prisma.notificationRecipient.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    if (!allRecipients.length) {
+      const msg = 'No active notification recipients configured';
+      return { ...empty, details: [msg], error: msg };
+    }
+
+    const typeFlags = options?.respectTypeFlags
+      ? this.getAutoNotifyTypeFlags()
+      : { queue: true, payroll: true, punch: true };
+
+    const queue = typeFlags.queue
+      ? await this.collectEligibleQueueNotify()
+      : { ids: [] as string[], linesHtml: '' };
+    const payroll = typeFlags.payroll
+      ? await payrollDeadlineAlertService.listOpenForNotify()
+      : [];
+
+    let punchRows: PunchNotifyRow[] = [];
+    if (typeFlags.punch) {
+      if (options?.punchRows) {
+        const punchStatuses = await unprocPunchAlertService.getAlertStatuses();
+        punchRows = unprocPunchAlertService.filterNotifyEligible(options.punchRows, punchStatuses);
+      } else {
+        punchRows = await unprocPunchAlertService.getStaleOpenRowsForNotify();
+      }
+    }
+
+    const sections: string[] = [];
+    const parts: string[] = [];
+    if (queue.ids.length) {
+      parts.push(`${queue.ids.length} stuck job client(s)`);
+      sections.push(this.notifySectionHtml(
+        'Stuck jobs',
+        ['Client', 'Server', 'Job type', 'Plan', 'Stale', 'Pending', 'Since'],
+        queue.linesHtml,
+      ));
+    }
+    if (payroll.length) {
+      parts.push(`${payroll.length} payroll deadline client(s)`);
+      sections.push(this.notifySectionHtml(
+        'Payroll deadline',
+        ['Client', 'Code', 'Week end', 'Deadline', 'Pending', 'Late'],
+        payroll.map(a => `<tr>
+          <td style="padding:6px 12px;font-weight:bold;">${escHtml(a.clientName && a.clientName !== a.clientId ? a.clientName : a.clientId)}</td>
+          <td style="padding:6px 12px;font-family:monospace;">${escHtml(a.clientId)}</td>
+          <td style="padding:6px 12px;font-family:monospace;">${escHtml(a.weekEndDate || '—')}</td>
+          <td style="padding:6px 12px;">${escHtml(a.deadlineAt || '—')}</td>
+          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${a.pendingUnits} / ${a.totalUnits}</td>
+          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${a.lateMinutes != null ? `${a.lateMinutes}m` : '—'}</td>
+        </tr>`).join(''),
+      ));
+    }
+    if (punchRows.length) {
+      parts.push(`${punchRows.length} unprocessed punch client(s)`);
+      sections.push(this.notifySectionHtml(
+        'Unprocessed punches',
+        ['Client', 'Code', 'Cluster', 'Pending punches', 'Last update'],
+        [...punchRows].sort((a, b) => b.punchCount - a.punchCount).map(r => `<tr>
+          <td style="padding:6px 12px;font-weight:bold;">${escHtml(r.name && r.name !== r.clientId ? r.name : r.clientId)}</td>
+          <td style="padding:6px 12px;font-family:monospace;">${escHtml(r.clientId)}</td>
+          <td style="padding:6px 12px;">${escHtml(r.cluster || '—')}</td>
+          <td style="padding:6px 12px;color:#c62828;font-weight:bold;">${r.punchCount.toLocaleString()}</td>
+          <td style="padding:6px 12px;font-family:monospace;font-size:12px;color:#666;">${escHtml(r.lastUpdateTime ?? '—')}</td>
+        </tr>`).join(''),
+      ));
+    }
+
+    if (!sections.length) {
+      const cooldownMins = configService.getNotifyCooldownMins();
+      const disabled = options?.respectTypeFlags
+        ? [
+            !typeFlags.queue ? 'stuck jobs' : null,
+            !typeFlags.payroll ? 'payroll deadline' : null,
+            !typeFlags.punch ? 'unprocessed punch' : null,
+          ].filter(Boolean)
+        : [];
+      const msg = disabled.length
+        ? `No open alerts to notify (auto-email disabled for: ${disabled.join(', ')}; or none qualify / cooldown)`
+        : `No open alerts to notify (or all were emailed within the last ${cooldownMins} minutes)`;
+      return { ...empty, details: [msg] };
+    }
+
+    const emails = allRecipients.map(r => r.email);
+    const summary = parts.join(', ');
+    const { subject, html } = buildAllAlertsNotifyEmail({
+      appName: configService.getAppName(),
+      sectionsHtml: sections.join(''),
+      summary,
+      recipients: emails,
+      sentAt: new Date(),
+    });
+
+    try {
+      const sendResult = await alertService.sendDirectEmail(emails, subject, html);
+      if (queue.ids.length) await this.markQueueNotifySent(queue.ids, sendResult.accepted);
+      if (payroll.length) {
+        await payrollDeadlineAlertService.recordEmailSent(payroll.map(a => a.clientId));
+      }
+      if (punchRows.length) {
+        await unprocPunchAlertService.recordEmailSent(punchRows.map(r => r.clientId));
+      }
+
+      const sent = queue.ids.length + payroll.length + punchRows.length;
+      const details = [`One email sent to ${sendResult.accepted.join(', ')}: ${summary}`];
+      logger.info(`[NotifyAll] ${summary} → ${sendResult.accepted.join(', ')}`);
+      return {
+        sent,
+        skipped: 0,
+        recipients: sendResult.accepted,
+        details,
+        queueIds: queue.ids,
+        payrollClientIds: payroll.map(a => a.clientId),
+        punchClientIds: punchRows.map(r => r.clientId),
+      };
+    } catch (err: any) {
+      const errMsg = err.message || 'Unknown SMTP error';
+      logger.error(`[NotifyAll] Failed: ${errMsg}`);
+      return { ...empty, skipped: 0, error: errMsg, details: [errMsg] };
+    }
   }
 
   /**
@@ -762,7 +1005,7 @@ class EscalationService {
   }
 
   /**
-   * Escalation report for a month or quarter: critical queue-buildup + punch alert workflow activity.
+   * Escalation report for a month or quarter: queue-buildup, punch, and payroll deadline alerts.
    */
   async getMonthlyReport(options: {
     year: number;
@@ -789,8 +1032,15 @@ class EscalationService {
       clientId: options.clientId,
       includeLiveStale: periodContainsNow(period),
     });
+    const payrollDeadlineAlerts = await payrollDeadlineAlertService.getPayrollDeadlineAlertHistory({
+      start: period.start,
+      end: period.end,
+      asOf,
+      cluster: options.cluster,
+      clientId: options.clientId,
+    });
 
-    return { period, queueBuildup, punchAlerts };
+    return { period, queueBuildup, punchAlerts, payrollDeadlineAlerts };
   }
 
   /**

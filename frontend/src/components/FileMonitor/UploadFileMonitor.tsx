@@ -51,9 +51,30 @@ function StatusBadge({ status }: { status: ClientFileMonitorResult['status'] }) 
   );
 }
 
-function ClientDetailRow({ row }: { row: ClientFileMonitorResult }) {
+function foldersScannedForRow(
+  row: ClientFileMonitorResult,
+  paths?: { pending: string; rejected: string },
+): string[] {
+  if (row.scannedFolders && row.scannedFolders.length > 0) return row.scannedFolders;
+  if (!paths) return [];
+  // Legacy responses (no scannedFolders): only infer when files prove which path was used
+  if (row.pendingFiles.length > 0 && paths.pending) return [paths.pending];
+  if (row.rejectedFolders.length > 0 && paths.rejected) return [paths.rejected];
+  return [];
+}
+
+function ClientDetailRow({
+  row,
+  paths,
+}: {
+  row: ClientFileMonitorResult;
+  paths?: { pending: string; rejected: string };
+}) {
   const [open, setOpen] = useState(row.status === 'ALERT');
-  const hasDetail = row.pendingFiles.length > 0 || row.rejectedFolders.length > 0 || row.error;
+  const [foldersOpen, setFoldersOpen] = useState(true);
+  const folderList = foldersScannedForRow(row, paths);
+  const hasFileDetail = row.pendingFiles.length > 0 || row.rejectedFolders.length > 0 || !!row.error;
+  const hasDetail = hasFileDetail || folderList.length > 0;
 
   return (
     <>
@@ -67,7 +88,7 @@ function ClientDetailRow({ row }: { row: ClientFileMonitorResult }) {
         <td className="px-4 py-2 text-xs text-red-600 max-w-[160px] truncate" title={row.error}>{row.error ?? ''}</td>
         <td className="px-4 py-2">
           {hasDetail && (
-            <button type="button" onClick={() => setOpen(o => !o)} className="text-slate-400 hover:text-slate-600">
+            <button type="button" onClick={() => setOpen(o => !o)} className="text-slate-400 hover:text-slate-600" aria-label={open ? 'Collapse' : 'Expand'}>
               {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
           )}
@@ -76,6 +97,27 @@ function ClientDetailRow({ row }: { row: ClientFileMonitorResult }) {
       {open && hasDetail && (
         <tr>
           <td colSpan={8} className="px-6 py-3 bg-slate-50 border-b">
+            {folderList.length > 0 && (
+              <div className="mb-3">
+                <button
+                  type="button"
+                  onClick={() => setFoldersOpen(o => !o)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900"
+                >
+                  {foldersOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  Folders scanned ({folderList.length})
+                </button>
+                {foldersOpen && (
+                  <ul className="mt-1.5 ml-5 space-y-1">
+                    {folderList.map((folder) => (
+                      <li key={folder} className="text-[11px] font-mono text-slate-600 break-all" title={folder}>
+                        {folder}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             {row.error && <p className="text-sm text-amber-700 mb-2">{row.error}</p>}
             {row.pendingFiles.length > 0 && (
               <div className="mb-3">
@@ -112,6 +154,9 @@ function ClientDetailRow({ row }: { row: ClientFileMonitorResult }) {
                   </div>
                 ))}
               </div>
+            )}
+            {!hasFileDetail && folderList.length > 0 && row.status === 'CLEAN' && (
+              <p className="text-xs text-slate-500">No files found in the folder(s) above.</p>
             )}
           </td>
         </tr>
@@ -194,9 +239,10 @@ function handleStreamEvent(
 
 export default function UploadFileMonitor() {
   const { clients, clusters: allClusters } = useGlobalFilter();
-  const [allClustersSelected, setAllClustersSelected] = useState(true);
+  // Prefer an explicit cluster/client pick — All is available but not the default
+  const [allClustersSelected, setAllClustersSelected] = useState(false);
   const [selectedClusters, setSelectedClusters] = useState<string[]>([]);
-  const [allClientsSelected, setAllClientsSelected] = useState(true);
+  const [allClientsSelected, setAllClientsSelected] = useState(false);
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [checkPending, setCheckPending] = useState(true);
   const [checkRejected, setCheckRejected] = useState(false);
@@ -252,12 +298,21 @@ export default function UploadFileMonitor() {
   };
 
   const handleScan = () => {
+    const scanLabel = checkPending ? 'pending IN folder' : 'rejected DTS (today)';
     if (allClustersSelected) {
       const count = clients.length;
-      const scanLabel = checkPending ? 'pending IN folder' : 'rejected DTS (today)';
       if (!window.confirm(
         `Scan all clusters (${count} client${count === 1 ? '' : 's'}) for ${scanLabel}?\n\n` +
-        'This connects to each Prod app server sequentially and may take several minutes.',
+        'This connects to each Prod app server sequentially and may take several minutes.\n\n' +
+        'Tip: Selecting one cluster (and one client) is usually faster and easier to review.',
+      )) {
+        return;
+      }
+    } else if (allClientsSelected && selectedClusters.length === 1) {
+      const count = scopeClients.length;
+      if (count > 1 && !window.confirm(
+        `Scan all ${count} clients in cluster ${selectedClusters[0]} for ${scanLabel}?\n\n` +
+        'Selecting a single client is recommended when you only need one box.',
       )) {
         return;
       }
@@ -268,7 +323,8 @@ export default function UploadFileMonitor() {
   const selectCluster = (cl: string) => {
     setAllClustersSelected(false);
     setSelectedClusters([cl]);
-    setAllClientsSelected(true);
+    // Reset client pick when cluster changes — encourage choosing a client
+    setAllClientsSelected(false);
     setSelectedClientIds([]);
   };
 
@@ -307,47 +363,102 @@ export default function UploadFileMonitor() {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-          <Filter className="w-4 h-4" /> Scope
-        </h2>
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+            <Filter className="w-4 h-4" /> Scope
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Select a cluster and client for a focused scan. Use &ldquo;All&rdquo; only when you need a full sweep — it is slower and harder to review.
+          </p>
+        </div>
 
         <div>
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-            <input type="checkbox" checked={allClustersSelected} onChange={e => { setAllClustersSelected(e.target.checked); if (e.target.checked) setSelectedClusters([]); }} className="rounded" />
-            All clusters
-          </label>
-          {!allClustersSelected && (
-            <div className="flex flex-wrap gap-2">
-              {allClusters.map(cl => (
-                <button key={cl} type="button" onClick={() => selectCluster(cl)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border ${selectedClusters.includes(cl) ? 'bg-zebra-100 border-zebra-400 text-zebra-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                  {cl}
-                </button>
-              ))}
-            </div>
-          )}
-          {!allClustersSelected && selectedClusters.length === 0 && (
-            <p className="text-xs text-amber-700 mt-1">Select one cluster to scan.</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <span className="text-sm font-medium text-slate-700">Cluster</span>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500">
+              <input
+                type="checkbox"
+                checked={allClustersSelected}
+                onChange={e => {
+                  setAllClustersSelected(e.target.checked);
+                  if (e.target.checked) {
+                    setSelectedClusters([]);
+                    setAllClientsSelected(true);
+                    setSelectedClientIds([]);
+                  } else {
+                    setAllClientsSelected(false);
+                    setSelectedClientIds([]);
+                  }
+                }}
+                className="rounded"
+              />
+              All clusters
+            </label>
+          </div>
+          {!allClustersSelected ? (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {allClusters.map(cl => (
+                  <button key={cl} type="button" onClick={() => selectCluster(cl)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border ${selectedClusters.includes(cl) ? 'bg-zebra-100 border-zebra-400 text-zebra-800' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'}`}>
+                    {cl}
+                  </button>
+                ))}
+              </div>
+              {selectedClusters.length === 0 && (
+                <p className="text-xs text-amber-700 mt-1">Select one cluster to continue.</p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-amber-700 bg-amber-50 rounded px-3 py-2">
+              All clusters selected — every active client will be scanned sequentially. Prefer picking one cluster when possible.
+            </p>
           )}
         </div>
 
         <div>
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-            <input type="checkbox" checked={allClientsSelected} onChange={e => { setAllClientsSelected(e.target.checked); if (e.target.checked) setSelectedClientIds([]); }} className="rounded" />
-            All clients
-          </label>
-          {!allClientsSelected && (
-            <div className="max-h-32 overflow-y-auto border rounded-lg p-2 flex flex-wrap gap-1">
-              {scopeClients.map(c => (
-                <button key={c.id} type="button" onClick={() => selectClient(c.clientId)}
-                  className={`px-2 py-0.5 rounded text-xs border ${selectedClientIds.includes(c.clientId) ? 'bg-zebra-100 border-zebra-400' : 'border-slate-200'}`}>
-                  {c.clientId}
-                </button>
-              ))}
-            </div>
-          )}
-          {!allClientsSelected && selectedClientIds.length === 0 && (
-            <p className="text-xs text-amber-700 mt-1">Select one client box to scan.</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <span className="text-sm font-medium text-slate-700">Client</span>
+            <label className={`flex items-center gap-1.5 text-xs ${allClustersSelected ? 'text-slate-400' : 'text-slate-500'}`}>
+              <input
+                type="checkbox"
+                checked={allClientsSelected}
+                disabled={allClustersSelected}
+                onChange={e => {
+                  setAllClientsSelected(e.target.checked);
+                  if (e.target.checked) setSelectedClientIds([]);
+                }}
+                className="rounded"
+              />
+              All clients{allClustersSelected ? ' (with all clusters)' : ''}
+            </label>
+          </div>
+          {!allClientsSelected && !allClustersSelected ? (
+            <>
+              {selectedClusters.length === 0 ? (
+                <p className="text-xs text-slate-400">Choose a cluster first, then pick a client.</p>
+              ) : (
+                <>
+                  <div className="max-h-32 overflow-y-auto border rounded-lg p-2 flex flex-wrap gap-1">
+                    {scopeClients.map(c => (
+                      <button key={c.id} type="button" onClick={() => selectClient(c.clientId)}
+                        className={`px-2 py-0.5 rounded text-xs border ${selectedClientIds.includes(c.clientId) ? 'bg-zebra-100 border-zebra-400' : 'border-slate-200 hover:border-slate-300'}`}>
+                        {c.clientId}
+                      </button>
+                    ))}
+                  </div>
+                  {selectedClientIds.length === 0 && (
+                    <p className="text-xs text-amber-700 mt-1">Select one client box to scan.</p>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-amber-700 bg-amber-50 rounded px-3 py-2">
+              {allClustersSelected
+                ? 'Scanning all clients across all clusters.'
+                : `All clients in ${selectedClusters[0] ?? 'selected cluster'} will be scanned. Prefer one client when you only need a single box.`}
+            </p>
           )}
         </div>
 
@@ -444,7 +555,7 @@ export default function UploadFileMonitor() {
             Scanned: {result.scannedAt}
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="flex items-center gap-2 text-sm text-slate-600">
               <input type="checkbox" checked={showAlertsOnly} onChange={e => setShowAlertsOnly(e.target.checked)} className="rounded" />
               Show alerts &amp; errors only
@@ -455,6 +566,9 @@ export default function UploadFileMonitor() {
               </span>
             )}
           </div>
+          <p className="text-xs text-slate-500">
+            Expand a client row to confirm which folders were scanned on that server.
+          </p>
 
           <div className="bg-white border rounded-xl overflow-hidden">
             <table className="w-full text-sm">
@@ -472,7 +586,7 @@ export default function UploadFileMonitor() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {displayRows.map(row => (
-                  <ClientDetailRow key={row.clientId} row={row} />
+                  <ClientDetailRow key={row.clientId} row={row} paths={result.paths} />
                 ))}
               </tbody>
             </table>

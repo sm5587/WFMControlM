@@ -6,6 +6,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../database/prisma';
 import { syncService, SyncDisabledError } from '../services/sync-service';
 import { db2DirectService } from '../services/db2-direct-service';
+import { clientWfmVersionService } from '../services/client-wfm-version-service';
 import { createServiceLogger } from '../utils/logger';
 import { encryptClientDb2Password, hasStoredDb2Password } from '../utils/client-db2-password';
 import { requirePermission } from '../middleware';
@@ -465,6 +466,26 @@ router.post('/sync-all-crons', requirePermission('CLIENTS_SYNC', 'write'), async
     logger.error(`Sync-all-crons failed: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// POST /api/clients/sync-wfm-versions - Refresh WFM app versions
+// Body: { force?: boolean, refreshAppUrl?: boolean }
+//   - Default: reuse Client.wfmAppUrl, HTTP-fetch /reflexisversion.txt only
+//   - refreshAppUrl=true: re-query DB2 RFX_CONFIG APPURL (rare; APPURL almost never changes)
+router.post('/sync-wfm-versions', requirePermission('CLIENTS_SYNC', 'write'), (req: Request, res: Response) => {
+  const body = req.body || {};
+  const force = !!body.force;
+  const refreshAppUrl = !!body.refreshAppUrl;
+  res.status(202).json({
+    success: true,
+    message: refreshAppUrl
+      ? 'WFM version sync started (re-fetching APPURL from DB2 + version).'
+      : 'WFM version sync started (using stored APPURL).',
+  });
+
+  clientWfmVersionService.syncAll({ force, refreshAppUrl }).catch(err =>
+    logger.error(`WFM version background sync failed: ${err.message}`),
+  );
 });
 
 // GET /api/clients/:id/sync-history - Get sync history for a client

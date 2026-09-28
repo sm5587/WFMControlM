@@ -14,6 +14,7 @@ import { useConfig } from '../../contexts/ConfigContext';
 import { APP_CONFIG_KEYS } from '../../constants/app-config-keys';
 import SyncDisabledBanner from '../common/SyncDisabledBanner';
 import { usePermission } from '../../context/AuthContext';
+import { ClearableFilterSelect, ClearableSearchInput } from '../ui/ClearableFilter';
 
 // Queue status labels (QUEUE_STATUS from RFX_QUEUE)
 const JOB_STATUS_MAP: Record<string, { label: string; color: string; icon: any }> = {
@@ -308,45 +309,29 @@ export default function DBJobs() {
 
       {/* Search & Filter */}
       <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search clients by ID or name..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
-          />
-        </div>
-        {/* Cross-client job filter */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Filter by job name (all clients)…"
-            value={jobFilter}
-            onChange={(e) => setJobFilter(e.target.value)}
-            className={`pl-10 pr-4 py-2 w-64 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300 ${
-              jobFilter ? 'border-zebra-400 bg-zebra-50' : 'border-gray-200'
-            }`}
-          />
-          {jobFilter && (
-            <button
-              onClick={() => setJobFilter('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs px-1"
-            >✕</button>
-          )}
-        </div>
-        <select
+        <ClearableSearchInput
+          className="flex-1 max-w-md"
+          value={search}
+          onChange={setSearch}
+          placeholder="Search clients by ID or name..."
+        />
+        <ClearableSearchInput
+          value={jobFilter}
+          onChange={setJobFilter}
+          placeholder="Filter by job name (all clients)…"
+          inputClassName={`py-2 w-64 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300 ${
+            jobFilter ? 'border-zebra-400 bg-zebra-50' : 'border-gray-200'
+          }`}
+        />
+        <ClearableFilterSelect
           value={clusterFilter}
-          onChange={(e) => setClusterFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zebra-300"
+          onChange={setClusterFilter}
         >
           <option value="">All Clusters</option>
           {allClusters.map(cl => (
             <option key={cl} value={cl}>{cl}</option>
           ))}
-        </select>
+        </ClearableFilterSelect>
       </div>
 
       {/* Stats */}
@@ -661,16 +646,13 @@ export default function DBJobs() {
                       {(jobSearch || jobFilter || criticalOnly) && ` of ${selectedJobsRaw.length}`}
                       {criticalOnly && ' (critical)'}
                     </span>
-                    <div className="relative">
-                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
-                      <input
-                        type="text"
-                        placeholder="Filter jobs..."
-                        value={jobSearch}
-                        onChange={e => setJobSearch(e.target.value)}
-                        className="pl-7 pr-2 py-1.5 w-36 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-zebra-300"
-                      />
-                    </div>
+                    <ClearableSearchInput
+                      value={jobSearch}
+                      onChange={setJobSearch}
+                      placeholder="Filter jobs..."
+                      iconSize={12}
+                      inputClassName="py-1.5 w-36 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-zebra-300"
+                    />
                     <button
                       onClick={() => refreshClientMutation.mutate(selectedClient!)}
                       disabled={refreshClientMutation.isPending || !dbJobsSyncEnabled}
