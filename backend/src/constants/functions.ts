@@ -59,6 +59,10 @@ export const APP_FUNCTIONS: Record<string, FunctionDef> = {
   UNPROC_PUNCH_REFRESH_HIGH: { id: 'UNPROC_PUNCH_REFRESH_HIGH', module: 'Unprocessed Punch', name: 'Unprocessed Punch — Refresh High Alert', description: 'Reload punch counts for high-alert clients (>500 pending)', sortOrder: 77 },
   UNPROC_PUNCH_REFRESH_ROW:  { id: 'UNPROC_PUNCH_REFRESH_ROW',  module: 'Unprocessed Punch', name: 'Unprocessed Punch — Refresh Client',     description: 'Reload punch count for a single client from DB2', sortOrder: 78 },
 
+  // ── Custom Alerts (menu: Custom Alerts) ─────────────────
+  CUSTOM_ALERTS_VIEW:   { id: 'CUSTOM_ALERTS_VIEW',   module: 'Custom Alerts', name: 'Custom Alerts',                    sortOrder: 73 },
+  CUSTOM_ALERTS_MANAGE: { id: 'CUSTOM_ALERTS_MANAGE', module: 'Custom Alerts', name: 'Custom Alerts — Create / Edit / Delete', description: 'Create, edit, delete and run custom SQL threshold alerts', sortOrder: 74 },
+
   // ── Maintenance (menu: Maintenance) ─────────────────────
   MAINTENANCE_VIEW:   { id: 'MAINTENANCE_VIEW',   module: 'Maintenance', name: 'Maintenance',                   sortOrder: 55 },
   MAINTENANCE_MANAGE: { id: 'MAINTENANCE_MANAGE', module: 'Maintenance', name: 'Maintenance — Manage',          sortOrder: 56 },

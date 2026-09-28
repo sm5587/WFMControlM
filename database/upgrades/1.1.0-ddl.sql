@@ -46,3 +46,72 @@ CREATE TABLE IF NOT EXISTS "PayrollDeadlineAlert" (
 CREATE UNIQUE INDEX IF NOT EXISTS "PayrollDeadlineAlert_clientId_key" ON "PayrollDeadlineAlert"("clientId");
 CREATE INDEX IF NOT EXISTS "PayrollDeadlineAlert_status_idx" ON "PayrollDeadlineAlert"("status");
 CREATE INDEX IF NOT EXISTS "PayrollDeadlineAlert_suppressUntil_idx" ON "PayrollDeadlineAlert"("suppressUntil");
+
+-- ============================================================
+-- Custom Alerts (user-defined SQL threshold watchers)
+-- Mirrors Prisma migrations:
+--   20260920204459_add_custom_alerts
+--   20260922090051_custom_alerts_multi_client
+--   20260923101746_custom_alerts_notify_emails
+--   20260923195313_custom_alerts_schedule
+--   20260925083703_custom_alerts_cron_schedule
+--   20260928130000_custom_alerts_remove_column
+--   20260928140000_add_custom_alerts_permissions
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS "CustomAlert" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "clientId" TEXT,
+    "clientName" TEXT NOT NULL DEFAULT '',
+    "clientIds" TEXT NOT NULL DEFAULT '[]',
+    "clientNames" TEXT NOT NULL DEFAULT '[]',
+    "sqlQuery" TEXT NOT NULL,
+    "operator" TEXT NOT NULL DEFAULT 'GT',
+    "thresholdValue" TEXT NOT NULL,
+    "intervalMinutes" INTEGER NOT NULL DEFAULT 15,
+    "scheduleType" TEXT NOT NULL DEFAULT 'INTERVAL',
+    "scheduleConfig" TEXT NOT NULL DEFAULT '{}',
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "notifyEmails" TEXT NOT NULL DEFAULT '[]',
+    "startAt" DATETIME,
+    "endAt" DATETIME,
+    "lastStatus" TEXT,
+    "lastValue" TEXT,
+    "lastError" TEXT,
+    "lastCheckedAt" DATETIME,
+    "lastTriggeredAt" DATETIME,
+    "results" TEXT NOT NULL DEFAULT '[]',
+    "createdBy" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "CustomAlert_isActive_idx" ON "CustomAlert"("isActive");
+CREATE INDEX IF NOT EXISTS "CustomAlert_clientId_idx" ON "CustomAlert"("clientId");
+CREATE INDEX IF NOT EXISTS "CustomAlert_lastStatus_idx" ON "CustomAlert"("lastStatus");
+
+-- Custom Alerts permissions (AppFunction catalog + profile grants)
+INSERT OR IGNORE INTO "AppFunction" ("id", "module", "name", "description", "sortOrder") VALUES
+  ('CUSTOM_ALERTS_VIEW', 'Custom Alerts', 'Custom Alerts', NULL, 73),
+  ('CUSTOM_ALERTS_MANAGE', 'Custom Alerts', 'Custom Alerts — Create / Edit / Delete', 'Create, edit, delete and run custom SQL threshold alerts', 74);
+
+-- Grant to System Admin (read + write)
+INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWrite")
+SELECT p.id, fn.id, 1, 1
+FROM "Profile" p
+CROSS JOIN (
+  SELECT 'CUSTOM_ALERTS_VIEW' AS id UNION ALL
+  SELECT 'CUSTOM_ALERTS_MANAGE'
+) fn
+WHERE p."isSystem" = 1 AND p.name = 'System Admin';
+
+-- Grant read to Monitor + Read Only profiles
+INSERT OR IGNORE INTO "Permission" ("profileId", "functionId", "canRead", "canWrite")
+SELECT p.id, fn.id, 1, 0
+FROM "Profile" p
+CROSS JOIN (
+  SELECT 'CUSTOM_ALERTS_VIEW' AS id UNION ALL
+  SELECT 'CUSTOM_ALERTS_MANAGE'
+) fn
+WHERE p."isSystem" = 1 AND p.name IN ('Monitor', 'Read Only');

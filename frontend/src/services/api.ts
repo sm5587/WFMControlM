@@ -762,6 +762,40 @@ export const unprocessedPunchApi = {
     new EventSource('/api/unprocessed-punch/stream'),
 };
 
+// ---- Custom Alerts (user-defined SQL threshold watchers) ----
+export const customAlertsApi = {
+  list: (): Promise<ApiResponse<import('../types').CustomAlert[]>> =>
+    api.get('/custom-alerts'),
+
+  create: (data: import('../types').CustomAlertInput): Promise<ApiResponse<import('../types').CustomAlert>> =>
+    api.post('/custom-alerts', data),
+
+  update: (id: string, data: Partial<import('../types').CustomAlertInput>): Promise<ApiResponse<import('../types').CustomAlert>> =>
+    api.put(`/custom-alerts/${id}`, data),
+
+  remove: (id: string): Promise<ApiResponse> =>
+    api.delete(`/custom-alerts/${id}`),
+
+  run: (id: string): Promise<ApiResponse<import('../types').CustomAlert>> =>
+    api.post(`/custom-alerts/${id}/run`, {}, { timeout: 120000 }),
+
+  test: (data: {
+    clientIds: string[];
+    clientNames?: string[];
+    sqlQuery: string;
+    operator: import('../types').CustomAlertOperator;
+    thresholdValue: string;
+  }): Promise<ApiResponse<import('../types').CustomAlertClientResult[]>> =>
+    api.post('/custom-alerts/test', data, { timeout: 300000 }),
+
+  validate: (data: {
+    clientIds: string[];
+    clientNames?: string[];
+    sqlQuery: string;
+  }): Promise<ApiResponse<import('../types').CustomAlertValidateResult>> =>
+    api.post('/custom-alerts/validate', data, { timeout: 300000 }),
+};
+
 // ============================================================
 // Config API
 // ============================================================

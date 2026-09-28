@@ -43,7 +43,9 @@ import maintenanceRouter from './routes/maintenance';
 import outageRouter from './routes/outage';
 import fileMonitorRouter from './routes/file-monitor';
 import configRouter from './routes/config';
+import customAlertsRouter from './routes/custom-alerts';
 import emailPreviewRouter from './routes/email-preview';
+import { customAlertService } from './services/custom-alert-service';
 
 const logger = createServiceLogger('Server');
 
@@ -65,6 +67,7 @@ async function bootstrap() {
   const app = express();
   const httpServer = createServer(app);
   let dbMonitorBatchSyncInterval: NodeJS.Timeout | null = null;
+  let customAlertSweepInterval: NodeJS.Timeout | null = null;
 
   // ---- Connect Database ----
   await connectDatabase();
@@ -187,6 +190,7 @@ async function bootstrap() {
   apiRouter.use('/file-monitor', fileMonitorRouter);
   apiRouter.use('/admin', adminRouter);
   apiRouter.use('/config', configRouter);
+  apiRouter.use('/custom-alerts', customAlertsRouter);
 
   app.use('/api', apiRouter);
 
@@ -205,6 +209,40 @@ async function bootstrap() {
     });
   }
   logger.info(`AppFunction registry synced (${Object.keys(APP_FUNCTIONS).length} functions)`);
+
+  // ---- Ensure System Admin profiles have full access to every function ----
+  // New features add AppFunctions after the initial seed; without this, an
+  // existing (non-reseeded) database would leave System Admin unable to see
+  // new menus. Only *missing* permission rows are created (never downgraded).
+  try {
+    const adminProfiles = await prisma.profile.findMany({
+      where: { isSystem: true, name: 'System Admin' },
+      select: { id: true },
+    });
+    if (adminProfiles.length > 0) {
+      const allFunctionIds = Object.keys(APP_FUNCTIONS);
+      let granted = 0;
+      for (const profile of adminProfiles) {
+        const existing = await prisma.permission.findMany({
+          where: { profileId: profile.id },
+          select: { functionId: true },
+        });
+        const existingIds = new Set(existing.map(p => p.functionId));
+        const missing = allFunctionIds.filter(id => !existingIds.has(id));
+        for (const functionId of missing) {
+          await prisma.permission.create({
+            data: { profileId: profile.id, functionId, canRead: true, canWrite: true },
+          });
+          granted++;
+        }
+      }
+      if (granted > 0) {
+        logger.info(`Granted ${granted} missing System Admin permission(s) for new functions`);
+      }
+    }
+  } catch (err: any) {
+    logger.warn(`System Admin permission backfill skipped: ${err.message}`);
+  }
 
   // ---- Initialize Keeper Secrets Manager (non-fatal) ----
   await keeperService.initialize();
@@ -302,6 +340,23 @@ async function bootstrap() {
   runDbMonitorBatchSync();
   dbMonitorBatchSyncInterval = setInterval(runDbMonitorBatchSync, dbMonitorSyncMs);
 
+  // ---- Custom Alerts sweep ----
+  // Tick every minute; each rule is re-evaluated only when its own
+  // configured interval (minutes) has elapsed since its last check.
+  const CUSTOM_ALERT_TICK_MS = 60 * 1000;
+  const runCustomAlertSweep = async () => {
+    try {
+      const { checked } = await customAlertService.runDue();
+      if (checked > 0) {
+        logger.info(`[CustomAlertSweep] Evaluated ${checked} due custom alert(s)`);
+      }
+    } catch (err: any) {
+      logger.error(`[CustomAlertSweep] Sweep failed: ${err?.message || String(err)}`);
+    }
+  };
+  runCustomAlertSweep();
+  customAlertSweepInterval = setInterval(runCustomAlertSweep, CUSTOM_ALERT_TICK_MS);
+
   // ---- Start HTTP Server ----
   httpServer.listen(config.port, () => {
     logger.info(buildStartupBanner({
@@ -322,6 +377,11 @@ async function bootstrap() {
     if (dbMonitorBatchSyncInterval) {
       clearInterval(dbMonitorBatchSyncInterval);
       dbMonitorBatchSyncInterval = null;
+    }
+
+    if (customAlertSweepInterval) {
+      clearInterval(customAlertSweepInterval);
+      customAlertSweepInterval = null;
     }
     
     await scheduler.stop();

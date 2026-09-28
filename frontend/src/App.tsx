@@ -10,6 +10,7 @@ import Dashboard from './components/Dashboard/Dashboard';
 import JobsList from './components/Jobs/JobsList';
 
 import AlertCenter from './components/Alerts/AlertCenter';
+import CustomAlerts from './components/CustomAlerts/CustomAlerts';
 import ClientsList from './components/Clients/ClientsList';
 import DBMonitor from './components/DBMonitor/DBMonitor';
 import PayrollJobs from './components/Payroll/PayrollJobs';
@@ -59,6 +60,7 @@ const ALLOWED_ROUTES = [
   '/payroll-monitor',
   '/unprocessed-punch',
   '/alerts',
+  '/custom-alerts',
   '/admin/users',
   '/admin/profiles',
   '/admin/purge',
@@ -225,6 +227,7 @@ function AppRoutes() {
           <Route path="payroll-monitor" element={<PayrollGate configKey={PAYROLL_MONITOR_ENABLED_KEY} permission="PAYROLL_MONITOR_VIEW"><PayrollMonitor /></PayrollGate>} />
           <Route path="unprocessed-punch" element={<PermissionRoute permission="UNPROC_PUNCH_VIEW"><UnprocessedPunch /></PermissionRoute>} />
           <Route path="alerts" element={<PermissionRoute permission="ALERTS_VIEW"><AlertCenter /></PermissionRoute>} />
+          <Route path="custom-alerts" element={<PermissionRoute permission="CUSTOM_ALERTS_VIEW"><CustomAlerts /></PermissionRoute>} />
           <Route path="admin/users" element={<PermissionRoute permission="USERS_VIEW"><AdminUsers /></PermissionRoute>} />
           <Route path="admin/profiles" element={<PermissionRoute permission="PROFILES_VIEW"><AdminProfiles /></PermissionRoute>} />
           <Route path="admin/purge" element={<PermissionRoute permission="DATA_PURGE_VIEW"><AdminPurge /></PermissionRoute>} />

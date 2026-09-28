@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   Server, Database, CheckCircle, Clock, AlertTriangle,
-  Activity, Briefcase, ArrowRight, Loader2, Timer, Bell,
+  Activity, Briefcase, ArrowRight, Loader2, Timer, Bell, BellRing,
   Settings, Eye, EyeOff, X, Wallet,
 } from 'lucide-react';
-import { jobsApi, unprocessedPunchApi, escalationsApi } from '../../services/api';
+import { jobsApi, unprocessedPunchApi, escalationsApi, customAlertsApi } from '../../services/api';
+import CustomAlertDetailModal from '../CustomAlerts/CustomAlertDetailModal';
 import { useAllClientsBatchData } from '../../hooks/useAllClientsBatchData';
 import { useProgressivePayrollMonitor, PayrollMonitorRow } from '../../hooks/useProgressivePayrollMonitor';
 import { useTimezone } from '../../hooks/useTimezone';
@@ -23,7 +24,8 @@ type WidgetId =
   | 'batch-summary'
   | 'pending-jobs'
   | 'cron-stats'
-  | 'upcoming-jobs';
+  | 'upcoming-jobs'
+  | 'custom-alerts';
 
 const WIDGET_LABELS: Record<WidgetId, string> = {
   'escalated-alerts': 'Escalated Alerts',
@@ -34,6 +36,7 @@ const WIDGET_LABELS: Record<WidgetId, string> = {
   'pending-jobs':     'Pending Jobs >30min',
   'cron-stats':       'Cron Job Stat Cards',
   'upcoming-jobs':    'Upcoming Jobs',
+  'custom-alerts':    'Custom Alerts',
 };
 
 const LS_KEY = 'dashboard_hidden_widgets';
@@ -87,6 +90,14 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
+  const { data: customAlertsData } = useQuery({
+    queryKey: ['custom-alerts-dashboard'],
+    queryFn: async () => { const r = await customAlertsApi.list(); return r.data ?? []; },
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
   const cronJobs     = (jobsData?.data || []) as any[];
   const upcomingJobs = (upcomingData?.data?.jobs || []) as any[];
   const { fmt } = useTimezone();
@@ -124,9 +135,18 @@ export default function Dashboard() {
   const openAlerts     = escalatedAlerts.filter(a => a.status === 'OPEN');
   const criticalAlerts = openAlerts.filter(a => a.stalePendingCount >= 10);
 
+  // ---- Custom alert stats ----
+  const customAlerts: any[] = (customAlertsData as any) ?? [];
+  const triggeredCustom = customAlerts.filter(a => a.lastStatus === 'TRIGGERED');
+  const okCustom        = customAlerts.filter(a => a.lastStatus === 'OK');
+  const erroredCustom   = customAlerts.filter(a => a.lastStatus === 'ERROR');
+
   // ---- Widget visibility ----
   const [hidden, setHidden] = useState<Set<WidgetId>>(loadHidden);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+
+  // Custom alert detail modal
+  const [selectedAlert, setSelectedAlert] = useState<any | null>(null);
 
   const show = (id: WidgetId) => !hidden.has(id);
 
@@ -500,6 +520,80 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* ===== ROW 3: Custom Alerts (only when any are configured) ===== */}
+      {show('custom-alerts') && customAlerts.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100">
+          <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <BellRing className="w-4 h-4 text-red-500" />
+              Custom Alerts
+              {triggeredCustom.length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold">{triggeredCustom.length}</span>
+              )}
+            </h3>
+            <Link to="/custom-alerts" className="text-xs text-red-600 hover:text-red-800 flex items-center gap-1">
+              View All <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div className={`rounded-lg p-3 text-center ${triggeredCustom.length > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
+                <div className={`text-2xl font-bold ${triggeredCustom.length > 0 ? 'text-red-600' : 'text-green-600'}`}>{triggeredCustom.length}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">Triggered</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center">
+                <div className="text-2xl font-bold text-gray-500">{okCustom.length}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">OK</div>
+              </div>
+              <div className={`rounded-lg p-3 text-center ${erroredCustom.length > 0 ? 'bg-amber-50' : 'bg-gray-50'}`}>
+                <div className={`text-2xl font-bold ${erroredCustom.length > 0 ? 'text-amber-700' : 'text-gray-400'}`}>{erroredCustom.length}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">Errors</div>
+              </div>
+            </div>
+            {triggeredCustom.length === 0 ? (
+              <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 rounded-lg px-3 py-2">
+                <CheckCircle className="w-3.5 h-3.5" /> No triggered custom alerts
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-50 max-h-48 overflow-auto rounded-lg border border-red-100">
+                {triggeredCustom.slice(0, 6).map((a: any) => {
+                  const clientCount = a.clientIds?.length || (a.clientId ? 1 : 0);
+                  const triggeredClients = (a.results ?? []).filter((r: any) => r.status === 'TRIGGERED').length;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setSelectedAlert(a)}
+                      className="w-full text-left px-4 py-2 flex items-center justify-between hover:bg-red-50/60 transition-colors cursor-pointer"
+                      title="View details"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <BellRing className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-gray-800 truncate max-w-[240px]">{a.name}</div>
+                          <div className="text-[10px] text-gray-400">{clientCount} client{clientCount === 1 ? '' : 's'}</div>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-bold flex-shrink-0">
+                        {triggeredClients > 0 ? triggeredClients : ''} Triggered
+                      </span>
+                    </button>
+                  );
+                })}
+                {triggeredCustom.length > 6 && (
+                  <div className="px-4 py-2 text-center text-xs text-gray-400">+{triggeredCustom.length - 6} more</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Custom alert detail modal */}
+      {selectedAlert && (
+        <CustomAlertDetailModal alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
+      )}
     </div>
   );
 }

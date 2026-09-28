@@ -648,6 +648,7 @@ class DB2DirectService {
         db2Host: true,
         db2Port: true,
         db2Database: true,
+        db2Schema: true,
         db2Username: true,
         db2Password: true,
         db2SslEnabled: true,
@@ -655,7 +656,17 @@ class DB2DirectService {
     });
 
     if (rec?.db2Host && rec.db2Database) {
-      const jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
+      let jdbcUrl = `jdbc:db2://${rec.db2Host}:${rec.db2Port ?? configService.getInt('infra.db2DefaultPort')}/${rec.db2Database}`;
+
+      // Apply the client's configured schema as the connection's default
+      // (CURRENT SCHEMA). This makes unqualified table names in user SQL (e.g.
+      // Custom Alerts) resolve to this schema instead of the login user's own
+      // schema. Sanitized to a plain SQL identifier to keep the URL safe.
+      const schema = (rec.db2Schema ?? '').trim().replace(/[^A-Za-z0-9_$]/g, '');
+      if (schema) {
+        jdbcUrl += `:currentSchema=${schema};`;
+      }
+
       env.DB2_URL_OVERRIDE = jdbcUrl;
       if (rec.db2Username) env.DB2_USER_OVERRIDE = rec.db2Username;
       const password = decryptClientDb2Password(rec.db2Password);

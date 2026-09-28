@@ -417,3 +417,87 @@ export interface CalendarImportEntry {
   status: string;
 }
 
+// ---- Custom Alerts (user-defined SQL threshold watchers) ----
+export type CustomAlertOperator = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ';
+export type CustomAlertStatus = 'OK' | 'TRIGGERED' | 'ERROR' | 'PENDING';
+
+export interface CustomAlertClientResult {
+  clientId: string;
+  clientName: string;
+  status: 'OK' | 'TRIGGERED' | 'ERROR';
+  value: string | null;
+  triggered: boolean;
+  error: string | null;
+  executionMs: number;
+  checkedAt: string;
+}
+
+export type CustomAlertScheduleType = 'INTERVAL' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+export interface CustomAlertScheduleConfig {
+  times: string[];        // "HH:mm" clock times (IST)
+  daysOfWeek: number[];   // 0-6 (0 = Sunday), used by WEEKLY
+  daysOfMonth: number[];  // 1-31, used by MONTHLY
+}
+
+export interface CustomAlert {
+  id: string;
+  name: string;
+  clientId: string | null;
+  clientName: string;
+  clientIds: string[];
+  clientNames: string[];
+  sqlQuery: string;
+  operator: CustomAlertOperator;
+  thresholdValue: string;
+  intervalMinutes: number;
+  scheduleType: CustomAlertScheduleType;
+  scheduleConfig: CustomAlertScheduleConfig;
+  isActive: boolean;
+  notifyEmails: string[];
+  startAt: string | null;
+  endAt: string | null;
+  lastStatus: CustomAlertStatus | null;
+  lastValue: string | null;
+  lastError: string | null;
+  lastCheckedAt: string | null;
+  lastTriggeredAt: string | null;
+  results: CustomAlertClientResult[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomAlertInput {
+  name: string;
+  clientIds: string[];
+  clientNames: string[];
+  sqlQuery: string;
+  operator: CustomAlertOperator;
+  thresholdValue: string;
+  intervalMinutes: number;
+  scheduleType: CustomAlertScheduleType;
+  scheduleConfig: CustomAlertScheduleConfig;
+  isActive?: boolean;
+  notifyEmails: string[];
+  startAt: string | null;
+  endAt: string | null;
+}
+
+// The test endpoint returns one result per selected client.
+export type CustomAlertTestResult = CustomAlertClientResult;
+
+export interface CustomAlertValidateClient {
+  clientId: string;
+  clientName: string;
+  status: 'OK' | 'SLOW' | 'ERROR';
+  elapsedMs: number;
+  error: string | null;
+}
+
+export interface CustomAlertValidateResult {
+  validated: boolean;
+  timeoutSec: number;
+  clients: CustomAlertValidateClient[];
+}
+
